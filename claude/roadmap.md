@@ -459,3 +459,19 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   implementation, not extracted from PhoneAuto) automates the toggle by text
   matching. Still needs on-device verification against the owner's actual
   Android Auto build; AA's settings copy/layout can change between versions.
+
+## Live test: first CNXN reply sent (2026-11-01 11:31)
+
+Evidence: `adb-probe-20261101-113131.log` (owner export) + device logcat.
+
+- CONFIRMED: head unit CNXN header = version `0x01000000`, maxdata `0x4000`
+  (16384), data_length 11, **data_check 0**, magic OK. Payload
+  `host::N9r8\0` arrives in a **separate read()** from the header.
+- CONFIRMED: probe sent an 85-byte CNXN reply with data_check = 0. ~4.2 s
+  later, read() failed with EIO (head unit reset the link). After that,
+  every `openAccessory()` returned null until a fresh attach.
+- INFERENCE (public ADB spec, not CarbitLink code): version `0x01000000`
+  means the receiver validates data_check (sum of payload bytes); only
+  `0x01000001`+ may skip it. A zero checksum likely got our reply rejected.
+  Fix: probe now sends the real sum and reassembles split reads.
+  UNVERIFIED until the next live test.

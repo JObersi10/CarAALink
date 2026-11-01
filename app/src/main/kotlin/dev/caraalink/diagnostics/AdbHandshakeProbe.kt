@@ -25,10 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * Deliberately stops there. This does NOT respond OKAY to an OPEN, does NOT
  * answer an AUTH challenge, and executes nothing it receives -- it logs
- * what comes next and nothing more. Known limitation: this assumes a whole
- * ADB message (24-byte header + payload) arrives in one read() call, same
- * simplification the passive sniffer makes; real traffic could fragment
- * across reads, which would show up as an unparsed message in the log.
+ * what comes next and nothing more.
  */
 class AdbHandshakeProbe(private val context: Context) {
 
@@ -73,6 +70,9 @@ class AdbHandshakeProbe(private val context: Context) {
 
     private fun readLoop(conn: UsbAccessoryConnection) {
         val buffer = ByteArray(16 * 1024)
+        // Header and payload arrive in separate read() calls on this link
+        // (confirmed in capture), so accumulate until a whole message is in.
+        var pending = ByteArray(0)
         var handshakeSent = false
         var totalRead = 0L
         while (running.get()) {
@@ -89,11 +89,11 @@ class AdbHandshakeProbe(private val context: Context) {
 
             totalRead += n
             logger.logBytes("RX", buffer, n)
+            pending += buffer.copyOfRange(0, n)
 
-            val message = parseAdbMessage(buffer, n)
-            if (message == null) {
-                logger.log("RX did not parse as a 24-byte ADB header (fragmented read?)")
-            } else {
+            while (true) {
+                val (message, consumed) = parseAdbMessage(pending) ?: break
+                pending = pending.copyOfRange(consumed, pending.size)
                 Log.i(TAG, "RX ADB message: $message")
                 logger.log("Parsed ADB message: $message")
                 if (message.command == CMD_CNXN && !handshakeSent) {
@@ -121,24 +121,36 @@ class AdbHandshakeProbe(private val context: Context) {
         }
     }
 
-    private data class AdbMessage(val command: Int, val arg0: Int, val arg1: Int, val payload: ByteArray) {
+    private data class AdbMessage(
+        val command: Int,
+        val arg0: Int,
+        val arg1: Int,
+        val dataLength: Int,
+        val dataCheck: Int,
+        val payload: ByteArray,
+    ) {
         override fun toString() =
-            "cmd=${commandName(command)} arg0=$arg0 arg1=$arg1 payloadLen=${payload.size} " +
-                "payload=${payload.toString(Charsets.US_ASCII)}"
+            "cmd=${commandName(command)} arg0=0x${Integer.toHexString(arg0)} arg1=$arg1 " +
+                "dataLength=$dataLength dataCheck=0x${Integer.toHexString(dataCheck)} " +
+                "payload=${payload.toString(Charsets.US_ASCII).replace("\u0000", "\\0")}"
     }
 
-    /** Parses a single 24-byte ADB header (+ payload) out of one read() chunk. */
-    private fun parseAdbMessage(buffer: ByteArray, length: Int): AdbMessage? {
-        if (length < 24) return null
-        val bb = ByteBuffer.wrap(buffer, 0, 24).order(ByteOrder.LITTLE_ENDIAN)
+    /**
+     * Returns the first complete ADB message in [bytes] and how many bytes it
+     * used, or null if a whole header + payload hasn't arrived yet.
+     */
+    private fun parseAdbMessage(bytes: ByteArray): Pair<AdbMessage, Int>? {
+        if (bytes.size < 24) return null
+        val bb = ByteBuffer.wrap(bytes, 0, 24).order(ByteOrder.LITTLE_ENDIAN)
         val command = bb.int
         val arg0 = bb.int
         val arg1 = bb.int
         val dataLength = bb.int
-        bb.int // data_check -- modern adb sends 0 and doesn't validate it; confirmed in our own capture
+        val dataCheck = bb.int
         bb.int // magic -- not re-validated here
-        val payload = if (length > 24) buffer.copyOfRange(24, minOf(length, 24 + dataLength)) else ByteArray(0)
-        return AdbMessage(command, arg0, arg1, payload)
+        if (dataLength < 0 || bytes.size < 24 + dataLength) return null
+        val payload = bytes.copyOfRange(24, 24 + dataLength)
+        return AdbMessage(command, arg0, arg1, dataLength, dataCheck, payload) to (24 + dataLength)
     }
 
     private fun buildAdbMessage(command: Int, arg0: Int, arg1: Int, payload: ByteArray): ByteArray {
@@ -147,7 +159,11 @@ class AdbHandshakeProbe(private val context: Context) {
         bb.putInt(arg0)
         bb.putInt(arg1)
         bb.putInt(payload.size)
-        bb.putInt(0) // data_check -- matches what real devices send in our capture
+        // Public ADB spec: protocol version 0x01000000 (what the head unit
+        // announced) requires data_check = sum of payload bytes; only
+        // 0x01000001+ may skip it. Sending 0 here likely got our reply
+        // rejected -- the head unit reset the link ~4s later.
+        bb.putInt(payload.sumOf { it.toInt() and 0xFF })
         bb.putInt(command xor -1) // magic = command ^ 0xFFFFFFFF
         bb.put(payload)
         return bb.array()
