@@ -1,13 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- TODO(protocol RE): confirm host vs accessory role before enabling either
-         USB_DEVICE_ATTACHED or USB_ACCESSORY_ATTACHED below. See claude/roadmap.md. -->
-    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
-    <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
+    <!-- CONFIRMED by RE pass 1 (claude/roadmap.md): phone is the USB
+         *accessory*, head unit is the USB *host*. -->
+    <uses-feature android:name="android.hardware.usb.accessory" android:required="true" />
+
+    <!-- Package visibility (API 30+): needed to launch Android Auto for the
+         one-click head-unit-server start. -->
+    <queries>
+        <package android:name="com.google.android.projection.gearhead" />
+    </queries>
 
     <application
-        android:label="HeadUnit Bridge"
+        android:label="@string/app_name"
         android:allowBackup="false">
 
         <activity
@@ -17,25 +22,37 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
-            <!-- Placeholder: enable once USB role is confirmed by RE.
             <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
             </intent-filter>
             <meta-data
-                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-                android:resource="@xml/usb_device_filter" />
-            -->
+                android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED"
+                android:resource="@xml/accessory_filter" />
         </activity>
+
+        <activity
+            android:name=".settings.SettingsActivity"
+            android:exported="false" />
 
         <receiver
             android:name=".usb.UsbAttachReceiver"
             android:exported="true">
             <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
                 <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
             </intent-filter>
         </receiver>
+
+        <service
+            android:name=".accessibility.HeadUnitServerAccessibilityService"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
 
     </application>
 </manifest>

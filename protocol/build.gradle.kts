@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "dev.headunitbridge.protocol"
+    namespace = "dev.caraalink.protocol"
     compileSdk = 34
 
     defaultConfig {

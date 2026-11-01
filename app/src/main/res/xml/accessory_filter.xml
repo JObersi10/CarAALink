@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  CONFIRMED by RE pass 1 (see claude/roadmap.md): the real CarbitLink app
+  declares this exact manufacturer/model pair in its own accessory_filter.xml
+  (decoded resource res/S5h.xml) and matches it via UsbManager.openAccessory()
+  in EPSDK.openAccessory(). The head unit identifies itself as this AOA
+  accessory string during the handshake; matching it here is how our app
+  auto-launches on the same head units CarbitLink supports. The "version"
+  field was present in the original resource but not cited verbatim by the
+  RE pass — left unset here (matches any version) rather than guessed.
+-->
+<resources>
+    <usb-accessory
+        manufacturer="Carbit"
+        model="CarbitDriverOversea" />
+</resources>

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="resolution_mode_entries">
+        <item>Match head unit (auto)</item>
+        <item>Custom</item>
+    </string-array>
+    <string-array name="resolution_mode_values">
+        <item>auto</item>
+        <item>custom</item>
+    </string-array>
+
+    <string-array name="frame_rate_entries">
+        <item>24 fps</item>
+        <item>30 fps</item>
+        <item>60 fps</item>
+    </string-array>
+    <string-array name="frame_rate_values">
+        <item>24</item>
+        <item>30</item>
+        <item>60</item>
+    </string-array>
+
+    <string-array name="sample_rate_entries">
+        <item>44.1 kHz</item>
+        <item>48 kHz</item>
+    </string-array>
+    <string-array name="sample_rate_values">
+        <item>44100</item>
+        <item>48000</item>
+    </string-array>
+
+    <!--
+      USB role is CONFIRMED (see claude/roadmap.md): phone is the accessory,
+      head unit is the host. This override exists for debugging only — do
+      not flip it on real hardware unless you know why.
+    -->
+    <string-array name="usb_role_entries">
+        <item>Auto (confirmed: accessory)</item>
+        <item>Force accessory</item>
+        <item>Force host</item>
+    </string-array>
+    <string-array name="usb_role_values">
+        <item>auto</item>
+        <item>accessory</item>
+        <item>host</item>
+    </string-array>
+</resources>

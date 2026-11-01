@@ -1,4 +1,4 @@
-package dev.headunitbridge.protocol
+package dev.caraalink.protocol
 
 /**
  * Isolation boundary for the reverse-engineered CarbitLink wire protocol.

@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "dev.headunitbridge"
+    namespace = "dev.caraalink"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "dev.headunitbridge"
+        applicationId = "dev.caraalink"
         minSdk = 29
         targetSdk = 34
         versionCode = 1
@@ -35,4 +35,5 @@ dependencies {
     implementation(project(":protocol"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.preference:preference-ktx:1.2.1")
 }

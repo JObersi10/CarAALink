@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory android:title="Video">
+        <ListPreference
+            android:key="video_resolution_mode"
+            android:title="Resolution"
+            android:summary="Match the head unit's reported display, or force a size"
+            android:entries="@array/resolution_mode_entries"
+            android:entryValues="@array/resolution_mode_values"
+            android:defaultValue="auto" />
+        <EditTextPreference
+            android:key="video_resolution_custom_width"
+            android:title="Custom width (px)"
+            android:inputType="number" />
+        <EditTextPreference
+            android:key="video_resolution_custom_height"
+            android:title="Custom height (px)"
+            android:inputType="number" />
+        <ListPreference
+            android:key="video_frame_rate"
+            android:title="Target frame rate"
+            android:entries="@array/frame_rate_entries"
+            android:entryValues="@array/frame_rate_values"
+            android:defaultValue="30" />
+        <EditTextPreference
+            android:key="video_bitrate_kbps"
+            android:title="Video bitrate (kbps)"
+            android:inputType="number"
+            android:defaultValue="6000" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Audio">
+        <ListPreference
+            android:key="audio_sample_rate"
+            android:title="Sample rate"
+            android:entries="@array/sample_rate_entries"
+            android:entryValues="@array/sample_rate_values"
+            android:defaultValue="48000" />
+        <SwitchPreferenceCompat
+            android:key="audio_stereo"
+            android:title="Stereo"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Connection">
+        <SwitchPreferenceCompat
+            android:key="auto_start_head_unit_server"
+            android:title="Auto-start head unit server"
+            android:summary="Automatically start Android Auto's head-unit-server mode when plugged into the car"
+            android:defaultValue="true" />
+        <SwitchPreferenceCompat
+            android:key="auto_reconnect_usb"
+            android:title="Auto-reconnect"
+            android:summary="Reconnect automatically if the USB link drops"
+            android:defaultValue="true" />
+        <ListPreference
+            android:key="usb_role_override"
+            android:title="USB role override (debug)"
+            android:summary="Confirmed: phone is the USB accessory, head unit is the host (see claude/roadmap.md). Only override for testing."
+            android:entries="@array/usb_role_entries"
+            android:entryValues="@array/usb_role_values"
+            android:defaultValue="auto" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Debug">
+        <SwitchPreferenceCompat
+            android:key="debug_verbose_logging"
+            android:title="Verbose logging"
+            android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="debug_overlay"
+            android:title="On-screen debug overlay"
+            android:summary="Show capture/transport stats over the mirrored output"
+            android:defaultValue="false" />
+        <Preference
+            android:key="accessibility_service_shortcut"
+            android:title="Accessibility service"
+            android:summary="Required for one-click head-unit-server start — tap to open system settings" />
+    </PreferenceCategory>
+
+</androidx.preference.PreferenceScreen>

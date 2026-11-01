@@ -12,6 +12,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "headunit-bridge"
+rootProject.name = "CarAALink"
 include(":app")
 include(":protocol")
