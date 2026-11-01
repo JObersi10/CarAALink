@@ -102,6 +102,17 @@ class CarHomePresentation(
         }
         root.addView(row)
         frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Some hardware encoders emit nothing for an unchanged screen; the car
+        // pulls frames continuously and gives up if they stop. A 1px view that
+        // flickers between two near-identical colours keeps frames flowing.
+        val ticker = android.view.View(context)
+        frame.addView(ticker, FrameLayout.LayoutParams(1, 1))
+        android.animation.ValueAnimator.ofInt(0, 1).apply {
+            duration = 1000L / 30
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            addUpdateListener { ticker.setBackgroundColor(if (it.animatedValue == 0) 0xFF0A0F12.toInt() else 0xFF0A0F13.toInt()) }
+            start()
+        }
         setContentView(frame)
     }
 

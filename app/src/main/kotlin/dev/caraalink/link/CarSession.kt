@@ -48,6 +48,11 @@ class CarSession(
     private var configSent = false
     private val pullQueue = ArrayDeque<ByteArray>()
     private var framesSent = 0L
+    private var framesEncoded = 0L
+    private var frameRequests = 0L
+    private var pendingRequests = 0
+    private var waitingForKey = true
+    private var lastKeyFrame: ByteArray? = null
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -120,7 +125,7 @@ class CarSession(
 
     private fun openAndroidAuto() {
         phone.openAndroidAuto()
-        if (!display.showMirror()) askForCapture() else display.setStatus("Android Auto (phone screen)")
+        if (!display.showMirror()) display.setStatus("Opened Android Auto on the phone. Tap Phone screen to mirror it here.")
     }
 
     private fun openMirror() {
@@ -191,31 +196,68 @@ class CarSession(
         synchronized(frameLock) {
             dataStream = stream
             configSent = false
+            waitingForKey = true
+            pendingRequests = 0
             pullQueue.clear()
         }
+        logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
         encoder?.requestKeyFrame()
     }
 
     override fun onDataStreamClosed(stream: AdbTransport.Stream) {
         synchronized(frameLock) { if (dataStream === stream) dataStream = null }
+        logger.log("data stream closed; requests=$frameRequests sent=$framesSent encoded=$framesEncoded")
     }
 
     override fun onFrameRequested(stream: AdbTransport.Stream) {
-        val out = synchronized(frameLock) {
-            val cfg = codecConfig
+        frameRequests++
+        if (frameRequests <= 3 || frameRequests % 100 == 0L) logger.log("frame request #$frameRequests (queued=${pullQueue.size})")
+        synchronized(frameLock) {
+            // CarbitLink blocks until the encoder has a frame instead of answering
+            // "none", so hold the request and answer when the next frame lands.
             val next = pullQueue.poll()
-            when {
-                next == null -> MirrorDataChannel.NO_FRAME
-                !configSent && cfg != null -> { configSent = true; MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(next) }
-                else -> MirrorDataChannel.frame(next)
+            if (next == null) {
+                pendingRequests++
+                encoder?.requestKeyFrame()
+                scheduleStarvationCheck(stream)
+                return
             }
+            sendFrameLocked(stream, next)
         }
-        stream.write(out)
-        if (out !== MirrorDataChannel.NO_FRAME) framesSent++
+    }
+
+    private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
+    private fun scheduleStarvationCheck(stream: AdbTransport.Stream) {
+        watchdog.postDelayed({
+            synchronized(frameLock) {
+                val key = lastKeyFrame
+                if (pendingRequests > 0 && dataStream === stream && key != null) {
+                    pendingRequests--
+                    sendFrameLocked(stream, key)
+                }
+            }
+        }, 80)
+    }
+
+    /** Caller holds [frameLock]. Codec config always precedes the first frame. */
+    private fun sendFrameLocked(stream: AdbTransport.Stream, frame: ByteArray) {
+        val cfg = codecConfig
+        if (!configSent && cfg != null) {
+            stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))
+            configSent = true
+        } else {
+            stream.write(MirrorDataChannel.frame(frame))
+        }
+        framesSent++
+        if (framesSent <= 3 || framesSent % 300 == 0L) logger.log("frame sent #$framesSent (${frame.size} bytes)")
     }
 
     private fun onEncodedFrame(data: ByteArray, isConfig: Boolean, isKey: Boolean) {
+        framesEncoded++
+        if (framesEncoded <= 2) logger.log("encoder output #$framesEncoded config=$isConfig key=$isKey ${data.size} bytes")
         val pull = (config?.wantFps ?: 0) == 0
         synchronized(frameLock) {
             if (isConfig) {
@@ -223,8 +265,19 @@ class CarSession(
                 configSent = false
                 return
             }
+            if (isKey) lastKeyFrame = data
             val stream = dataStream ?: return
+            // The car's decoder needs to start on a keyframe.
+            if (waitingForKey) {
+                if (!isKey) { encoder?.requestKeyFrame(); return }
+                waitingForKey = false
+            }
             if (pull) {
+                if (pendingRequests > 0) {
+                    pendingRequests--
+                    sendFrameLocked(stream, data)
+                    return
+                }
                 if (pullQueue.size >= MAX_PULL_QUEUE) {
                     if (!isKey) { encoder?.requestKeyFrame(); return }
                     pullQueue.clear()
@@ -236,13 +289,7 @@ class CarSession(
                 if (!isKey) { encoder?.requestKeyFrame(); return }
                 stream.clearBacklog()
             }
-            val cfg = codecConfig
-            if (!configSent && cfg != null) {
-                stream.write(MirrorDataChannel.frame(cfg))
-                configSent = true
-            }
-            stream.write(MirrorDataChannel.frame(data))
-            framesSent++
+            sendFrameLocked(stream, data)
         }
     }
 

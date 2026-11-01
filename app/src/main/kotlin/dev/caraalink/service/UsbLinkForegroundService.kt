@@ -189,10 +189,19 @@ class UsbLinkForegroundService : Service() {
         }
 
         override fun requestScreenCapture() {
-            runCatching {
-                startActivity(Intent(this@UsbLinkForegroundService, ProjectionRequestActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }.onFailure { Log.w(TAG, "requestScreenCapture failed", it) }
+            val ctx = this@UsbLinkForegroundService
+            val intent = Intent(ctx, ProjectionRequestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { startActivity(intent) }.onFailure { Log.w(TAG, "requestScreenCapture failed", it) }
+            // Android may silently block activity starts from the background; the notification always works.
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.notify(NOTIFICATION_ID_CAPTURE, NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_slideshow)
+                .setContentTitle("Show phone screen on the car")
+                .setContentText("Tap to allow screen mirroring")
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(PendingIntent.getActivity(ctx, 1, intent, PendingIntent.FLAG_IMMUTABLE))
+                .build())
         }
     }
 
@@ -326,6 +335,7 @@ class UsbLinkForegroundService : Service() {
         private const val TAG = "UsbLinkForegroundService"
         private const val CHANNEL_ID = "usb_link"
         private const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_ID_CAPTURE = 2
         private const val MAX_RECONNECT_ATTEMPTS = 5
 
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
