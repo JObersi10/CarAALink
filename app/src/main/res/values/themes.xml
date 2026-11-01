@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Material-family parent is required: SettingsActivity extends
+      AppCompatActivity, which throws IllegalStateException at runtime if the
+      app theme isn't a Theme.AppCompat (or Theme.MaterialComponents, which
+      extends it) descendant. The app previously had no android:theme at all,
+      so it fell back to the platform's default theme -> that crash.
+    -->
+    <style name="Theme.CarAALink" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/caraalink_primary</item>
+        <item name="colorPrimaryDark">@color/caraalink_primary_dark</item>
+        <item name="colorAccent">@color/caraalink_primary</item>
+        <item name="android:windowBackground">@color/caraalink_background</item>
+        <item name="android:textColorPrimary">@color/caraalink_text_primary</item>
+        <item name="android:textColorSecondary">@color/caraalink_text_secondary</item>
+    </style>
+</resources>

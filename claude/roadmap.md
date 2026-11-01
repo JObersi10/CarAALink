@@ -172,21 +172,39 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   phase/accessory/byte-counter/error view backed by `ConnectionStateHolder`.
 - [x] Onboarding checklist (`OnboardingActivity`) — accessibility service,
   battery-optimization exemption, notification permission (API 33+), each
-  with live status and a one-tap fix. Not yet wired to auto-launch on first
-  run (reachable from MainActivity's "Setup checklist" button for now).
+  with live status and a one-tap fix. Now auto-launches once on first app
+  start (`MainActivity`'s `onboarding_shown` flag), still reachable anytime
+  via "Setup checklist". Battery-optimization request had a real bug (missing
+  `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` permission, silently no-op on some
+  OEMs) — fixed, with a fallback to the generic exemption list if the direct
+  per-app dialog still refuses.
 - [x] One-click "Start head unit server" (`HeadUnitServerAccessibilityService`
   + `HeadUnitServerLauncher`) — automates Settings → Version×10 → ⋮ → Start
   head unit server. Heuristic text/description matching, not a stable API;
-  needs on-device testing against the owner's actual Android Auto version,
-  and `auto_start_head_unit_server` isn't wired into `UsbAttachReceiver` yet
-  (TODO there)
+  `auto_start_head_unit_server` isn't wired into `UsbAttachReceiver` yet
+  (TODO there). Real bug found and fixed on-device: `getLaunchIntentForPackage`
+  returned null for `com.google.android.projection.gearhead` (it has no
+  standard LAUNCHER activity on the owner's phone, so the app reported
+  "Android Auto isn't installed" even though it was) — now falls back to
+  resolving any ACTION_MAIN activity the package declares at runtime, then to
+  opening its app-info page as a last resort. Still not confirmed whether the
+  resolved activity actually lands on a screen where "Version" is visible —
+  the accessibility automation itself (Settings navigation) remains
+  unverified on real hardware.
 - [x] Settings screen (`SettingsActivity` + `root_preferences.xml` +
   `AppSettings`) — resolution override (auto/custom), frame rate, video
   bitrate, audio sample rate/channels, auto-start-head-unit-server,
   auto-reconnect, USB role override (debug only — role itself is confirmed),
   verbose logging, debug overlay, accessibility-service shortcut. Nothing in
   the capture/protocol pipeline reads these yet — wiring happens as that code
-  lands in Phase 2/3
+  lands in Phase 2/3. **Real crash fixed**: `SettingsActivity` extends
+  `AppCompatActivity`, but the app had no `android:theme` at all, so it fell
+  back to a plain platform theme — AppCompat throws
+  `IllegalStateException: You need to use a Theme.AppCompat theme (or
+  descendant)` in that case. Added a real Material theme
+  (`Theme.CarAALink` / `themes.xml` + `colors.xml`) and applied it at the
+  `<application>` level; also restyled `MainActivity` with it (title, live
+  status line, Material buttons) instead of unstyled stacked `Button`s.
 - [ ] `MediaProjection` + `VirtualDisplay` capture wired to AA's rendered
   surface, sized from the head unit's real display width/height/density
   (from the CarbitLink handshake — not hardcoded)
