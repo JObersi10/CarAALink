@@ -56,14 +56,6 @@
             android:name=".diagnostics.DeveloperToolsActivity"
             android:exported="false" />
 
-        <receiver
-            android:name=".usb.UsbAttachReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_ACCESSORY_ATTACHED" />
-            </intent-filter>
-        </receiver>
-
         <service
             android:name=".accessibility.HeadUnitServerAccessibilityService"
             android:exported="true"

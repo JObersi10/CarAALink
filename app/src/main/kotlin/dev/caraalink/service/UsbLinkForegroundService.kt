@@ -124,6 +124,11 @@ class UsbLinkForegroundService : Service() {
     /** Called by the sniffer/transport layer (via ConnectionStateHolder) on link loss. */
     private fun maybeScheduleReconnect(snapshot: ConnectionSnapshot) {
         if (snapshot.phase != ConnectionPhase.ERROR) return
+        // No auto-reconnect: holding/retrying the accessory blocked Android's
+        // app chooser on the next plug-in. Release everything instead.
+        stopSelfCleanly()
+        return
+        @Suppress("UNREACHABLE_CODE")
         if (!AppSettings.autoReconnectUsb(this)) return
         val accessory = pendingAccessory ?: return
 
@@ -163,6 +168,8 @@ class UsbLinkForegroundService : Service() {
 
     private fun stopSelfCleanly() {
         sniffer?.stop()
+        adbProbe?.stop()
+        adbProbe = null
         releaseWakeLock()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()

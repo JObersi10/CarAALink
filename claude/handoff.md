@@ -7,6 +7,39 @@ wireless-debugging adb) against the real car head unit. See
 `roadmap.md` for full cited detail — this file is the "what actually
 happened and what to do next" summary.
 
+## LATEST (2026-11-01 12:25) — read this first
+
+ADB layer over AOA now WORKS (uncommitted changes in `AdbHandshakeProbe.kt`,
+see roadmap "jadbd" sections): 24 zero-byte kick on open, jadbd-identical
+CNXN reply (v 0x01000001, echo maxdata, banner without NUL), header and
+payload as separate writes, OKAY every OPEN/WRTE.
+
+The head unit then OPENs `tcp:10922` and sends one 16-byte WRTE:
+`00 00 01 00 | 10 00 00 00 | 10 00 01 00 | 3C 00 00 00` (LE: 0x10000, 16,
+0x00010010, 60). 0x00010010 = `ECP_C2P_CLIENT_INFO` per CarbitLink logcat.
+It waits about 1.1 s for a reply, sends CLSE, and retries forever (UI stuck on
+"connecting"). NEXT: decompile CarbitLink Java (`jadx` into scratchpad;
+classes `PXCService`, `PXCForCar-C2P`) and find what the phone server
+sends back on 10922. Then implement that reply, read CLIENT_INFO JSON
+(has screen info), then a black frame, then Android Auto. Owner: no commits
+while iterating; commit only when asked. Owner wants terse replies.
+
+### Update 12:45
+- PXC head reply WORKS: car got 0x10001, then sent CLIENT_INFO (0x10010,
+  1342-byte JSON) and re-sends it every 1.6 s waiting for a reply.
+- PXC frame = 16-byte LE head: cmd, totalLen, cmd^totalLen, extra; then
+  body. Reply cmd = request cmd + 1 (CarbitLink `z0.e()`, `i.o()`).
+- BUILT, NOT INSTALLED (adb dropped): `maybeAnswerClientInfo` sends 0x10011
+  + JSON (pxcVersion, phone info, token 0, supportH264IFrame). Omits
+  CarbitLink's RSA pubkey/encryptedHUID (car says enableSockServerAuth=false).
+  Next: install, test, see the next C2P command; then video (H.264,
+  black frame first), then Android Auto. jadx output is in scratchpad
+  `carbit-jadx/` (regenerate if gone). Classes:
+  `sdk_communication/{l0,i,z0}.java`, `sdk_communication/C2P/*`.
+- Also uncommitted: no auto-reconnect (service stops on link error),
+  UsbAttachReceiver removed from manifest (it blocked the chooser popup),
+  ADB parser resyncs on bad magic.
+
 ## The big picture, in one paragraph
 
 CarbitLink's wire protocol is **not** a bespoke binary format — it's a real
