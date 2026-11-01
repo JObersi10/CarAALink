@@ -72,4 +72,18 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }
+
+    companion object {
+        /** Shares several files (e.g. the app log and the USB sniffer log) in one go. */
+        fun shareFilesIntent(context: Context, files: List<File>): Intent {
+            val uris = ArrayList(files.map {
+                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
+            })
+            return Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+                type = "text/plain"
+                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+    }
 }

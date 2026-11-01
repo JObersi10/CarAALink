@@ -73,12 +73,20 @@ class DeveloperToolsActivity : Activity() {
     }
 
     private fun exportLatestLog() {
-        val logger = DiagnosticLogger(this, "usb-sniff")
-        val latest = logger.allLogFiles().firstOrNull()
-        if (latest == null) {
-            Toast.makeText(this, "No sniffer logs yet", Toast.LENGTH_LONG).show()
+        val allFiles = DiagnosticLogger(this, "app").allLogFiles() // shared logs/ dir, all tags
+        val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
+        val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
+        val toShare = listOfNotNull(latestApp, latestSniff)
+        if (toShare.isEmpty()) {
+            Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
         }
-        startActivity(Intent.createChooser(logger.shareFileIntent(latest), "Share CarAALink USB log"))
+        Log.i(TAG, "exportLatestLog: sharing ${toShare.map { it.name }}")
+        startActivity(
+            Intent.createChooser(
+                DiagnosticLogger.shareFilesIntent(this, toShare),
+                "Share CarAALink logs",
+            )
+        )
     }
 }
