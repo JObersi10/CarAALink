@@ -535,3 +535,14 @@ CONFIRMED (xcrun llvm-objdump, arm64; strings read at the referenced addresses):
   0 in this function.
 - Probe now sends exactly these values, plus public-ADB OKAY to any
   OPEN/WRTE so the first stream's data gets logged. UNVERIFIED live.
+
+### Retest 12:18 + `AOATransport::outputThread` (@0x37dc8)
+- CONFIRMED live: probe sent a CNXN reply byte-identical to jadbd's
+  (v 0x01000001, maxdata 16384, 29-byte banner, 53 bytes total). The head
+  unit was still silent for 10 s. So the reply *content* is not the gap.
+- CONFIRMED (disassembly): at thread start, jadbd `write()`s **24 zero
+  bytes** to the accessory fd, retrying up to 50x with `usleep(20000)`,
+  and only then starts `inputThread`. Every packet after that is sent as two
+  `write()`s: the 24-byte header, then the payload.
+- Probe now does both (zero kick on open, split header/payload writes).
+  UNVERIFIED live.

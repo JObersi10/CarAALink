@@ -54,7 +54,10 @@ class AdbHandshakeProbe(private val context: Context) {
             it.copy(phase = ConnectionPhase.SNIFFING, accessoryManufacturer = accessory.manufacturer, accessoryModel = accessory.model, lastError = null)
         }
 
-        readThread = Thread({ readLoop(conn) }, "AdbHandshakeProbe").also { it.start() }
+        readThread = Thread({
+            sendZeroKick(conn)
+            readLoop(conn)
+        }, "AdbHandshakeProbe").also { it.start() }
     }
 
     fun stop() {
@@ -130,12 +133,36 @@ class AdbHandshakeProbe(private val context: Context) {
         send(conn, "CNXN v=0x${Integer.toHexString(version)} maxdata=$maxData", buildAdbMessage(CMD_CNXN, version, maxData, payload))
     }
 
+    /**
+     * CONFIRMED from libjadbd AOATransport::outputThread (@0x37e2c): before
+     * reading anything, jadbd writes 24 zero bytes to the accessory, retrying
+     * up to 50 times with 20 ms sleeps until the write succeeds.
+     */
+    private fun sendZeroKick(conn: UsbAccessoryConnection) {
+        repeat(50) { attempt ->
+            try {
+                conn.output.write(ByteArray(24))
+                conn.output.flush()
+                logger.log("TX 24 zero bytes (attempt ${attempt + 1})")
+                return
+            } catch (e: IOException) {
+                logger.log("zero kick write failed (attempt ${attempt + 1}): ${e.message}")
+                Thread.sleep(20)
+            }
+        }
+    }
+
+    /** Header and payload go out as separate writes, like jadbd's outputThread. */
     private fun send(conn: UsbAccessoryConnection, label: String, message: ByteArray) {
         Log.i(TAG, "TX $label (${message.size} bytes)")
         logger.log("TX $label (${message.size} bytes)")
         try {
-            conn.output.write(message)
+            conn.output.write(message, 0, 24)
             conn.output.flush()
+            if (message.size > 24) {
+                conn.output.write(message, 24, message.size - 24)
+                conn.output.flush()
+            }
         } catch (e: IOException) {
             Log.w(TAG, "write failed", e)
             logger.log("ERROR writing $label: ${e.message}")
