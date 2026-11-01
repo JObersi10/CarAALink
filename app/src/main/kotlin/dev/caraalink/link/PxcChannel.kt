@@ -17,6 +17,8 @@ import java.nio.ByteOrder
 class PxcChannel(
     private val logger: DiagnosticLogger,
     private val onClientInfo: (JSONObject) -> Unit,
+    /** Body for the reply to a car request, or null for an empty ack. */
+    private val replyBody: (cmd: Int) -> ByteArray? = { null },
 ) : AdbTransport.StreamHandler {
 
     private val buffers = HashMap<Int, ByteArray>()
@@ -108,7 +110,7 @@ class PxcChannel(
                 runCatching { onClientInfo(JSONObject(String(body, Charsets.UTF_8))) }
                 stream.write(head(cmd + 1, clientInfoReply(), 0))
             }
-            needsReply(cmd) -> stream.write(head(cmd + 1, ByteArray(0), 0))
+            needsReply(cmd) -> stream.write(head(cmd + 1, replyBody(cmd) ?: ByteArray(0), 0))
         }
     }
 

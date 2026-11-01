@@ -45,10 +45,13 @@ class MainActivity : Activity() {
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED &&
-            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
-            // Only for the weather on the car home screen.
-            requestPermissions(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION), 8)
+            // The car asks the phone for GPS (its own nav/clock), plus weather on the home screen.
+            requestPermissions(arrayOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ), 8)
         }
     }
 

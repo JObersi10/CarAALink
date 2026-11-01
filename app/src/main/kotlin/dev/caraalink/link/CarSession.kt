@@ -36,6 +36,7 @@ class CarSession(
     private var config: CaptureConfig? = null
     private var encoder: CarVideoEncoder? = null
     private var pxc: PxcChannel? = null
+    private val features = CarFeatures(context)
     private val display = CarDisplay(context, listOf(
         CarHomePresentation.Tile("Android Auto", "▲", Color.parseColor("#1E8E3E")) { openAndroidAuto() },
         CarHomePresentation.Tile("Phone screen", "▣", Color.parseColor("#1A73E8")) { openMirror() },
@@ -83,7 +84,8 @@ class CarSession(
             it.copy(phase = ConnectionPhase.ATTACHED, accessoryManufacturer = accessory.manufacturer,
                 accessoryModel = accessory.model, lastError = null)
         }
-        val pxc = PxcChannel(logger) { info -> onClientInfo(info) }.also { this.pxc = it }
+        features.start()
+        val pxc = PxcChannel(logger, { info -> onClientInfo(info) }, features::replyBody).also { this.pxc = it }
         val ctrl = MirrorControlChannel(logger, this)
         val data = MirrorDataChannel(logger, this)
         transport = AdbTransport(conn, logger, { service ->
@@ -134,6 +136,7 @@ class CarSession(
     private fun release() {
         weatherThread?.interrupt()
         weatherThread = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post { features.stop() }
         encoder?.release()
         encoder = null
         display.release()
