@@ -3,6 +3,8 @@ package dev.caraalink
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.hardware.usb.UsbAccessory
+import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -15,6 +17,7 @@ import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
 import dev.caraalink.diagnostics.DeveloperToolsActivity
 import dev.caraalink.onboarding.OnboardingActivity
+import dev.caraalink.service.UsbLinkForegroundService
 import dev.caraalink.settings.SettingsActivity
 
 /**
@@ -35,6 +38,28 @@ class MainActivity : Activity() {
         Log.i(TAG, "onCreate: launch intent action=${intent?.action} extras=${intent?.extras}")
         render()
         maybeShowOnboarding()
+        maybeAutoStartOnAttach(intent)
+    }
+
+    /**
+     * Auto-starts the ADB handshake probe, but ONLY when this Activity was
+     * actually launched by the USB_ACCESSORY_ATTACHED intent -- i.e. only
+     * when the user picked CarAALink in Android's resolver chooser. This is
+     * the fix for the previous attempt (claude/roadmap.md): wiring this to
+     * UsbAttachReceiver instead fired on EVERY attach regardless of which
+     * app was chosen, racing against CarbitLink even when CarbitLink was
+     * picked. MainActivity only ever gets this intent when CarAALink is the
+     * one chosen, so there's no race with CarbitLink anymore.
+     */
+    private fun maybeAutoStartOnAttach(intent: Intent?) {
+        if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
+        @Suppress("DEPRECATION")
+        val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY) ?: return
+        Log.i(TAG, "maybeAutoStartOnAttach: launched via attach intent, auto-starting ADB probe")
+        val serviceIntent = Intent(this, UsbLinkForegroundService::class.java)
+            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
+            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
+        startForegroundService(serviceIntent)
     }
 
     private fun maybeShowOnboarding() {
