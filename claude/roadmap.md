@@ -482,3 +482,17 @@ Evidence: `adb-probe-20261101-113131.log` (owner export) + device logcat.
 - CONFIRMED (`strings libjadbd.so`): CarbitLink's banner is
   `device::ro.product.name=jadbd`. Probe now sends that exact banner.
   UNVERIFIED whether the head unit gates on it.
+
+### Retest 11:53 (jadbd banner in)
+- CONFIRMED: still nothing from head unit after our CNXN (9 s, then owner
+  tapped "Start sniffer", which stopped the probe; tapping that kills the probe).
+- CONFIRMED: `jadbd::max_payload` initial value = 4096 (.data @0x76950),
+  same as ours, so not the cause.
+- CONFIRMED (strings): jadbd has `handleConn,old adb version` / `new adb
+  version` and `isNewAdbVersion`, plus device-side `AgentStream::open()` /
+  `SockStream::open()` and an `[aoa]outputThread`.
+- LEAD (inference, unverified): the head unit may wait for the *phone* side
+  to OPEN a stream after CNXN (not standard adb, where only the host opens).
+  The candidates are the libEPSDK service names (`P2CMainService` etc.).
+  Needs a disassembler pass on `AgentStream::open` to confirm. Do not guess
+  the service string on the wire.
