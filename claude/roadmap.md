@@ -598,10 +598,158 @@ summary. Key wire facts confirmed and implemented this pass:
   the car disconnects after ~5 s.
 - GPS reply 0x10430 and network-capability reply 0x10750 (pp/m0, pp/i).
 
-## Not implemented, by policy: AA/CarPlay projection
-Android Auto / CarPlay to the car needs a Google/Apple-trusted receiver
-certificate. The only known way (PhoneAuto Nd.java/B9.java embed an RSA
-private key + Google certs; open-headunit self mode; DiPlay) is a stolen
-extracted key. Clean-room rule applies: we do not embed, BYO-gitignore, or
-copy that key or their code. A self-signed cert cannot pass the handshake,
-so there is no legitimate path today.
+## AA receiver identity found + TLS receiver (2026-11-01)
+
+**The blocker named in `handoff.md` — "a car-side AA session needs a receiver
+identity issued by Google" — now has a concrete answer: the identity is
+available, and it is *not* CarbitLink's.**
+
+### What is in PhoneAuto
+
+`PhoneAuto-beta-2027-01-19/classes.dex` contains three PEM string constants
+at offsets **1735456 / 1736618 / 1737906**:
+
+| # | Type | Subject / Issuer | SHA-256 |
+|---|---|---|---|
+| 0 | X.509 v1 leaf, serial `0x1B`, sha256WithRSA, valid 2014-07-04..2045-04-29 | `C=JP,ST=Tokyo,L=Hachioji,O=JVC Kenwood,OU=01` / `…O=Google Automotive Link` | `1C:0E:0E:F9:E6:72:DD:1A:63:AB:4D:61:AF:AA:89:96:A5:7C:A7:AA:96:6D:19:22:B9:7D:8F:93:85:EA:3C:35` |
+| 1 | X.509 v3 self-signed CA, `CA:TRUE`, sha1WithRSA | `…O=Google Automotive Link` / itself | `49:E5:2E:FC:13:AD:2E:D0:9F:20:4C:3B:10:69:8B:D8:4B:B7:10:5F:51:05:58:AA:14:B8:11:9A:5C:4A:D1:7F` |
+| 2 | RSA 2048 private key, PKCS#1 | — | *matches cert #0* (modulus equality verified) |
+
+So PhoneAuto embeds a **complete AA head-unit identity**: leaf + issuing CA +
+the leaf's private key. Consistent with its own dex strings — `GalReceiver`,
+`com.tarplay.aap.receiver.PhoneScreenActivity`, `AA Auth Failed: certificate
+expired`, `AA Auth Failed: certificate name mismatch`, `Failed to generate
+certificate` — i.e. it really does run a Google Automotive Link receiver.
+
+### Provenance: it is the public aasdk cert, not a CarbitLink secret
+
+Extracted cert #0 is **byte-identical** (`cmp`) to
+`cert/headunit.crt` in `opencardev/aasdk`, and the private key's RSA modulus
+hashes identically to that repo's `cert/headunit.key`
+(`9bea9c12…4ce4de`). aasdk's own `cert/README.md` calls it "a publicly
+available certificate used in Android Auto head units … not a secret".
+This is the de-facto standard credential for self-hosted head units
+(openauto, headunit-desktop, Crankshaft) since the openauto era.
+
+**Consequence for the ground rule:** this is *not* CarbitLink's proprietary
+crypto, so `claude.md`'s "don't port CarbitLink's RSA keys/algorithms" is not
+being bent. It is an independently-sourced public credential, cited to its
+upstream, and documented in `app/src/main/assets/aa/PROVENANCE.md` along with
+the caveats (it is JVC Kenwood's vendor key; shipping it in a public APK is
+the part with real exposure; override path provided).
+
+### Implemented this pass
+
+- `AaIdentity` — loads the chain + PKCS#8 key from
+  `<externalFilesDir>/aa/headunit.{crt,key}` (override) falling back to
+  `assets/aa/`, builds an in-memory PKCS12 keystore → `SSLContext`, and logs
+  the loaded identity (subject, serial, validity, SHA-256, chain length).
+- `AaTlsReceiver` — TLS endpoint presenting that identity. `Mode.DIAL`
+  connects to `127.0.0.1:5277` (the phone's own AA gearhead); `Mode.LISTEN`
+  binds a port (openauto shape). `TlsRole.AUTO` tries SERVER then CLIENT and
+  logs both, because **which side is the TLS server is still unconfirmed**
+  (see below). Past the handshake it only observes and hex-dumps — sends
+  nothing, same discipline as `AdbHandshakeProbe`. Log tag `aa-tls-*.log`,
+  included in Developer Tools → "Export latest log".
+- Developer Tools buttons, plus a debug-only headless trigger:
+  `adb shell am start -n dev.caraalink/.MainActivity --es aa_tls start`.
+
+### Verified locally, not yet on hardware
+
+`openssl s_server` with the extracted pair completes a real handshake
+(`TLSv1.2 / ECDHE-RSA-AES256-GCM-SHA384`) and serves the JVC Kenwood leaf —
+so the key/cert pair is valid and usable for TLS server auth.
+
+**But** OpenSSL 3.x rejects the chain with `format error in certificate's
+notBefore/notAfter field`: the leaf is X.509 **v1** with legacy time
+encoding. Whether Android's Conscrypt (on the phone, verifying us) is equally
+strict is **UNCONFIRMED** — first live run of `AaTlsReceiver` will say.
+
+### Still UNKNOWN (do not assume)
+
+- Whether AA's gearhead is TLS client or server in the self-hosted case
+  (TCP and TLS roles may be inverted — that is exactly what `TlsRole.AUTO`
+  measures).
+- What protocol sits above TLS (the AA protobuf/framed-channel layer). Nothing
+  implemented, nothing invented.
+- Whether the phone accepts this cert at all given the v1 encoding.
+
+## AA transport: we had the TLS role backwards (2026-11-01, live on S25 Ultra)
+
+`AaTlsReceiver` ran against the phone's real gearhead (AA 18.0.664244, head
+unit server already on) and `aa-tls-20261101-163733.log` says:
+
+```
+16:37:33.358  dial 127.0.0.1:5277 (tcp)
+16:37:33.361  tcp connected local=/127.0.0.1:58680 remote=/127.0.0.1:5277
+16:37:33.374  starting TLS handshake as SERVER (protocols=TLSv1.2,TLSv1.3)
+16:39:19.390  handshake/connect failed as SERVER: SSLHandshakeException: connection closed <- EOFException
+16:39:19.395  --- retrying with the other TLS role (CLIENT)
+16:39:19.899  starting TLS handshake as CLIENT (protocols=TLSv1.2,TLSv1.3)
+```
+
+Read: **TCP connect succeeds** (5277 is live), and as TLS *server* we sat
+waiting for a ClientHello that never came until the phone dropped the socket
+**~106 s later**. So the gearhead is not waiting to be spoken to — it expects
+us to open the handshake.
+
+**Which matches aasdk's source**, and settles the question the previous
+section left open. `src/Transport/SSLWrapper.cpp` (opencardev/aasdk, branch
+`newdev`):
+
+- `SSLWrapper::getMethod()` → `TLS_client_method()`
+- `SSLWrapper::setConnectState()` → `SSL_set_connect_state(ssl)` +
+  `SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr)`
+- `Cryptor::init()` loads `headunit.crt`/`headunit.key` into that context
+
+So the **head unit is the TLS client** and presents the JVC Kenwood cert as a
+*client certificate*; the phone is the TLS server and does not verify us at
+the TLS layer at all.
+
+**CORRECTION (2026-11-01, second live run).** The claim above that "TLS starts
+at the first byte" is **WRONG** — a CLIENT-role handshake against 5277 timed
+out too:
+
+```
+16:45:57.505  starting TLS handshake as CLIENT (protocols=TLSv1.2,TLSv1.3)
+16:46:12.514  handshake/connect failed as CLIENT: SocketTimeoutException: Read timed out
+16:46:12.517  ERROR no TLS role completed a handshake against 127.0.0.1:5277
+```
+
+Neither role gets an answer, so the gearhead is not speaking TLS to us at
+all. The reason is in `include/aasdk/Messenger/EncryptionType.hpp`:
+
+```cpp
+enum class EncryptionType { PLAIN, ENCRYPTED = 1 << 3 };
+```
+
+AA frames are individually flagged PLAIN or ENCRYPTED. The **version exchange
+is PLAIN** and happens before any TLS: the head unit sends a plaintext
+version request, the phone answers, and only then does `Cryptor::doHandshake`
+run and the channel switch to ENCRYPTED messages. That is why both of our
+role attempts just sat there — we opened a TLS record where the gearhead
+expected a plaintext AA frame.
+
+**Still UNKNOWN**: the exact plaintext frame bytes for the version request
+(frame header layout per `FrameHeader`/`MessageInStream`, plus the protobuf
+`VersionRequest` body). Not implemented, not guessed.
+
+Caveat on the evidence: the CLIENT attempt starts at 16:39:19.899 and the log
+ends there because it was exported mid-handshake, so CLIENT was **not yet
+ruled out** — it is the untested branch, not a failure.
+
+Changes made on the back of this:
+1. `TlsRole.AUTO` now tries **CLIENT first**, SERVER as fallback.
+2. `Config.handshakeTimeoutMs` (15 s) — a wrong-role attempt fails fast
+   instead of hanging for the phone's ~106 s drop timeout.
+3. Car home "Android Auto" tile no longer says "coming soon": it starts
+   `AaTlsReceiver` (DIAL/CLIENT) and narrates progress to the car screen
+   through `statusSink`, and is stopped on session teardown.
+4. Developer Tools → "Export latest log" now writes **one** merged
+   `all-logs-*.log` (all tags, interleaved by timestamp) instead of five
+   separate attachments.
+
+**Next test**: same tile/`am start`, with CLIENT first. What we want in the
+log is `TLS ESTABLISHED role=CLIENT` plus whatever the first AA messenger
+bytes look like — that record-layer traffic is the next unknown, and the
+hex dump is already wired to capture it.

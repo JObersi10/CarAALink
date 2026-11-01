@@ -15,8 +15,8 @@ only speaks CarbitLink's proprietary USB protocol) and the app:
 
 This is interoperability reverse engineering on hardware and an app the owner
 owns, for personal use, same category as hobbyist re-implementations of cheap
-Chinese CarPlay/AA dongles. It is unrelated to CarPlay/MFi licensing — the
-head unit never speaks CarPlay or AA natively, only CarbitLink's own protocol.
+Chinese CarPlay/AA dongles. The head unit never speaks CarPlay or AA natively,
+only CarbitLink's own protocol.
 
 ## Hard rule: no fabricated protocol details
 

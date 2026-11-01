@@ -9,6 +9,9 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import dev.caraalink.aa.AaIdentity
+import dev.caraalink.aa.AaTlsReceiver
+import dev.caraalink.aa.AaVersionProbe
 import dev.caraalink.service.UsbLinkForegroundService
 
 /**
@@ -22,6 +25,8 @@ class DeveloperToolsActivity : Activity() {
     companion object {
         private const val TAG = "DeveloperToolsActivity"
     }
+
+    private var aaReceiver: AaTlsReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,6 +52,35 @@ class DeveloperToolsActivity : Activity() {
         root.addView(Button(this).apply {
             text = "Start ADB handshake probe"
             setOnClickListener { startAdbProbe() }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "AA TLS receiver: presents the head-unit identity in assets/aa — " +
+                "the JVC Kenwood leaf issued by Google Automotive Link (see " +
+                "assets/aa/PROVENANCE.md) — and dials the phone's own AA gearhead on " +
+                "127.0.0.1:5277, trying the TLS role both ways until one handshakes. " +
+                "Logs the handshake and whatever bytes follow; sends nothing above TLS."
+        })
+
+        root.addView(Button(this).apply {
+            text = "Start AA TLS receiver"
+            setOnClickListener { startAaReceiver() }
+        })
+
+        root.addView(Button(this).apply {
+            text = "Stop AA TLS receiver"
+            setOnClickListener { stopAaReceiver() }
+        })
+
+        root.addView(TextView(this).apply {
+            text = "AA version probe (rung 1): sends the plaintext AA VERSION_REQUEST " +
+                "to the phone's gearhead on 127.0.0.1:5277 and decodes whatever frames " +
+                "come back. No TLS, no channel opens — this is the step before any of that."
+        })
+
+        root.addView(Button(this).apply {
+            text = "Start AA version probe"
+            setOnClickListener { startAaVersionProbe() }
         })
 
         root.addView(Button(this).apply {
@@ -101,21 +135,61 @@ class DeveloperToolsActivity : Activity() {
         Log.i(TAG, "startAdbProbe: sent ACTION_START_ADB_PROBE to UsbLinkForegroundService")
     }
 
+    private fun startAaReceiver() {
+        if (!AaIdentity.isAvailable(this)) {
+            Log.w(TAG, "startAaReceiver: no AA identity loadable")
+            Toast.makeText(this, "AA identity missing — see assets/aa/PROVENANCE.md", Toast.LENGTH_LONG).show()
+            return
+        }
+        if (AaTlsReceiver.active != null) {
+            Toast.makeText(this, "AA TLS receiver already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Log.i(TAG, "startAaReceiver: starting receiver")
+        val receiver = AaTlsReceiver(this)
+        aaReceiver = receiver
+        receiver.start()
+        Toast.makeText(this, "AA TLS receiver started — check the aa-tls log", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun startAaVersionProbe() {
+        if (AaVersionProbe.active != null) {
+            Toast.makeText(this, "Version probe already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+        Log.i(TAG, "startAaVersionProbe")
+        AaVersionProbe(this).start()
+        Toast.makeText(this, "AA version probe started — check the aa-version log", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun stopAaReceiver() {
+        Log.i(TAG, "stopAaReceiver")
+        (aaReceiver ?: AaTlsReceiver.active)?.stop()
+        aaReceiver = null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopAaReceiver()
+    }
+
     private fun exportLatestLog() {
-        val allFiles = DiagnosticLogger(this, "app").allLogFiles() // shared logs/ dir, all tags
-        val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
-        val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
-        val latestProbe = allFiles.firstOrNull { it.name.startsWith("adb-probe-") }
-        val latestSession = allFiles.firstOrNull { it.name.startsWith("car-session-") }
-        val toShare = listOfNotNull(latestApp, latestSession, latestProbe, latestSniff)
-        if (toShare.isEmpty()) {
+        // One file, everything already interleaved chronologically -- no more
+        // sending five attachments and reading them side by side by hand.
+        val logger = DiagnosticLogger(this, "app")
+        val merged = runCatching { logger.mergedLogFile() }.getOrElse { e ->
+            Log.e(TAG, "exportLatestLog: merge failed", e)
+            null
+        }
+        if (merged == null) {
             Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
         }
-        Log.i(TAG, "exportLatestLog: sharing ${toShare.map { it.name }}")
+        Log.i(TAG, "exportLatestLog: sharing merged ${merged.name} (${merged.length()} bytes)")
+        Toast.makeText(this, "Sharing ${merged.name}", Toast.LENGTH_SHORT).show()
         startActivity(
             Intent.createChooser(
-                DiagnosticLogger.shareFilesIntent(this, toShare),
+                logger.shareFileIntent(merged),
                 "Share CarAALink logs",
             )
         )

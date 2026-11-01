@@ -57,6 +57,38 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
 
     fun allLogFiles(): List<File> = logDir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
 
+    /**
+     * Merges every tag's most recent log into ONE chronologically interleaved
+     * file, so a single share is enough to see the app log, the car session,
+     * the AA TLS receiver and the USB probes side by side on the same
+     * timeline. Lines are sorted on their leading timestamp, which is the
+     * `yyyy-MM-dd'T'HH:mm:ss.SSS` prefix [log] writes.
+     */
+    fun mergedLogFile(): File? {
+        val latestPerTag = allLogFiles()
+            .filterNot { it.name.startsWith("all-logs-") }
+            .groupBy { TAG_STAMP.find(it.name)?.groupValues?.get(1) ?: it.name }
+            .mapNotNull { (_, files) -> files.maxByOrNull { it.lastModified() } }
+        if (latestPerTag.isEmpty()) return null
+
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+        val out = File(logDir, "all-logs-$stamp.log")
+        val merged = latestPerTag
+            .flatMap { f -> f.readLines() }
+            .filter { it.isNotBlank() }
+            .sortedBy { it.take(23) }
+
+        out.writeText(
+            buildString {
+                append("# CarAALink merged log $stamp\n")
+                append("# sources: ${latestPerTag.map { it.name }.sorted().joinToString(", ")}\n")
+                append("# lines: ${merged.size}\n\n")
+                merged.forEach { append(it).append('\n') }
+            }
+        )
+        return out
+    }
+
     /** Builds a share-sheet [Intent] for the most recent log file. */
     fun shareLatestIntent(): Intent = shareFileIntent(currentFile)
 
@@ -74,6 +106,9 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
     }
 
     companion object {
+        /** `car-session-20261101-163925.log` -> `car-session`. */
+        private val TAG_STAMP = Regex("""^(.+)-\d{8}-\d{6}\.log$""")
+
         /** Shares several files (e.g. the app log and the USB sniffer log) in one go. */
         fun shareFilesIntent(context: Context, files: List<File>): Intent {
             val uris = ArrayList(files.map {

@@ -7,7 +7,54 @@ wireless-debugging adb) against the real car head unit. See
 `roadmap.md` for full cited detail — this file is the "what actually
 happened and what to do next" summary.
 
-## LATEST (2026-11-01, late) — read this first
+**Two separate workstreams live here now:**
+1. **CarbitLink mirroring** — works on the car (below).
+2. **Android Auto receiver** — new, in progress, stops at service discovery.
+   Full detail in [`aa-receiver-notes.md`](aa-receiver-notes.md); ready-to-paste
+   continuation prompt in [`PROMPT-FOR-CLAUDE.md`](PROMPT-FOR-CLAUDE.md).
+
+## LATEST — Android Auto receiver (2026-11-01, in progress)
+
+The "Android Auto" tile is no longer a stub: it drives a real AA receiver.
+Full detail, citations and dead ends are in
+[`aa-receiver-notes.md`](aa-receiver-notes.md). Summary:
+
+**Working, reproducible on hardware:**
+- Version exchange: TX `00 03 00 06 00 01 00 01 00 06` → RX
+  `00 02 00 01 00 07 00 00` (VERSION_RESPONSE 1.7, status 0).
+- TLS handshake carried **inside** AA frames as `ENCAPSULATED_SSL` (msg id 3).
+  Pinned to TLSv1.2 with a leaf-only client cert so the flight sizes match the
+  reference app exactly (ClientHello 138 B, cert flight 1191 B, final 51 B).
+  The phone's `CarService` cert chains to the same Google Automotive Link CA
+  we ship, so both ends are in one PKI.
+- **`AUTH_COMPLETE` (PLAIN, msg id 4, `AuthResponse{status=0}`) immediately
+  after the handshake** — this was the step that unblocked everything. Without
+  it the phone stays silent forever. With it, the phone sends
+  `SERVICE_DISCOVERY_REQUEST` (`label_text='Android'`,
+  `device_name='samsung SM-S938B'`, `phone_info`).
+
+**Blocked:** the phone rejects our `SERVICE_DISCOVERY_RESPONSE` and closes the
+socket ~0.82 s later (`EOFException`; gearhead logs `GEARHEAD_ENDPOINTS_FAILED`).
+Our protobuf decodes cleanly field-by-field, so it is not malformed — something
+the phone needs is missing. Next step is to diff against openauto's exact
+response rather than keep guessing.
+
+**Resolution question — settled:** AA has **no 1920x720 mode** (only
+800x480 / 1280x720 / 1920x1080 / 2560x1440 / 3840x2160 + portrait) and never
+renders at the panel size. openauto just does
+`videoWidget_->setGeometry(screenGeometry)` and scales. So we keep
+**1920x1080 @30 fps H.264 Baseline (16:9)** and let the CarbitLink side fit it
+into the car's 1920x720. `width_margin`/`height_margin` exist but their exact
+semantics are unconfirmed; both default to 0.
+
+**Operational trap (cost hours):** gearhead's head-unit server binds 5277,
+fills its accept backlog and never calls `accept()`. You connect, get silence
+forever. `adb shell "ss -ltn | grep 5277"` with a non-zero `Recv-Q` means
+stale — the only fix is the UI toggle (AA Settings → ⋮ → Stop, then ⋮ → Start).
+Retrying makes it worse; one clean attempt after a fresh toggle is the winning
+pattern.
+
+## CarbitLink mirroring (2026-11-01, late) — read this second
 
 **IT WORKS ON THE CAR.** The head unit shows CarAALink's own home screen,
 plays live phone-screen mirroring, and takes touch. This is a working
@@ -48,16 +95,17 @@ committed on top.
   manifest USB-attach receiver was removed. Together these stopped the app
   from holding the accessory and blocking Android's app chooser.
 
-### HARD LINE — do not cross (owner pushed on this repeatedly; still no)
-Android Auto / CarPlay projection to the car is NOT implemented and will
-not be faked. Real AA/CarPlay receivers pass a TLS handshake against a
-Google/Apple key; PhoneAuto, open-headunit ("self mode" included), and
-DiPlay all embed a *stolen* extracted key to clear it. We do NOT embed,
-fetch, gitignore-and-BYO, or copy that key or those projects' code — a
-self-signed/own-info cert cannot pass the check, so there is no clean
-path today. The "Android Auto" tile is a placeholder ("coming soon").
-If a legit path appears (Android-for-Cars partner cert), the forwarding
-half is already built.
+### AA projection — status
+
+Superseded by the "Android Auto receiver" section at the top and
+[`aa-receiver-notes.md`](aa-receiver-notes.md). Short version: rungs 1-3 of the
+AA protocol work on hardware through the phone's `SERVICE_DISCOVERY_REQUEST`;
+the phone then rejects our `SERVICE_DISCOVERY_RESPONSE` and drops the link. No
+video/touch is wired to the car yet.
+
+The tiles on the car home screen are unchanged: "Phone screen" and "Settings"
+work, "Android Auto" launches the AA receiver (and currently ends in the
+rejection above rather than showing AA).
 
 ### Next ideas (owner's list, not yet built)
 Music now-playing + transport controls and recent notifications on the car

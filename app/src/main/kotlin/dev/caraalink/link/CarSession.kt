@@ -5,6 +5,7 @@ import android.graphics.Color
 import android.hardware.usb.UsbAccessory
 import android.media.projection.MediaProjection
 import android.util.Log
+import dev.caraalink.aa.AaTlsReceiver
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.R
@@ -39,6 +40,7 @@ class CarSession(
     private var encoder: CarVideoEncoder? = null
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
+    private var aaReceiver: AaTlsReceiver? = null
     private val display = CarDisplay(context, listOf(
         CarHomePresentation.Tile("Android Auto", R.drawable.ic_tile_android_auto, Color.parseColor("#1E8E3E")) { openAndroidAuto() },
         CarHomePresentation.Tile("Phone screen", R.drawable.ic_tile_phone_screen, Color.parseColor("#1A73E8")) { openMirror() },
@@ -117,6 +119,8 @@ class CarSession(
     }
 
     private fun release() {
+        aaReceiver?.stop()
+        aaReceiver = null
         weatherThread?.interrupt()
         weatherThread = null
         android.os.Handler(android.os.Looper.getMainLooper()).post { features.stop() }
@@ -133,8 +137,27 @@ class CarSession(
 
     // --- car home screen actions ---
 
+    /**
+     * Starts a real AA receiver instead of the old "coming soon" stub: dials
+     * the phone's own gearhead (127.0.0.1:5277) and opens the TLS handshake
+     * as a client presenting the head-unit identity in assets/aa.
+     */
     private fun openAndroidAuto() {
-        display.setStatus("Android Auto: coming soon")
+        if (AaTlsReceiver.active != null) {
+            display.setStatus("AA: receiver already running")
+            return
+        }
+        display.setStatus("AA: connecting to the phone's gearhead…")
+        logger.log("openAndroidAuto: starting AA TLS receiver")
+        val receiver = AaTlsReceiver(context, AaTlsReceiver.Config(
+            mode = AaTlsReceiver.Mode.DIAL,
+            host = "127.0.0.1",
+            port = 5277,
+            tlsRole = AaTlsReceiver.TlsRole.CLIENT,
+        ))
+        receiver.statusSink = { display.setStatus(it) }
+        aaReceiver = receiver
+        receiver.start()
     }
 
     @Volatile private var mirrorWanted = false

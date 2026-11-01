@@ -16,6 +16,9 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.android.material.button.MaterialButton
+import dev.caraalink.aa.AaTlsReceiver
+import dev.caraalink.aa.AaSessionProbe
+import dev.caraalink.aa.AaVersionProbe
 import dev.caraalink.accessibility.HeadUnitServerLauncher
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
@@ -44,6 +47,7 @@ class MainActivity : Activity() {
         render()
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
+        maybeStartAaTls(intent)
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -65,6 +69,78 @@ class MainActivity : Activity() {
      * picked. MainActivity only ever gets this intent when CarAALink is the
      * one chosen, so there's no race with CarbitLink anymore.
      */
+    /**
+     * Debug-build-only headless entry point for the AA TLS receiver, so it can
+     * be driven over adb rather than by tapping Developer Tools:
+     *
+     *   adb shell am start -n dev.caraalink/.MainActivity --es aa_tls start \
+     *       [--es aa_mode dial|listen] [--es aa_role server|client|auto] \
+     *       [--ei aa_port 5277] [--es aa_host 127.0.0.1]
+     *
+     *   adb shell am start -n dev.caraalink/.MainActivity --es aa_tls stop
+     *
+     * Refuses to do anything outside a debuggable build, so a release APK
+     * can't be poked into opening a listener from the shell.
+     */
+    private fun maybeStartAaTls(intent: Intent?) {
+        val probe = intent?.getStringExtra("aa_probe")
+        if (probe != null) {
+            if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                when (probe) {
+                    "stop" -> { AaVersionProbe.active?.stop(); AaSessionProbe.active?.stop() }
+                    "session" -> if (AaSessionProbe.active == null) {
+                        val cfg = AaSessionProbe.Config(
+                            versionMajor = intent.getIntExtra("aa_vmajor", -1).takeIf { it >= 0 },
+                            versionMinor = intent.getIntExtra("aa_vminor", -1).takeIf { it >= 0 },
+                        )
+                        AaSessionProbe(this, cfg).start()
+                    }
+                    else -> if (AaVersionProbe.active == null) AaVersionProbe(this).start()
+                }
+            }
+            return
+        }
+
+        val op = intent?.getStringExtra("aa_tls") ?: return
+        val debuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) {
+            Log.w(TAG, "aa_tls='$op' ignored: not a debuggable build")
+            return
+        }
+
+        if (op == "stop") {
+            Log.i(TAG, "aa_tls: stopping receiver")
+            AaTlsReceiver.active?.stop()
+            Toast.makeText(this, "AA TLS receiver stopped", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (AaTlsReceiver.active != null) {
+            Log.w(TAG, "aa_tls: receiver already running, ignoring '$op'")
+            Toast.makeText(this, "AA TLS receiver already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val mode = when (intent.getStringExtra("aa_mode")?.lowercase()) {
+            "listen" -> AaTlsReceiver.Mode.LISTEN
+            else -> AaTlsReceiver.Mode.DIAL
+        }
+        val role = when (intent.getStringExtra("aa_role")?.lowercase()) {
+            "server" -> AaTlsReceiver.TlsRole.SERVER
+            "client" -> AaTlsReceiver.TlsRole.CLIENT
+            else -> AaTlsReceiver.TlsRole.AUTO
+        }
+        val config = AaTlsReceiver.Config(
+            mode = mode,
+            host = intent.getStringExtra("aa_host") ?: "127.0.0.1",
+            port = intent.getIntExtra("aa_port", 5277),
+            tlsRole = role,
+        )
+        Log.i(TAG, "aa_tls: starting receiver $config")
+        AaTlsReceiver(this, config).start()
+        Toast.makeText(this, "AA TLS receiver: ${mode.name}/${role.name}", Toast.LENGTH_SHORT).show()
+    }
+
     private fun maybeAutoStartOnAttach(intent: Intent?) {
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
         @Suppress("DEPRECATION")
@@ -107,6 +183,7 @@ class MainActivity : Activity() {
         setIntent(intent)
         Log.i(TAG, "onNewIntent: action=${intent.action}")
         maybeAutoStartOnAttach(intent)
+        maybeStartAaTls(intent)
     }
 
     private fun maybeShowOnboarding() {
