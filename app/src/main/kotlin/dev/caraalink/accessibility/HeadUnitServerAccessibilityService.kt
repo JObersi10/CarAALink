@@ -1,18 +1,24 @@
 package dev.caraalink.accessibility
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import dev.caraalink.MainActivity
 
 /**
  * Automates the one step that's actually safe to automate: once Android
- * Auto's own Settings screen is in front, open its overflow menu and tap
- * "Start head unit server". The "tap Version 10x" developer-mode toggle is
- * deliberately NOT automated here.
+ * Auto's own Settings screen is in front, open its overflow menu, detect
+ * whether the head unit server is currently running (menu shows "Stop...")
+ * or not ("Start..."), and tap whichever is actually present -- a real
+ * toggle instead of blindly tapping "Start" even when it's already on. Once
+ * that tap lands, CarAALink is brought back to the front automatically. The
+ * "tap Version 10x" developer-mode toggle is deliberately NOT automated
+ * here.
  *
  * CONFIRMED by decompiling PhoneAuto-beta-2027-01-19.apk (jadx, this
  * session — see claude/roadmap.md): its own
@@ -90,18 +96,21 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
         val root = rootInActiveWindow ?: return
         try {
-            if (clickExactText(root, START_TEXTS)) {
-                Log.i(TAG, "Tapped 'Start head unit server'")
-                deactivate(pressBack = false)
-                return
-            }
-
-            if (overflowOpened && findExactText(root, STOP_TEXTS) != null) {
-                // Menu shows "Stop..." -- it's already running. Leave it
-                // alone, just close the menu.
-                Log.i(TAG, "Head unit server already running")
-                deactivate(pressBack = true)
-                return
+            if (overflowOpened) {
+                // Detect current state from whichever label the menu is
+                // actually showing, then tap that one -- this is the toggle.
+                val startNode = findExactText(root, START_TEXTS)
+                val stopNode = findExactText(root, STOP_TEXTS)
+                val target = startNode ?: stopNode
+                if (target != null) {
+                    val label = if (startNode != null) "Start" else "Stop"
+                    if (clickUpToAncestor(target)) {
+                        Log.i(TAG, "Head unit server was ${if (startNode != null) "off" else "on"} -- tapped '$label head unit server'")
+                        deactivate(pressBack = false)
+                        returnToCarAALink()
+                        return
+                    }
+                }
             }
 
             if (!overflowOpened && clickByDescription(root, OVERFLOW_DESCRIPTIONS)) {
@@ -119,6 +128,18 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
         if (pressBack) {
             handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 600L)
         }
+    }
+
+    /** Hands focus back to CarAALink once the toggle tap has landed. */
+    private fun returnToCarAALink() {
+        handler.postDelayed({
+            runCatching {
+                startActivity(
+                    Intent(this, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                )
+            }
+        }, 700L)
     }
 
     private fun findExactText(root: AccessibilityNodeInfo, candidates: Array<String>): AccessibilityNodeInfo? {
