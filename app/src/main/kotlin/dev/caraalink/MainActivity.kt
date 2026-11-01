@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.util.TypedValue
 import android.view.ViewGroup
 import android.widget.LinearLayout
@@ -25,11 +26,13 @@ import dev.caraalink.settings.SettingsActivity
 class MainActivity : Activity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val PREF_ONBOARDING_SHOWN = "onboarding_shown"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Log.i(TAG, "onCreate: launch intent action=${intent?.action} extras=${intent?.extras}")
         render()
         maybeShowOnboarding()
     }

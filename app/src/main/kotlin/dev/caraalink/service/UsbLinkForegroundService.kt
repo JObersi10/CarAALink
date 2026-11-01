@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import dev.caraalink.MainActivity
 import dev.caraalink.connection.ConnectionPhase
@@ -46,22 +47,30 @@ class UsbLinkForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand: action=${intent?.action}")
         when (intent?.action) {
             ACTION_START_SNIFFER -> {
                 val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
                 if (accessory != null) {
+                    Log.i(TAG, "onStartCommand: ACTION_START_SNIFFER with accessory=${accessory.manufacturer}/${accessory.model}")
                     pendingAccessory = accessory
                     startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot))
                     acquireWakeLock()
                     beginSniffing(accessory)
+                } else {
+                    Log.w(TAG, "onStartCommand: ACTION_START_SNIFFER with no EXTRA_ACCESSORY")
                 }
             }
-            ACTION_STOP -> stopSelfCleanly()
+            ACTION_STOP -> {
+                Log.i(TAG, "onStartCommand: ACTION_STOP")
+                stopSelfCleanly()
+            }
         }
         return START_NOT_STICKY
     }
 
     private fun beginSniffing(accessory: UsbAccessory) {
+        Log.i(TAG, "beginSniffing: ${accessory.manufacturer}/${accessory.model}")
         sniffer?.stop()
         val s = UsbSnifferDiagnostic(this)
         sniffer = s
@@ -158,6 +167,7 @@ class UsbLinkForegroundService : Service() {
     }
 
     companion object {
+        private const val TAG = "UsbLinkForegroundService"
         private const val CHANNEL_ID = "usb_link"
         private const val NOTIFICATION_ID = 1
 

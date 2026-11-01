@@ -16,6 +16,10 @@ captures/
 .cxx/
 *.keystore
 *.jks
+# Exception: a shared, non-secret DEBUG-only key committed on purpose so
+# local builds and CI produce the same signature (see app/build.gradle.kts).
+# Never do this for a release keystore.
+!app/debug.keystore
 
 # USB capture artifacts (may contain session-specific data)
 *.pcap

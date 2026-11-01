@@ -15,6 +15,20 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        // Committed on purpose (see .gitignore) so every debug build --
+        // local, CI, anyone's machine -- signs with the same key. Without
+        // this, each environment's auto-generated ~/.android/debug.keystore
+        // differs, so swapping a locally-built APK for a CI-built one (or
+        // vice versa) fails to install with INSTALL_FAILED_UPDATE_INCOMPATIBLE.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
