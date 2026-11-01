@@ -180,14 +180,6 @@ class UsbLinkForegroundService : Service() {
     }
 
     private val phoneActions = object : CarSession.PhoneActions {
-        override fun openAndroidAuto() {
-            val intent = packageManager.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE)
-                ?: packageManager.getLaunchIntentForPackage(GOOGLE_MAPS_PACKAGE)
-                ?: return
-            runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                .onFailure { Log.w(TAG, "openAndroidAuto failed", it) }
-        }
-
         override fun requestScreenCapture() {
             val ctx = this@UsbLinkForegroundService
             val intent = Intent(ctx, ProjectionRequestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -345,7 +337,5 @@ class UsbLinkForegroundService : Service() {
         const val ACTION_PROJECTION_GRANTED = "dev.caraalink.service.action.PROJECTION_GRANTED"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
-        private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
-        private const val GOOGLE_MAPS_PACKAGE = "com.google.android.apps.maps"
     }
 }

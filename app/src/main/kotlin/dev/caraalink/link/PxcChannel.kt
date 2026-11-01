@@ -28,7 +28,41 @@ class PxcChannel(
 
     override fun onClose(stream: AdbTransport.Stream) {
         buffers.remove(stream.localId)
-        channelOf.remove(stream.localId)
+        if (channelOf.remove(stream.localId) == P2C_CHANNEL) stopHeartbeat(stream)
+    }
+
+    private var heartbeat: Thread? = null
+    @Volatile private var p2cStream: AdbTransport.Stream? = null
+
+    /** Sends a phone-to-car request on the P2C channel; false if it isn't open. */
+    fun sendP2C(cmd: Int, body: ByteArray): Boolean {
+        val s = p2cStream?.takeIf { !it.closed } ?: return false
+        logger.log("PXC P2C send 0x${hex(cmd)} len=${body.size}" + preview(body))
+        s.write(head(cmd, body, 0))
+        return true
+    }
+
+    /**
+     * Channel 0x20000 is phone-to-car (CarbitLink's PXCForCar-P2C): the phone
+     * sends requests there, including the 0x70000000 keep-alive the car also
+     * sends us. Without it the car drops the session ~5 s in.
+     */
+    private fun startHeartbeat(stream: AdbTransport.Stream) {
+        heartbeat?.interrupt()
+        heartbeat = Thread({
+            try {
+                while (!stream.closed) {
+                    stream.write(head(HEARTBEAT, ByteArray(0), 0))
+                    Thread.sleep(1000)
+                }
+            } catch (_: InterruptedException) {
+            }
+        }, "PxcHeartbeat").also { it.isDaemon = true; it.start() }
+    }
+
+    private fun stopHeartbeat(stream: AdbTransport.Stream) {
+        heartbeat?.interrupt()
+        heartbeat = null
     }
 
     override fun onData(stream: AdbTransport.Stream, data: ByteArray) {
@@ -55,9 +89,20 @@ class PxcChannel(
             channelOf[stream.localId] = cmd
             logger.log("PXC channel open 0x${hex(cmd)} on stream ${stream.localId}")
             stream.write(head(cmd + 1, ByteArray(0), extra))
+            if (cmd == P2C_CHANNEL) {
+                p2cStream = stream
+                startHeartbeat(stream)
+            }
             return
         }
-        logger.log("PXC C2P 0x${hex(cmd)} len=${body.size}" + preview(body))
+        if (channelOf[stream.localId] == P2C_CHANNEL) {
+            // Replies to our requests; never answer these.
+            if (cmd != HEARTBEAT + 1) logger.log("PXC P2C reply 0x${hex(cmd)} len=${body.size}" + preview(body))
+            return
+        }
+        if (cmd != HEARTBEAT && cmd != 0x10750 && cmd != 0x10430) {
+            logger.log("PXC C2P 0x${hex(cmd)} len=${body.size}" + preview(body))
+        }
         when {
             cmd == CLIENT_INFO -> {
                 runCatching { onClientInfo(JSONObject(String(body, Charsets.UTF_8))) }
@@ -102,5 +147,7 @@ class PxcChannel(
 
     companion object {
         const val CLIENT_INFO = 0x10010
+        const val P2C_CHANNEL = 0x20000
+        const val HEARTBEAT = 0x70000000
     }
 }

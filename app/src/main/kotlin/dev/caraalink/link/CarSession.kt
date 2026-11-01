@@ -28,7 +28,6 @@ class CarSession(
 ) : MirrorHost {
 
     interface PhoneActions {
-        fun openAndroidAuto()
         fun requestScreenCapture()
     }
 
@@ -36,11 +35,31 @@ class CarSession(
     private var transport: AdbTransport? = null
     private var config: CaptureConfig? = null
     private var encoder: CarVideoEncoder? = null
+    private var pxc: PxcChannel? = null
     private val display = CarDisplay(context, listOf(
         CarHomePresentation.Tile("Android Auto", "▲", Color.parseColor("#1E8E3E")) { openAndroidAuto() },
         CarHomePresentation.Tile("Phone screen", "▣", Color.parseColor("#1A73E8")) { openMirror() },
         CarHomePresentation.Tile("Settings", "⚙", Color.parseColor("#5F6368")) { showSettings() },
-    ))
+    ), onCarHome = { goToCarHome() })
+
+    /**
+     * Ask the head unit to show its own home screen. Uses CarbitLink's
+     * APPSTATUS_BACKGROUND (P2C 0x20030, mode 2 = phone UI not on screen),
+     * which is how their app hands the screen back to the car. EXPERIMENTAL:
+     * this head unit reports supportBackDesktop=false.
+     */
+    private fun goToCarHome() {
+        val c = config
+        val body = JSONObject()
+            .put("mode", 2)
+            .put("displayRotation", 0)
+            .put("width", c?.width ?: 0)
+            .put("height", c?.height ?: 0)
+            .put("enableAccessibility", true)
+            .put("enableAOAHid", false)
+            .toString().toByteArray(Charsets.UTF_8)
+        if (pxc?.sendP2C(APPSTATUS_BACKGROUND, body) != true) display.setStatus("Car home: not connected yet")
+    }
 
     private val frameLock = Any()
     @Volatile private var dataStream: AdbTransport.Stream? = null
@@ -64,7 +83,7 @@ class CarSession(
             it.copy(phase = ConnectionPhase.ATTACHED, accessoryManufacturer = accessory.manufacturer,
                 accessoryModel = accessory.model, lastError = null)
         }
-        val pxc = PxcChannel(logger) { info -> onClientInfo(info) }
+        val pxc = PxcChannel(logger) { info -> onClientInfo(info) }.also { this.pxc = it }
         val ctrl = MirrorControlChannel(logger, this)
         val data = MirrorDataChannel(logger, this)
         transport = AdbTransport(conn, logger, { service ->
@@ -105,6 +124,11 @@ class CarSession(
     fun setProjection(projection: MediaProjection) {
         display.setProjection(projection)
         logger.log("Screen capture granted")
+        // The user asked for the mirror before granting; open it now instead of needing a second tap.
+        if (mirrorWanted) {
+            mirrorWanted = false
+            display.showMirror()
+        }
     }
 
     private fun release() {
@@ -124,12 +148,15 @@ class CarSession(
     // --- car home screen actions ---
 
     private fun openAndroidAuto() {
-        phone.openAndroidAuto()
-        if (!display.showMirror()) display.setStatus("Opened Android Auto on the phone. Tap Phone screen to mirror it here.")
+        display.setStatus("Android Auto: coming soon")
     }
 
+    @Volatile private var mirrorWanted = false
+
     private fun openMirror() {
-        if (!display.showMirror()) askForCapture()
+        if (display.showMirror()) return
+        mirrorWanted = true
+        askForCapture()
     }
 
     private fun askForCapture() {
@@ -296,6 +323,7 @@ class CarSession(
     companion object {
         private const val TAG = "CarSession"
         private const val DEFAULT_BITRATE = 3_000_000
+        private const val APPSTATUS_BACKGROUND = 0x20030
         private const val MAX_PULL_QUEUE = 8
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
     }
