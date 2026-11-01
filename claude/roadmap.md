@@ -8,8 +8,8 @@ Last updated: 2026-10-31 (after first RE pass)
 |---|---|
 | USB role (host vs accessory) | **CONFIRMED** — phone is USB *accessory*, head unit is USB *host* |
 | USB VID/PID / accessory ID | **CONFIRMED** — AOA accessory match, not VID/PID (manufacturer `Carbit`, model `CarbitDriverOversea`) |
-| Handshake sequence | PARTIAL — standard AOA handshake + an RSA-signed auth step; exact byte sequence not extracted (native-only) |
-| Packet/frame format | PARTIAL — confirmed a `Packet` abstraction multiplexing logical services; header/length/checksum/crypto layout unresolved |
+| Handshake sequence | **PARTIALLY CONFIRMED by live capture (2026-11-01)** — the head unit's first bytes over the accessory link are a standard **ADB protocol CONNECT** (`"CNXN"` + `"host::..."` banner), not a CarbitLink-specific handshake. See capture below. The RSA-signed auth step from static RE may be a separate/later step, or may not apply if the real transport is ADB-based — open question. |
+| Packet/frame format | **PARTIALLY CONFIRMED by live capture** — see below. Still need bytes beyond the initial ADB CONNECT to know if CarbitLink rides on top of ADB's own OPEN/WRTE/OKAY/CLSE framing or switches to something else after the handshake. |
 | Crypto / obfuscation | PARTIAL — RSA auth/signature path confirmed to exist; no byte-level detail yet |
 | Video transport | **CONFIRMED** — software H.264 (x264) via bundled FFmpeg, YUV in, Annex-B NAL out (MJPEG/PNG fallback also built in) |
 | Touch/control wire format | PARTIAL — Java-level struct confirmed (`EPTouchEventData{type,x,y,slot}`, `EPBtnCode`); on-wire byte encoding unconfirmed |
@@ -20,6 +20,87 @@ Last updated: 2026-10-31 (after first RE pass)
 
 Every row above is cited to a specific file/class/string in the pass notes
 below, per `claude.md`'s rule against fabricating protocol details.
+
+## Live USB capture (2026-11-01) — the handshake is literally ADB
+
+First real on-device capture, via the in-app USB sniffer (`UsbSnifferDiagnostic`,
+Developer Tools → "Start USB sniffer"), with the real CarbitLink app
+(`net.easyconn.carman.wws`) force-stopped first so our app actually got
+`openAccessory()` (confirmed — earlier attempts had CarbitLink's own process
+holding it; `adb shell am force-stop net.easyconn.carman.wws` before
+plugging in, then picking CarAALink in Android's USB resolver chooser, fixed
+that).
+
+Exact captured bytes (hex+ASCII, from the sniffer's own log file):
+
+```
+RX (24 bytes): 43 4E 58 4E 00 00 00 01 00 40 00 00 0B 00 00 00 00 00 00 00 BC B1 A7 B1  | CNXN....@..............
+RX (11 bytes): 68 6F 73 74 3A 3A 73 52 67 56 00  | host::sRgV.
+```
+
+`43 4E 58 4E` = ASCII `"CNXN"` — this is the **Android Debug Bridge (ADB)
+wire protocol's CONNECT command**, not a CarbitLink-specific magic number.
+The 24-byte header matches ADB's standard message struct
+(`command, arg0, arg1, data_length, data_check, magic`), and the following
+11 bytes (`"host::sRgV\0"`) is a classic ADB connect banner
+(`host::<features-or-random>`). Confirmed independently by system logs from
+the same session: `AccessoryManager: openAccessory: ... initJAdbd ok` fires
+on every real `openAccessory()` call (ours and CarbitLink's), and kernel
+uevents show `ACCESSORY=GETPROTOCOL` / `ACCESSORY=SENDSTRING` right as the
+link comes up — consistent with the AOA accessory channel being used to
+carry an ADB session rather than (or in addition to) CarbitLink's own
+`CarbitEPSDK::Packet` framing found in `libEPSDK.so`.
+
+**Working theory, not yet confirmed further**: this is a known pattern in
+cheap CarPlay/AA dongles — screen-mirror by enabling USB debugging and
+driving the phone via plain ADB (`screenrecord`/`input`) instead of a real
+custom protocol. If that's what's happening here, implementing our side of
+this would mean implementing the **public, fully-documented ADB protocol**
+(see AOSP's `system/core/adb/OVERVIEW.TXT`), not reverse-engineering
+anything further — a much smaller job than the native `libEPSDK.so` framing
+would otherwise be. Still unconfirmed: whether this ADB channel carries the
+*actual* mirroring data, or is a side channel for something else (licensing
+check, diagnostics) while `libEPSDK.so`'s `AOATransport`/`Packet` carries
+the real video/audio/touch. Capture ended after ~7s
+(`read interrupted by close() on another thread` — our own sniffer doesn't
+speak ADB back, so whatever's on the other end gave up). Next capture should
+let the connection run longer and/or have our app at least complete a
+minimal ADB CONNECT handshake (we control the device side; this is within
+reach since the protocol is public) to see what it asks for next.
+
+## Real crashes found and fixed (2026-11-01)
+
+Live testing surfaced two uncaught-exception crashes in `UsbSnifferDiagnostic`'s
+reconnect path, both stemming from the same root cause: retrying with a
+`UsbAccessory` reference that's gone stale after the accessory was
+physically unplugged.
+
+1. `UsbManager.openAccessory(accessory)` **throws**
+   `IllegalArgumentException("no accessory attached")` rather than
+   returning null when the accessory is no longer attached — `UsbAccessoryConnection.open()`
+   only null-checked the return value, not exceptions, so this crashed the
+   whole app. Fixed: wrapped in try/catch, treated as "not attached."
+2. `Service.startForeground(..., connectedDeviceType)` **throws**
+   `SecurityException` once the accessory's USB permission grant has lapsed
+   (message: `"requires permissions: all of [FOREGROUND_SERVICE_CONNECTED_DEVICE]
+   and any of [..., USB Device, USB Accessory]"` — the OS checks for an
+   active USB permission grant as one of the qualifying conditions for this
+   FGS type). Fixed: wrapped in try/catch, transitions to an ERROR state and
+   stops the service instead of crashing.
+
+Also added: `UsbLinkForegroundService`'s reconnect loop now checks
+`UsbManager.accessoryList` before each retry and gives up (capped at 5
+attempts) instead of retrying forever against a device that's actually gone.
+
+**Also added this session**: a persistent in-app logger
+(`CarAALinkApplication`) that starts the moment the process starts —
+captures this process's own logcat output (crashes included) to an
+on-device file via `DiagnosticLogger`, independent of whether a live
+adb/wireless-debugging connection survives (it kept dying mid-session, which
+is what prompted this). Verbose `Log.i`/`w`/`e` calls were also added across
+`UsbAttachReceiver`, `MainActivity`, Developer Tools, and the sniffer/service
+so the logcat stream shows what's actually happening instead of relying on
+Toast text nobody captured.
 
 ## RE pass 1 findings (2026-10-31)
 

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.hardware.usb.UsbManager
 import android.os.Bundle
+import android.util.Log
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -17,6 +18,10 @@ import dev.caraalink.service.UsbLinkForegroundService
  * real app flow.
  */
 class DeveloperToolsActivity : Activity() {
+
+    companion object {
+        private const val TAG = "DeveloperToolsActivity"
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,24 +56,37 @@ class DeveloperToolsActivity : Activity() {
 
     private fun startSniffer() {
         val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val accessory = usbManager.accessoryList?.firstOrNull()
+        val list = usbManager.accessoryList
+        Log.i(TAG, "startSniffer: accessoryList size=${list?.size ?: 0}")
+        val accessory = list?.firstOrNull()
         if (accessory == null) {
+            Log.w(TAG, "startSniffer: no accessory in UsbManager.accessoryList -- nothing to sniff")
             Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
             return
         }
+        Log.i(TAG, "startSniffer: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
         val intent = Intent(this, UsbLinkForegroundService::class.java)
             .setAction(UsbLinkForegroundService.ACTION_START_SNIFFER)
             .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
         startForegroundService(intent)
+        Log.i(TAG, "startSniffer: sent ACTION_START_SNIFFER to UsbLinkForegroundService")
     }
 
     private fun exportLatestLog() {
-        val logger = DiagnosticLogger(this, "usb-sniff")
-        val latest = logger.allLogFiles().firstOrNull()
-        if (latest == null) {
-            Toast.makeText(this, "No sniffer logs yet", Toast.LENGTH_LONG).show()
+        val allFiles = DiagnosticLogger(this, "app").allLogFiles() // shared logs/ dir, all tags
+        val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
+        val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
+        val toShare = listOfNotNull(latestApp, latestSniff)
+        if (toShare.isEmpty()) {
+            Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
         }
-        startActivity(Intent.createChooser(logger.shareFileIntent(latest), "Share CarAALink USB log"))
+        Log.i(TAG, "exportLatestLog: sharing ${toShare.map { it.name }}")
+        startActivity(
+            Intent.createChooser(
+                DiagnosticLogger.shareFilesIntent(this, toShare),
+                "Share CarAALink logs",
+            )
+        )
     }
 }

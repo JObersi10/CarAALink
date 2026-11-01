@@ -32,10 +32,15 @@ class UsbSnifferDiagnostic(private val context: Context) {
     fun isRunning(): Boolean = running.get()
 
     fun start(accessory: UsbAccessory) {
-        if (!running.compareAndSet(false, true)) return
+        Log.i(TAG, "start: manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
+        if (!running.compareAndSet(false, true)) {
+            Log.w(TAG, "start: already running, ignoring")
+            return
+        }
 
         val conn = UsbAccessoryConnection.open(context, accessory)
         if (conn == null) {
+            Log.e(TAG, "start: UsbManager.openAccessory() returned null")
             logger.log("ERROR: UsbManager.openAccessory() returned null")
             ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = "openAccessory() returned null") }
             running.set(false)
@@ -43,6 +48,7 @@ class UsbSnifferDiagnostic(private val context: Context) {
         }
         connection = conn
 
+        Log.i(TAG, "start: openAccessory() succeeded, starting read loop")
         logger.log("Opened accessory manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
         ConnectionStateHolder.update {
             it.copy(
@@ -58,6 +64,7 @@ class UsbSnifferDiagnostic(private val context: Context) {
 
     fun stop() {
         if (!running.compareAndSet(true, false)) return
+        Log.i(TAG, "stop")
         connection?.close()
         connection = null
         readThread?.interrupt()
@@ -69,8 +76,10 @@ class UsbSnifferDiagnostic(private val context: Context) {
     fun shareLogIntent() = logger.shareLatestIntent()
 
     private fun readLoop(conn: UsbAccessoryConnection) {
+        Log.i(TAG, "readLoop: entering blocking read on conn.input")
         val buffer = ByteArray(16 * 1024)
         var totalRead = 0L
+        var firstRead = true
         while (running.get()) {
             val n = try {
                 conn.input.read(buffer)
@@ -80,13 +89,22 @@ class UsbSnifferDiagnostic(private val context: Context) {
                 ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = e.message) }
                 break
             }
-            if (n < 0) break
+            if (n < 0) {
+                Log.i(TAG, "readLoop: input stream reached EOF (n=$n), stopping")
+                break
+            }
             if (n == 0) continue
+
+            if (firstRead) {
+                Log.i(TAG, "readLoop: first bytes received, n=$n")
+                firstRead = false
+            }
 
             totalRead += n
             logger.logBytes("RX", buffer, n)
             ConnectionStateHolder.update { it.copy(bytesRead = totalRead) }
         }
+        Log.i(TAG, "readLoop: exiting, totalRead=$totalRead")
         running.set(false)
     }
 

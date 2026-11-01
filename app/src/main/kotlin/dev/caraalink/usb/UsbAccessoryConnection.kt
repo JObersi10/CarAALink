@@ -3,6 +3,7 @@ package dev.caraalink.usb
 import android.content.Context
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.util.Log
 import java.io.FileInputStream
 import java.io.FileOutputStream
 
@@ -25,9 +26,24 @@ class UsbAccessoryConnection private constructor(
     }
 
     companion object {
+        private const val TAG = "UsbAccessoryConnection"
+
+        /**
+         * Crash seen on real hardware (claude/roadmap.md): UsbManager.openAccessory()
+         * THROWS IllegalArgumentException("no accessory attached") -- it does not
+         * just return null -- when the accessory has been physically detached
+         * since the caller last saw it (e.g. a stale reference reused by a
+         * reconnect retry). Catch broadly here so a vanished accessory is a
+         * null return, not an uncaught crash.
+         */
         fun open(context: Context, accessory: UsbAccessory): UsbAccessoryConnection? {
             val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-            val fd = usbManager.openAccessory(accessory) ?: return null
+            val fd = try {
+                usbManager.openAccessory(accessory)
+            } catch (e: Exception) {
+                Log.w(TAG, "openAccessory threw -- treating as not attached", e)
+                null
+            } ?: return null
             val descriptor = fd.fileDescriptor
             return UsbAccessoryConnection(
                 usbManager,

@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.util.Log
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
 
@@ -20,12 +21,23 @@ import dev.caraalink.connection.ConnectionStateHolder
  * (see claude/roadmap.md); real protocol auto-start lands in Phase 3.
  */
 class UsbAttachReceiver : BroadcastReceiver() {
+
+    companion object {
+        private const val TAG = "UsbAttachReceiver"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
+        Log.i(TAG, "onReceive: action=${intent.action}")
         if (intent.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
 
         @Suppress("DEPRECATION")
         val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
-            ?: return
+        if (accessory == null) {
+            Log.w(TAG, "onReceive: ACTION_USB_ACCESSORY_ATTACHED with no EXTRA_ACCESSORY")
+            return
+        }
+
+        Log.i(TAG, "onReceive: attached manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
 
         ConnectionStateHolder.update {
             it.copy(
