@@ -7,6 +7,9 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.media.projection.MediaProjectionManager
+import dev.caraalink.link.CarSession
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Build
@@ -37,6 +40,8 @@ class UsbLinkForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var sniffer: UsbSnifferDiagnostic? = null
     private var adbProbe: AdbHandshakeProbe? = null
+    private var session: CarSession? = null
+    private var pendingProjection: Pair<Int, Intent>? = null
     private var reconnectRunnable: Runnable? = null
     private var pendingAccessory: UsbAccessory? = null
     private var resumeActiveMode: ((UsbAccessory) -> Unit)? = null
@@ -54,6 +59,8 @@ class UsbLinkForegroundService : Service() {
         when (intent?.action) {
             ACTION_START_SNIFFER -> handleStart(intent) { accessory -> beginSniffing(accessory) }
             ACTION_START_ADB_PROBE -> handleStart(intent) { accessory -> beginAdbProbe(accessory) }
+            ACTION_START_SESSION -> handleStart(intent) { accessory -> beginSession(accessory) }
+            ACTION_PROJECTION_GRANTED -> onProjectionGranted(intent)
             ACTION_STOP -> {
                 Log.i(TAG, "onStartCommand: ACTION_STOP")
                 stopSelfCleanly()
@@ -76,7 +83,9 @@ class UsbLinkForegroundService : Service() {
         // unplugged between the intent being sent and this running). Don't
         // let that take the whole app down.
         val started = try {
-            startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot))
+            // Explicit type: the manifest also lists mediaProjection, which needs consent first.
+            startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             true
         } catch (e: SecurityException) {
             Log.w(TAG, "startForeground(connectedDevice) refused -- accessory permission likely lapsed", e)
@@ -110,7 +119,86 @@ class UsbLinkForegroundService : Service() {
         p.start(accessory)
     }
 
+    private fun beginSession(accessory: UsbAccessory) {
+        Log.i(TAG, "beginSession: ${accessory.manufacturer}/${accessory.model}")
+        sniffer?.stop()
+        adbProbe?.stop()
+        session?.stop()
+        val s = CarSession(this, accessory, phoneActions) { reason ->
+            handler.post {
+                Log.i(TAG, "session ended: $reason")
+                session = null
+                stopSelfCleanly()
+            }
+        }
+        session = s
+        if (!s.start()) {
+            session = null
+            ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = "openAccessory() returned null") }
+            stopSelfCleanly()
+            return
+        }
+        pendingProjection?.let { (code, data) ->
+            pendingProjection = null
+            applyProjection(code, data)
+        }
+    }
+
+    private fun onProjectionGranted(intent: Intent) {
+        val code = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
+        @Suppress("DEPRECATION")
+        val data = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA) ?: return
+        if (session == null) {
+            // Consent can arrive before the session's foreground start; hold it until then.
+            pendingProjection = code to data
+            if (pendingAccessory == null) {
+                // Started only for this; nothing to attach to yet.
+                runCatching {
+                    startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot),
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
+                }
+                stopSelfCleanly()
+            }
+            return
+        }
+        applyProjection(code, data)
+    }
+
+    private fun applyProjection(code: Int, data: Intent) {
+        try {
+            // Android 14+: the foreground service must carry the mediaProjection type before getMediaProjection().
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(ConnectionStateHolder.snapshot),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+            )
+            val projection = getSystemService(MediaProjectionManager::class.java).getMediaProjection(code, data)
+            if (projection != null) session?.setProjection(projection)
+        } catch (e: Exception) {
+            Log.w(TAG, "applyProjection failed", e)
+        }
+    }
+
+    private val phoneActions = object : CarSession.PhoneActions {
+        override fun openAndroidAuto() {
+            val intent = packageManager.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE)
+                ?: packageManager.getLaunchIntentForPackage(GOOGLE_MAPS_PACKAGE)
+                ?: return
+            runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                .onFailure { Log.w(TAG, "openAndroidAuto failed", it) }
+        }
+
+        override fun requestScreenCapture() {
+            runCatching {
+                startActivity(Intent(this@UsbLinkForegroundService, ProjectionRequestActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }.onFailure { Log.w(TAG, "requestScreenCapture failed", it) }
+        }
+    }
+
     override fun onDestroy() {
+        session?.stop()
+        session = null
         ConnectionStateHolder.removeListener(stateListener)
         reconnectRunnable?.let { handler.removeCallbacks(it) }
         sniffer?.stop()
@@ -167,6 +255,8 @@ class UsbLinkForegroundService : Service() {
     }
 
     private fun stopSelfCleanly() {
+        session?.stop()
+        session = null
         sniffer?.stop()
         adbProbe?.stop()
         adbProbe = null
@@ -241,5 +331,11 @@ class UsbLinkForegroundService : Service() {
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
         const val ACTION_START_ADB_PROBE = "dev.caraalink.service.action.START_ADB_PROBE"
         const val ACTION_STOP = "dev.caraalink.service.action.STOP"
+        const val ACTION_START_SESSION = "dev.caraalink.service.action.START_SESSION"
+        const val ACTION_PROJECTION_GRANTED = "dev.caraalink.service.action.PROJECTION_GRANTED"
+        const val EXTRA_RESULT_CODE = "result_code"
+        const val EXTRA_RESULT_DATA = "result_data"
+        private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
+        private const val GOOGLE_MAPS_PACKAGE = "com.google.android.apps.maps"
     }
 }

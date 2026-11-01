@@ -3,6 +3,7 @@ package dev.caraalink.usb
 import android.content.Context
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -14,15 +15,19 @@ import java.io.FileOutputStream
  * EPSDK.openAccessory() uses this exact API.
  */
 class UsbAccessoryConnection private constructor(
-    private val usbManager: UsbManager,
+    private val pfd: ParcelFileDescriptor,
     val accessory: UsbAccessory,
     val input: FileInputStream,
     val output: FileOutputStream,
 ) : AutoCloseable {
 
+    // Streams built from a FileDescriptor don't own it, so closing them alone
+    // leaves the accessory open until GC -- which kept Android from showing
+    // the app chooser on the next plug-in.
     override fun close() {
         runCatching { input.close() }
         runCatching { output.close() }
+        runCatching { pfd.close() }
     }
 
     companion object {
@@ -38,19 +43,14 @@ class UsbAccessoryConnection private constructor(
          */
         fun open(context: Context, accessory: UsbAccessory): UsbAccessoryConnection? {
             val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-            val fd = try {
+            val pfd = try {
                 usbManager.openAccessory(accessory)
             } catch (e: Exception) {
                 Log.w(TAG, "openAccessory threw -- treating as not attached", e)
                 null
             } ?: return null
-            val descriptor = fd.fileDescriptor
-            return UsbAccessoryConnection(
-                usbManager,
-                accessory,
-                FileInputStream(descriptor),
-                FileOutputStream(descriptor),
-            )
+            val descriptor = pfd.fileDescriptor
+            return UsbAccessoryConnection(pfd, accessory, FileInputStream(descriptor), FileOutputStream(descriptor))
         }
     }
 }

@@ -546,3 +546,41 @@ CONFIRMED (xcrun llvm-objdump, arm64; strings read at the referenced addresses):
   `write()`s: the 24-byte header, then the payload.
 - Probe now does both (zero kick on open, split header/payload writes).
   UNVERIFIED live.
+
+## PXC + mirror protocol (2026-11-01, jadx of CarbitLink 6.5.1 + live logs)
+
+All CONFIRMED from decompiled Java (paths under `net/easyconn/carman/`)
+unless marked otherwise. Clean-room: we re-implement the wire format,
+not their code. Their RSA/HUID licensing fields are never reproduced.
+
+**Transport**: head unit OPENs ADB streams to `tcp:<port>` on the phone.
+Real session (logcat 12:06:50): tcp:10922 twice (PXC 0x10000, 0x20000),
+then tcp:10921 (mirror control), then tcp:10920 (mirror data).
+
+**PXC (tcp:10922)** `sdk_communication/i.java`: 16-byte LE head
+`int cmd, int totalLen(16+body), int cmd^totalLen, int extra` + body.
+First head on a stream = channel id (0x10000 main, 0x20000, 0x30000 ...,
+`l0.java` switch); server answers same head with cmd+1. Each request on a
+channel gets reply cmd = request+1 (`z0.e()`), body from handler, except
+cmds 0x40010, 0x30030, 0x30020, 0x30040, 0x102B0 and (cmd&0xFF000000)==
+0x60000000 (`z0.f()`). CLIENT_INFO 0x10010 reply = JSON (see probe).
+
+**Mirror control (tcp:10921)** `utils/Protocol.java`, `common/base/l0.java`:
+8-byte LE head `short type, short bodyLen, int token(0)` + body.
+- 0x30 GET_VERSION -> 0x31 body `int 5002, int 1`
+- 0x40 HEARTBEAT -> 0x41
+- 0x10 CONFIG_CAPTURE body: `short w, short h, int wantFps, int wantEncoder
+  (1 jpeg, 2 h264, 4 mp4), int supportCodec, short minQ, short maxQ,
+  int bitRate, byte capScreenMode, byte touchMode, byte orientation,
+  byte displayId, byte videoType, byte supportExtendProtocol, 2 reserved`
+  [+ encryptedHUID utf8]. Reply 0x11 body `int encoder, short w&~15,
+  short h&~15 [, byte supportExtendProtocol if !=0]`.
+- 0x70 DATA_START -> 0x71 after the encoder is started.
+- 0x20 SCREEN_EVENT body `short type(1 up,2 down,3 move,4 key), short x,
+  short y, short slot, short key [, long time]`.
+- anything else -> 0x7F02 UN_SUPPORT.
+**Mirror data (tcp:10920)** `common/base/q0.java`: if wantFps==0 the car
+pulls each frame with 0x72 (8-byte head + ext[displayId, ackFrames]);
+else frames are pushed. Frame (non-movie mode) = `int32 LE length` +
+H.264 Annex-B bytes; codec config (SPS/PPS) sent first the same way.
+`int 0` = no frame available.

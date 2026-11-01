@@ -2,7 +2,11 @@ package dev.caraalink
 
 import android.app.Activity
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.widget.Toast
+import dev.caraalink.video.CarHomePresentation
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Bundle
@@ -17,6 +21,7 @@ import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
 import dev.caraalink.diagnostics.DeveloperToolsActivity
 import dev.caraalink.onboarding.OnboardingActivity
+import dev.caraalink.service.ProjectionRequestActivity
 import dev.caraalink.service.UsbLinkForegroundService
 import dev.caraalink.settings.SettingsActivity
 
@@ -31,6 +36,7 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val PREF_ONBOARDING_SHOWN = "onboarding_shown"
+        private const val REQUEST_BACKGROUND = 7
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,6 +45,12 @@ class MainActivity : Activity() {
         render()
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
+        if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED &&
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            // Only for the weather on the car home screen.
+            requestPermissions(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION), 8)
+        }
     }
 
     /**
@@ -55,11 +67,38 @@ class MainActivity : Activity() {
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
         @Suppress("DEPRECATION")
         val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY) ?: return
-        Log.i(TAG, "maybeAutoStartOnAttach: launched via attach intent, auto-starting ADB probe")
+        Log.i(TAG, "maybeAutoStartOnAttach: launched via attach intent, starting car session")
         val serviceIntent = Intent(this, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
+            .setAction(UsbLinkForegroundService.ACTION_START_SESSION)
             .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
         startForegroundService(serviceIntent)
+        // Ask for screen capture now, while we're in the foreground, so the car's
+        // "Phone screen" tile works without touching the phone later.
+        startActivity(Intent(this, ProjectionRequestActivity::class.java))
+    }
+
+    @Deprecated("Plain Activity; result API not used")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        val uri = data?.data
+        if (requestCode != REQUEST_BACKGROUND || resultCode != RESULT_OK || uri == null) return
+        Thread {
+            // Downscale so a 50 MP photo doesn't blow up memory on every car connect.
+            val ok = runCatching {
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+                var sample = 1
+                while (bounds.outWidth / sample > 2560 || bounds.outHeight / sample > 2560) sample *= 2
+                val bmp = contentResolver.openInputStream(uri)?.use {
+                    BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
+                } ?: error("decode failed")
+                CarHomePresentation.backgroundFile(this).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            }.isSuccess
+            runOnUiThread {
+                Toast.makeText(this, if (ok) "Car background set (shows on next connect)" else "Couldn't read that image", Toast.LENGTH_SHORT).show()
+                render()
+            }
+        }.start()
     }
 
     private fun maybeShowOnboarding() {
@@ -103,6 +142,21 @@ class MainActivity : Activity() {
         outlineButton("Developer tools") { open(DeveloperToolsActivity::class.java) }.also { root.addView(it) }
         spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
+        spacer(root)
+        val bgSet = CarHomePresentation.backgroundFile(this).exists()
+        outlineButton(if (bgSet) "Car background: custom (hold to reset)" else "Car background: pick a photo") {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
+                REQUEST_BACKGROUND,
+            )
+        }.also { button ->
+            button.setOnLongClickListener {
+                CarHomePresentation.backgroundFile(this).delete()
+                render()
+                true
+            }
+            root.addView(button)
+        }
 
         setContentView(root)
     }

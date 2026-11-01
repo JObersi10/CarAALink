@@ -73,6 +73,18 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    /** Replays a car tap/swipe on the phone screen while mirroring. */
+    fun dispatchStroke(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) {
+        val path = android.graphics.Path().apply {
+            moveTo(x1.coerceAtLeast(0f), y1.coerceAtLeast(0f))
+            lineTo(x2.coerceAtLeast(0f), y2.coerceAtLeast(0f))
+        }
+        val gesture = android.accessibilityservice.GestureDescription.Builder()
+            .addStroke(android.accessibilityservice.GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        dispatchGesture(gesture, null, null)
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!armed) return
         if (SystemClock.uptimeMillis() >= armedUntil) {
