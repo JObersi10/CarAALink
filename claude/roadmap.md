@@ -102,6 +102,35 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
    directly to a `Surface` passed elsewhere rather than capturing rendered
    UI via projection.
 
+   **Follow-up pass (2026-11-01, decompiled with `jadx` CLI directly —
+   `REA_JADX_MCP_JAR` isn't configured in this environment, so the
+   REA/jadx-MCP tools weren't usable for this one; plain `jadx -d <dir>
+   <apk>` worked fine).** Read `HeadUnitServerGuide.java` and
+   `HeadUnitServerAccessibilityService.java` in full:
+   - `HeadUnitServerGuide.a(Context)` opens AA's Settings by trying, in
+     order: `Intent("com.google.android.projection.gearhead.SETTINGS")`
+     (package-scoped), the explicit component
+     `com.google.android.projection.gearhead.companion.settings.DefaultSettingsActivity`,
+     `getLaunchIntentForPackage(...)`, then AA's app-info page.
+   - The accessibility service **never taps "Version"**. It only reacts to
+     `TYPE_WINDOW_STATE_CHANGED`/`TYPE_WINDOW_CONTENT_CHANGED` events while
+     "armed" (a 20s time-boxed flag set by the UI right before launching
+     settings), and does exactly: find a node whose content-description is
+     `"More options"` or `"More"` → click it → on the next event, find text
+     exactly `"Start head unit server"` or `"Start headunit server"` → click
+     it. If it instead finds `"Stop head unit server"` text, it backs out
+     without touching anything (already running).
+   - The one-time "tap Version 10x" step is manual, guided by
+     `HeadUnitServerGuide`'s own on-screen instructions
+     (`head_unit_server_used` SharedPreferences flag tracks whether a user
+     has done it before, to adjust the guide text on repeat visits).
+   - This directly explains why our first `HeadUnitServerAccessibilityService`
+     implementation failed on real hardware: it tried to automate the
+     Version-tap (which the reference app deliberately doesn't), and
+     `HeadUnitServerLauncher` only tried the generic launcher intent, which
+     landed on the wrong AA screen entirely. Both are now fixed to match
+     this confirmed behavior.
+
 ### Next steps from this pass
 
 1. **Live USB capture needed** to pin down items 2/3/5/6 precisely:
@@ -179,18 +208,45 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   OEMs) — fixed, with a fallback to the generic exemption list if the direct
   per-app dialog still refuses.
 - [x] One-click "Start head unit server" (`HeadUnitServerAccessibilityService`
-  + `HeadUnitServerLauncher`) — automates Settings → Version×10 → ⋮ → Start
-  head unit server. Heuristic text/description matching, not a stable API;
+  + `HeadUnitServerLauncher`) — **rewritten against confirmed real behavior**
+  after on-device testing exposed two bugs in the first version:
+  1. `getLaunchIntentForPackage("com.google.android.projection.gearhead")`
+     returned null on the owner's phone — gearhead has no standard LAUNCHER
+     activity, so the app wrongly reported "Android Auto isn't installed".
+     It actually launched some other activity (`...gmscorecompat.FirstActivityImpl`,
+     confirmed via live logcat) that isn't AA's Settings screen at all.
+  2. The automation tried to tap "Version" 10x itself, which is NOT what the
+     real reference app does — confirmed by decompiling
+     `PhoneAuto-beta-2027-01-19.apk` with `jadx` CLI this session (the bundled
+     REA/jadx-MCP integration needs `REA_JADX_MCP_JAR` set, which isn't
+     configured here, but plain `jadx -d <dir> <apk>` works fine standalone).
+     `com.google.android.projection.sink.ui.HeadUnitServerGuide.a()` tries,
+     in this exact order: the deep-link action
+     `"com.google.android.projection.gearhead.SETTINGS"`, the explicit
+     component `.../gearhead/companion/settings/DefaultSettingsActivity`,
+     the generic launcher intent (our old, unreliable fallback), then AA's
+     app-info page. Its
+     `com.google.android.projection.sink.ui.HeadUnitServerAccessibilityService`
+     only ever automates: find the overflow button (content-description
+     `"More options"`/`"More"`) → click it → find `"Start head unit
+     server"`/`"Start headunit server"` text → click it. Tapping Version is
+     a one-time **manual** step, guided by that app's own on-screen
+     instructions ("tap Version 10 times to turn on developer mode") — it
+     deliberately doesn't automate that, almost certainly because it's too
+     fragile across AA versions/OEMs. The service also "arms" itself
+     (time-boxed, 20s) right *before* the settings intent is launched,
+     rather than polling after the fact.
+
+     Our rewrite mirrors this exactly: `HeadUnitServerLauncher` tries the
+     same four intents in the same order and arms the service first;
+     `HeadUnitServerAccessibilityService` only handles overflow → Start, and
+     `HeadUnitServerLauncher` shows a one-time Toast telling the user to tap
+     Version manually the first time (`head_unit_server_version_guided` pref),
+     matching the reference app's UX instead of trying to automate it.
+     Still not re-tested on-device as of this edit — the previous bugs were
+     confirmed by the owner's live logcat, this fix is not yet.
   `auto_start_head_unit_server` isn't wired into `UsbAttachReceiver` yet
-  (TODO there). Real bug found and fixed on-device: `getLaunchIntentForPackage`
-  returned null for `com.google.android.projection.gearhead` (it has no
-  standard LAUNCHER activity on the owner's phone, so the app reported
-  "Android Auto isn't installed" even though it was) — now falls back to
-  resolving any ACTION_MAIN activity the package declares at runtime, then to
-  opening its app-info page as a last resort. Still not confirmed whether the
-  resolved activity actually lands on a screen where "Version" is visible —
-  the accessibility automation itself (Settings navigation) remains
-  unverified on real hardware.
+  (TODO there).
 - [x] Settings screen (`SettingsActivity` + `root_preferences.xml` +
   `AppSettings`) — resolution override (auto/custom), frame rate, video
   bitrate, audio sample rate/channels, auto-start-head-unit-server,
