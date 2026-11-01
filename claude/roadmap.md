@@ -61,12 +61,18 @@ anything further — a much smaller job than the native `libEPSDK.so` framing
 would otherwise be. Still unconfirmed: whether this ADB channel carries the
 *actual* mirroring data, or is a side channel for something else (licensing
 check, diagnostics) while `libEPSDK.so`'s `AOATransport`/`Packet` carries
-the real video/audio/touch. Capture ended after ~7s
-(`read interrupted by close() on another thread` — our own sniffer doesn't
-speak ADB back, so whatever's on the other end gave up). Next capture should
-let the connection run longer and/or have our app at least complete a
-minimal ADB CONNECT handshake (we control the device side; this is within
-reach since the protocol is public) to see what it asks for next.
+the real video/audio/touch.
+
+**Reproduced a second time, identical bytes**, after the crash fixes below
+landed: same 24-byte CNXN header, same `"host::sRgV\0"` banner, byte for
+byte. This isn't a one-off fluke — the head unit opens with this same ADB
+CONNECT every time. Both captures ended the same way too: ~8s in, the read
+fails (`read interrupted by close()` the first time, `EIO (I/O error)` the
+second — same outcome, our sniffer doesn't speak ADB back, so whatever's on
+the other end gives up). Next step: have our app actually complete a
+minimal ADB CONNECT handshake (we control the device side; within reach
+since the protocol is public) to see what it asks for next, instead of
+capturing it give up again.
 
 ## Real crashes found and fixed (2026-11-01)
 
@@ -91,6 +97,14 @@ physically unplugged.
 Also added: `UsbLinkForegroundService`'s reconnect loop now checks
 `UsbManager.accessoryList` before each retry and gives up (capped at 5
 attempts) instead of retrying forever against a device that's actually gone.
+
+**Confirmed fixed by re-testing on-device** (via the app's own exported
+`app-*.log`, after the fix was installed): no `FATAL EXCEPTION` anywhere in
+a full test pass that included the same accessory-disconnect scenario that
+used to crash it. A subsequent `IOException: read failed: EIO (I/O error)`
+during the same session was caught and logged cleanly instead of crashing —
+that's the existing read-loop error handling working as designed, not a new
+issue.
 
 **Also added this session**: a persistent in-app logger
 (`CarAALinkApplication`) that starts the moment the process starts —
