@@ -147,6 +147,16 @@ been installed/tested on the owner's actual phone:
    unit responds with anything past CNXN (an `OPEN` with a service string
    would be huge), that's the next real finding.
 
+5. **Head-unit-server automation, low priority (owner said leave for later)**:
+   PR #14 made the accessibility service tap whichever of "Start"/"Stop
+   head unit server" the overflow menu shows, then reopen CarAALink. The
+   reopen works on-device. But the owner wants *detection*, not a toggle:
+   if the server is already running, leave it running (just close the menu
+   and return to CarAALink). Right now it taps "Stop" and turns it off. The
+   fix is in `HeadUnitServerAccessibilityService.onAccessibilityEvent`:
+   when `stopNode` is found, press back and `returnToCarAALink()` instead of
+   clicking it.
+
 ## Repo / workflow notes
 
 - Public GitHub repo: `JObersi10/CarAALink` (renamed from the
