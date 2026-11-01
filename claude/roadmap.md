@@ -459,3 +459,128 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   implementation, not extracted from PhoneAuto) automates the toggle by text
   matching. Still needs on-device verification against the owner's actual
   Android Auto build; AA's settings copy/layout can change between versions.
+
+## Live test: first CNXN reply sent (2026-11-01 11:31)
+
+Evidence: `adb-probe-20261101-113131.log` (owner export) + device logcat.
+
+- CONFIRMED: head unit CNXN header = version `0x01000000`, maxdata `0x4000`
+  (16384), data_length 11, **data_check 0**, magic OK. Payload
+  `host::N9r8\0` arrives in a **separate read()** from the header.
+- CONFIRMED: probe sent an 85-byte CNXN reply with data_check = 0. ~4.2 s
+  later, read() failed with EIO (head unit reset the link). After that,
+  every `openAccessory()` returned null until a fresh attach.
+- INFERENCE (public ADB spec, not CarbitLink code): version `0x01000000`
+  means the receiver validates data_check (sum of payload bytes); only
+  `0x01000001`+ may skip it. A zero checksum likely got our reply rejected.
+  Fix: probe now sends the real sum and reassembles split reads.
+  UNVERIFIED until the next live test.
+
+### Retest 11:42 (checksum fix in)
+- CONFIRMED: link stayed up ~24 s after our CNXN (was ~4 s). Head unit
+  sent nothing more, then EIO.
+- CONFIRMED (`strings libjadbd.so`): CarbitLink's banner is
+  `device::ro.product.name=jadbd`. Probe now sends that exact banner.
+  UNVERIFIED whether the head unit gates on it.
+
+### Retest 11:53 (jadbd banner in)
+- CONFIRMED: still nothing from head unit after our CNXN (9 s, then owner
+  tapped "Start sniffer", which stopped the probe; tapping that kills the probe).
+- CONFIRMED: `jadbd::max_payload` initial value = 4096 (.data @0x76950),
+  same as ours, so not the cause.
+- CONFIRMED (strings): jadbd has `handleConn,old adb version` / `new adb
+  version` and `isNewAdbVersion`, plus device-side `AgentStream::open()` /
+  `SockStream::open()` and an `[aoa]outputThread`.
+- LEAD (inference, unverified): the head unit may wait for the *phone* side
+  to OPEN a stream after CNXN (not standard adb, where only the host opens).
+  The candidates are the libEPSDK service names (`P2CMainService` etc.).
+  Needs a disassembler pass on `AgentStream::open` to confirm. Do not guess
+  the service string on the wire.
+
+## Live capture: real CarbitLink session (2026-11-01 12:06, logcat)
+
+Source: device logcat while the real CarbitLink app connected (raw dump
+kept local, gitignored, since it has car/device IDs).
+
+- CONFIRMED: `AccessoryManager.openAccessory` -> `initJAdbd()` ->
+  `jadbd: onUuidReceived() uuid=N9r8` within 4 ms. The UUID is the suffix
+  of the head unit's `host::N9r8` CNXN banner.
+- CONFIRMED: CarbitLink's Java `PXCService` opens a TCP ServerSocket on
+  **localport 10922** and accepts a client from **127.0.0.1** ~0.5 s after
+  `initJAdbd`. That client is jadbd forwarding a stream the head unit
+  OPENed. INFERENCE: the OPEN service string is `tcp:10922` (jadbd's
+  `createStream` supports `tcp:` / `local:` / `localfilesystem:`).
+  UNVERIFIED on the wire.
+- CONFIRMED: first app-level message on that stream is car->phone
+  `0x00010010` `ECP_C2P_CLIENT_INFO`, a JSON object (HUID, HUName,
+  screenType, mirrorMode, pxcVersion "1.0.2", sdkVersion "0.9.24", ...).
+- So the head unit DOES send OPEN to real jadbd. It does not to our probe,
+  so our CNXN reply still differs from jadbd's in some way. jadbd's own
+  log goes to a file (`initJAdbd logFile:null`), not logcat, so its wire
+  bytes are not visible here. Next: disassemble `TransportBase::handleConn`
+  (the "old adb version" path) with `xcrun llvm-objdump` to read exactly
+  what jadbd sends back. Facts only, no porting.
+
+### jadbd CNXN reply, from disassembly (`TransportBase::handleConn` @0x37628)
+CONFIRMED (xcrun llvm-objdump, arm64; strings read at the referenced addresses):
+- If host arg0 is 0x01000000 or 0x01000001: arg1 == 0x1000 -> "old adb
+  version" path; else -> "new adb version", sets `isNewAdbVersion = 1`.
+  Any other arg0 with arg1 != 0x1000 -> error, no reply.
+- Payload is checked with `strstr("host::")`; the text after `host::` goes
+  to `setUuid` (matches `onUuidReceived uuid=N9r8`).
+- Reply: CNXN, arg0 = 0x01000000 + isNew (so **0x01000001** for our head
+  unit, which sends maxdata 0x4000), arg1 = host maxdata if new else 4096
+  (also stored to `jadbd::max_payload`), payload = snprintf of
+  `device::ro.product.name=jadbd` (**no NUL**, 29 bytes), data_check left
+  0 in this function.
+- Probe now sends exactly these values, plus public-ADB OKAY to any
+  OPEN/WRTE so the first stream's data gets logged. UNVERIFIED live.
+
+### Retest 12:18 + `AOATransport::outputThread` (@0x37dc8)
+- CONFIRMED live: probe sent a CNXN reply byte-identical to jadbd's
+  (v 0x01000001, maxdata 16384, 29-byte banner, 53 bytes total). The head
+  unit was still silent for 10 s. So the reply *content* is not the gap.
+- CONFIRMED (disassembly): at thread start, jadbd `write()`s **24 zero
+  bytes** to the accessory fd, retrying up to 50x with `usleep(20000)`,
+  and only then starts `inputThread`. Every packet after that is sent as two
+  `write()`s: the 24-byte header, then the payload.
+- Probe now does both (zero kick on open, split header/payload writes).
+  UNVERIFIED live.
+
+## PXC + mirror protocol (2026-11-01, jadx of CarbitLink 6.5.1 + live logs)
+
+All CONFIRMED from decompiled Java (paths under `net/easyconn/carman/`)
+unless marked otherwise. Clean-room: we re-implement the wire format,
+not their code. Their RSA/HUID licensing fields are never reproduced.
+
+**Transport**: head unit OPENs ADB streams to `tcp:<port>` on the phone.
+Real session (logcat 12:06:50): tcp:10922 twice (PXC 0x10000, 0x20000),
+then tcp:10921 (mirror control), then tcp:10920 (mirror data).
+
+**PXC (tcp:10922)** `sdk_communication/i.java`: 16-byte LE head
+`int cmd, int totalLen(16+body), int cmd^totalLen, int extra` + body.
+First head on a stream = channel id (0x10000 main, 0x20000, 0x30000 ...,
+`l0.java` switch); server answers same head with cmd+1. Each request on a
+channel gets reply cmd = request+1 (`z0.e()`), body from handler, except
+cmds 0x40010, 0x30030, 0x30020, 0x30040, 0x102B0 and (cmd&0xFF000000)==
+0x60000000 (`z0.f()`). CLIENT_INFO 0x10010 reply = JSON (see probe).
+
+**Mirror control (tcp:10921)** `utils/Protocol.java`, `common/base/l0.java`:
+8-byte LE head `short type, short bodyLen, int token(0)` + body.
+- 0x30 GET_VERSION -> 0x31 body `int 5002, int 1`
+- 0x40 HEARTBEAT -> 0x41
+- 0x10 CONFIG_CAPTURE body: `short w, short h, int wantFps, int wantEncoder
+  (1 jpeg, 2 h264, 4 mp4), int supportCodec, short minQ, short maxQ,
+  int bitRate, byte capScreenMode, byte touchMode, byte orientation,
+  byte displayId, byte videoType, byte supportExtendProtocol, 2 reserved`
+  [+ encryptedHUID utf8]. Reply 0x11 body `int encoder, short w&~15,
+  short h&~15 [, byte supportExtendProtocol if !=0]`.
+- 0x70 DATA_START -> 0x71 after the encoder is started.
+- 0x20 SCREEN_EVENT body `short type(1 up,2 down,3 move,4 key), short x,
+  short y, short slot, short key [, long time]`.
+- anything else -> 0x7F02 UN_SUPPORT.
+**Mirror data (tcp:10920)** `common/base/q0.java`: if wantFps==0 the car
+pulls each frame with 0x72 (8-byte head + ext[displayId, ackFrames]);
+else frames are pushed. Frame (non-movie mode) = `int32 LE length` +
+H.264 Annex-B bytes; codec config (SPS/PPS) sent first the same way.
+`int 0` = no frame available.

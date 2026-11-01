@@ -105,7 +105,12 @@ class UsbSnifferDiagnostic(private val context: Context) {
             ConnectionStateHolder.update { it.copy(bytesRead = totalRead) }
         }
         Log.i(TAG, "readLoop: exiting, totalRead=$totalRead")
-        running.set(false)
+        // Link died on its own: release the accessory fd, or Android won't
+        // offer the app chooser on the next plug-in until we're force-quit.
+        if (running.compareAndSet(true, false)) {
+            conn.close()
+            connection = null
+        }
     }
 
     companion object {

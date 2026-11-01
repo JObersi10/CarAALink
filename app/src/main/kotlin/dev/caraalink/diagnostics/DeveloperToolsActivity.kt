@@ -106,7 +106,8 @@ class DeveloperToolsActivity : Activity() {
         val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
         val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
         val latestProbe = allFiles.firstOrNull { it.name.startsWith("adb-probe-") }
-        val toShare = listOfNotNull(latestApp, latestSniff, latestProbe)
+        val latestSession = allFiles.firstOrNull { it.name.startsWith("car-session-") }
+        val toShare = listOfNotNull(latestApp, latestSession, latestProbe, latestSniff)
         if (toShare.isEmpty()) {
             Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return

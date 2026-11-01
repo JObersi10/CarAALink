@@ -7,6 +7,42 @@ wireless-debugging adb) against the real car head unit. See
 `roadmap.md` for full cited detail — this file is the "what actually
 happened and what to do next" summary.
 
+## LATEST (2026-11-01, evening) — read this first
+
+**Live-confirmed so far**: ADB over AOA works (zero kick, jadbd CNXN
+reply), the head unit OPENs tcp:10922, we answer the PXC channel head
+(0x10000 -> 0x10001), and it sends its full CLIENT_INFO JSON.
+
+**Built and committed, NOT yet tested on the car** (`app/.../link/`,
+`app/.../video/`): the real session that replaced the probe for the
+attach flow (`ACTION_START_SESSION`):
+- `AdbTransport` — per-stream ids, OKAY flow control, maxdata chunking.
+- `PxcChannel` (tcp:10922) — channel heads, CLIENT_INFO reply, empty
+  cmd+1 acks for everything else (logged, so we see what it wants).
+- `MirrorControlChannel` (10921) / `MirrorDataChannel` (10920) — the
+  CarbitLink mirror protocol (roadmap "PXC + mirror protocol").
+- `CarVideoEncoder` (H.264 from a Surface) + `CarDisplay`: car home
+  screen (`CarHomePresentation`: clock, date, weather, custom background,
+  tiles Android Auto / Phone screen / Settings) on a private virtual
+  display, or a MediaProjection AUTO_MIRROR of the phone (not a second
+  display, so DeX doesn't start). Car touches drive the home screen; in
+  mirror mode they replay as taps/swipes through the accessibility service.
+- On attach, `MainActivity` starts the session and asks for screen
+  capture once (`ProjectionRequestActivity`).
+- "Android Auto" tile = opens AA (or Maps) on the phone + mirror. Real AA
+  projection would mean implementing the AA head-unit protocol (needs a
+  Google-signed head-unit certificate); not done, not planned to fake.
+- Popup fix: `UsbAccessoryConnection.close()` now closes the PFD.
+
+**Next test**: install, plug in, pick CarAALink, tap "Start now", export
+logs (`car-session-*.log` is now included). If no video: check whether
+CONFIG_CAPTURE (0x10) ever arrives on tcp:10921. If it doesn't, the head
+unit is waiting on some PXC reply; the log lists every C2P cmd we acked.
+
+**Ideas queued from the owner**: phone widgets on the car home screen
+(AppWidgetHost), app icon, more tiles (maps, music). Owner wants terse
+replies; commits allowed again (2026-11-01 evening).
+
 ## The big picture, in one paragraph
 
 CarbitLink's wire protocol is **not** a bespoke binary format — it's a real
