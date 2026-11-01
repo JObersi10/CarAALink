@@ -13,7 +13,43 @@ happened and what to do next" summary.
    Full detail in [`aa-receiver-notes.md`](aa-receiver-notes.md); ready-to-paste
    continuation prompt in [`PROMPT-FOR-CLAUDE.md`](PROMPT-FOR-CLAUDE.md).
 
-## LATEST — Android Auto receiver (2026-11-01, in progress)
+## LATEST — Android Auto receiver: H.264 VIDEO IS FLOWING (2026-11-01)
+
+Live on gearhead 18.0.664244 / S25 Ultra: version -> TLS -> AUTH_COMPLETE ->
+discovery accepted -> audio focus -> all 8 service channels opened -> video
+MEDIA_SETUP/CONFIG + VIDEO_FOCUS_NOTIFICATION -> sensor started -> **real
+H.264 NAL data arriving continuously on MEDIA_SINK_VIDEO (msg#0 =
+MEDIA_MESSAGE_DATA), sustained 30+s, no drops**. This was three separate bugs,
+found by diffing byte-for-byte against openauto/aasdk source (cloned to
+scratchpad, not committed):
+
+1. `SensorSourceService` in our discovery response was empty; openauto's
+   advertises 3 real sensors. Fixed, didn't matter much on its own.
+2. **The real blocker:** `MediaSourceService` (microphone, channel 9) had no
+   `audio_config` -- phone logged `CAR.SERVICE: Critical error 2 detail: 24
+   msg: No audio/mic` and dropped right after discovery. Gave it a real
+   16kHz/16-bit/mono config and discovery was accepted.
+3. `AaSessionProbe.maxMessages` defaulted to 10 -- exactly consumed by
+   discovery + audio-focus-request + 8x channel-open, so the probe's own loop
+   exited and closed the socket in `finally` right as the real session began.
+   Looked identical to a protocol rejection (`gearhead` logged
+   `FRAMER_READ_END_OF_STREAM` at that instant) but was 100% us. Raised to
+   2000.
+
+Also newly handled: `MESSAGE_AUDIO_FOCUS_REQUEST` (control id 18, not
+previously handled at all -- phone was asking for it right after discovery),
+per-channel `CHANNEL_OPEN_REQUEST`/`RESPONSE` (`MessageType::CONTROL` flag,
+not `SPECIFIC` -- different frame flag from every other message we send),
+`MEDIA_MESSAGE_SETUP`/`CONFIG`/`VIDEO_FOCUS_NOTIFICATION` on the video+audio
+sink channels, `SENSOR_MESSAGE_REQUEST`/`RESPONSE` on the sensor channel.
+
+**Not done yet:** we parse but discard the H.264 bytes. Next: feed
+`MEDIA_MESSAGE_DATA` payloads (first byte(s) are a timestamp per
+`MediaChannelMessage`/`AVChannelMessage` framing -- not yet decoded, check
+aasdk's `AVMediaChannelMessage`) into the CarbitLink video path instead of
+logging them, then do the same for the input/touch channel.
+
+## Earlier notes below (service discovery was the blocker; now fixed, kept for the citations)
 
 The "Android Auto" tile is no longer a stub: it drives a real AA receiver.
 Full detail, citations and dead ends are in

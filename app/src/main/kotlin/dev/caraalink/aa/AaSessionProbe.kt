@@ -213,6 +213,41 @@ class AaSessionProbe(
                         )
                         val response = AaProtobuf.Writer().int(1, 0).build() // status = STATUS_SUCCESS
                         channel.sendChannelControl(message.channelId, AaFraming.MSG_CHANNEL_OPEN_RESPONSE, response)
+                    } else if (chId == AaFraming.MSG_MEDIA_SETUP) {
+                        // Setup{type=1}. Video/audio sinks answer with
+                        // Config{status=READY(2), max_unacked=1,
+                        // configuration_indices=[0]} on MEDIA_MESSAGE_CONFIG
+                        // (32771); the microphone source quirkily reuses
+                        // MEDIA_MESSAGE_SETUP (32768) as its own response id
+                        // (aasdk's MediaSourceService::sendChannelSetupResponse()).
+                        val config = AaProtobuf.Writer()
+                            .int(1, 2) // status = STATUS_READY
+                            .int(2, 1) // max_unacked
+                            .int(3, 0) // configuration_indices[0]
+                            .build()
+                        val responseId = if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE) {
+                            AaFraming.MSG_MEDIA_SETUP
+                        } else {
+                            AaFraming.MSG_MEDIA_CONFIG
+                        }
+                        channel.sendChannelSpecific(message.channelId, responseId, config)
+                        if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
+                            // VideoFocusNotification{focus=PROJECTED(1), unsolicited=false}:
+                            // openauto's VideoMediaSinkService::sendVideoFocusIndication(),
+                            // sent right after the setup response grants the phone focus
+                            // to start encoding video.
+                            val focus = AaProtobuf.Writer().int(1, 1).bool(2, false).build()
+                            channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION, focus)
+                        }
+                    } else if (chId == AaFraming.MSG_SENSOR_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_SENSOR) {
+                        // SensorRequest{type=1, min_update_period=2}. Reply
+                        // SensorStartResponseMessage{status=0} on
+                        // SENSOR_MESSAGE_RESPONSE (32770).
+                        val fields = AaProtobuf.parse(chBody)
+                        val sensorType = fields.firstOrNull { it.number == 1 }?.varint
+                        logger.log("RX SENSOR_MESSAGE_REQUEST on SENSOR type=$sensorType")
+                        val response = AaProtobuf.Writer().int(1, 0).build() // status = STATUS_SUCCESS
+                        channel.sendChannelSpecific(message.channelId, AaFraming.MSG_SENSOR_RESPONSE, response)
                     }
                     continue
                 }

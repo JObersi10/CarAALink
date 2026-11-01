@@ -37,22 +37,8 @@ class AaTlsChannel(
     private val netOut = ByteBuffer.allocate(engine.session.packetBufferSize)
 
     /** Sends an ENCRYPTED control-channel message: payload is TLS-wrapped. */
-    fun sendControlEncrypted(messageId: Int, body: ByteArray) {
-        val plain = ByteArray(2 + body.size)
-        AaFraming.putU16(plain, 0, messageId)
-        body.copyInto(plain, 2)
-        val cipher = wrap(plain)
-        val frame = AaFraming.frame(
-            AaFraming.CHANNEL_CONTROL,
-            AaFraming.FRAME_BULK,
-            AaFraming.ENCRYPTION_ENCRYPTED,
-            AaFraming.MESSAGE_SPECIFIC,
-            cipher,
-        )
-        logger.log("TX ${AaFraming.controlMessageName(messageId)} encrypted plain=${plain.size}B cipher=${cipher.size}B")
-        output.write(frame)
-        output.flush()
-    }
+    fun sendControlEncrypted(messageId: Int, body: ByteArray) =
+        sendEncrypted(AaFraming.CHANNEL_CONTROL, AaFraming.MESSAGE_SPECIFIC, messageId, body)
 
     /**
      * Sends an ENCRYPTED message on a *service's own* channel (not the
@@ -62,18 +48,25 @@ class AaTlsChannel(
      * `SensorSourceService::sendChannelOpenResponse()`: ENCRYPTED, channel =
      * the service's own id, `MessageType::CONTROL`, msg id 8.
      */
-    fun sendChannelControl(channelId: Int, messageId: Int, body: ByteArray) {
+    fun sendChannelControl(channelId: Int, messageId: Int, body: ByteArray) =
+        sendEncrypted(channelId, AaFraming.MESSAGE_CONTROL, messageId, body)
+
+    /**
+     * Sends an ENCRYPTED, `MessageType::SPECIFIC` message on a service's own
+     * channel -- how aasdk's media/sensor services answer `MEDIA_MESSAGE_*`
+     * and `SENSOR_MESSAGE_*` requests (e.g.
+     * `VideoMediaSinkService::sendChannelSetupResponse()`,
+     * `SensorSourceService::sendSensorStartResponse()`).
+     */
+    fun sendChannelSpecific(channelId: Int, messageId: Int, body: ByteArray) =
+        sendEncrypted(channelId, AaFraming.MESSAGE_SPECIFIC, messageId, body)
+
+    private fun sendEncrypted(channelId: Int, messageType: Int, messageId: Int, body: ByteArray) {
         val plain = ByteArray(2 + body.size)
         AaFraming.putU16(plain, 0, messageId)
         body.copyInto(plain, 2)
         val cipher = wrap(plain)
-        val frame = AaFraming.frame(
-            channelId,
-            AaFraming.FRAME_BULK,
-            AaFraming.ENCRYPTION_ENCRYPTED,
-            AaFraming.MESSAGE_CONTROL,
-            cipher,
-        )
+        val frame = AaFraming.frame(channelId, AaFraming.FRAME_BULK, AaFraming.ENCRYPTION_ENCRYPTED, messageType, cipher)
         logger.log(
             "TX ${AaFraming.controlMessageName(messageId)} on ${AaFraming.channelName(channelId)} " +
                 "encrypted plain=${plain.size}B cipher=${cipher.size}B",
