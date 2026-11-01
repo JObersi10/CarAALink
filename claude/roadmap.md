@@ -520,3 +520,18 @@ kept local, gitignored, since it has car/device IDs).
   bytes are not visible here. Next: disassemble `TransportBase::handleConn`
   (the "old adb version" path) with `xcrun llvm-objdump` to read exactly
   what jadbd sends back. Facts only, no porting.
+
+### jadbd CNXN reply, from disassembly (`TransportBase::handleConn` @0x37628)
+CONFIRMED (xcrun llvm-objdump, arm64; strings read at the referenced addresses):
+- If host arg0 is 0x01000000 or 0x01000001: arg1 == 0x1000 -> "old adb
+  version" path; else -> "new adb version", sets `isNewAdbVersion = 1`.
+  Any other arg0 with arg1 != 0x1000 -> error, no reply.
+- Payload is checked with `strstr("host::")`; the text after `host::` goes
+  to `setUuid` (matches `onUuidReceived uuid=N9r8`).
+- Reply: CNXN, arg0 = 0x01000000 + isNew (so **0x01000001** for our head
+  unit, which sends maxdata 0x4000), arg1 = host maxdata if new else 4096
+  (also stored to `jadbd::max_payload`), payload = snprintf of
+  `device::ro.product.name=jadbd` (**no NUL**, 29 bytes), data_check left
+  0 in this function.
+- Probe now sends exactly these values, plus public-ADB OKAY to any
+  OPEN/WRTE so the first stream's data gets logged. UNVERIFIED live.

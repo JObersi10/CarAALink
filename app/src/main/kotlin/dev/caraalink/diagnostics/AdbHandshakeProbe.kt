@@ -97,8 +97,12 @@ class AdbHandshakeProbe(private val context: Context) {
                 Log.i(TAG, "RX ADB message: $message")
                 logger.log("Parsed ADB message: $message")
                 if (message.command == CMD_CNXN && !handshakeSent) {
-                    sendConnectReply(conn)
+                    sendConnectReply(conn, message.arg0, message.arg1)
                     handshakeSent = true
+                } else if (message.command == CMD_OPEN || message.command == CMD_WRTE) {
+                    // Public ADB: OKAY(local-id, remote-id) accepts an OPEN and
+                    // acks each WRTE. Data is only logged, never executed.
+                    send(conn, "OKAY", buildAdbMessage(CMD_OKAY, LOCAL_STREAM_ID, message.arg0, ByteArray(0)))
                 }
             }
             ConnectionStateHolder.update { it.copy(bytesRead = totalRead) }
@@ -111,20 +115,30 @@ class AdbHandshakeProbe(private val context: Context) {
         }
     }
 
-    private fun sendConnectReply(conn: UsbAccessoryConnection) {
-        // Banner string CONFIRMED in CarbitLink's libjadbd.so (strings); the
-        // head unit sat silent for 24s after our own "caraalink" banner.
-        // Trailing NUL mirrors the head unit's own "host::N9r8\0".
-        val payload = "device::ro.product.name=jadbd\u0000".toByteArray(Charsets.US_ASCII)
-        val message = buildAdbMessage(CMD_CNXN, VERSION, MAX_DATA, payload)
-        Log.i(TAG, "TX CNXN reply (${message.size} bytes)")
-        logger.log("TX CNXN reply (${message.size} bytes)")
+    /**
+     * Reply values CONFIRMED from libjadbd.so TransportBase::handleConn
+     * (disassembly, see claude/roadmap.md): if the host's maxdata isn't
+     * 0x1000 (ours sends 0x4000), jadbd replies version 0x01000001 and
+     * echoes the host's maxdata; otherwise 0x01000000 / 4096. Banner has
+     * no trailing NUL (data_length = snprintf return).
+     */
+    private fun sendConnectReply(conn: UsbAccessoryConnection, hostVersion: Int, hostMaxData: Int) {
+        val newVersion = (hostVersion == VERSION || hostVersion == VERSION_SKIP_CHECKSUM) && hostMaxData != MAX_DATA
+        val version = if (newVersion) VERSION_SKIP_CHECKSUM else VERSION
+        val maxData = if (newVersion) hostMaxData else MAX_DATA
+        val payload = "device::ro.product.name=jadbd".toByteArray(Charsets.US_ASCII)
+        send(conn, "CNXN v=0x${Integer.toHexString(version)} maxdata=$maxData", buildAdbMessage(CMD_CNXN, version, maxData, payload))
+    }
+
+    private fun send(conn: UsbAccessoryConnection, label: String, message: ByteArray) {
+        Log.i(TAG, "TX $label (${message.size} bytes)")
+        logger.log("TX $label (${message.size} bytes)")
         try {
             conn.output.write(message)
             conn.output.flush()
         } catch (e: IOException) {
             Log.w(TAG, "write failed", e)
-            logger.log("ERROR writing CNXN reply: ${e.message}")
+            logger.log("ERROR writing $label: ${e.message}")
         }
     }
 
@@ -188,7 +202,9 @@ class AdbHandshakeProbe(private val context: Context) {
         }
 
         private const val TAG = "AdbHandshakeProbe"
-        private const val VERSION = 0x01000000 // matches the version the head unit sent us
+        private const val VERSION = 0x01000000
+        private const val VERSION_SKIP_CHECKSUM = 0x01000001
+        private const val LOCAL_STREAM_ID = 1
         private const val MAX_DATA = 4096
 
         // Public ADB protocol command constants (AOSP system/core/adb/protocol.txt),
