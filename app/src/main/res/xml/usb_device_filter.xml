@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  TODO(protocol RE): fill in the real vendor-id / product-id the car's head unit
+  enumerates as, once confirmed from the CarbitLink APK's own usb_device_filter.xml
+  / accessory_filter.xml (or from a live USB capture). Do not guess values here.
+  See claude/roadmap.md and docs/protocol/ for current findings.
+-->
+<resources>
+</resources>

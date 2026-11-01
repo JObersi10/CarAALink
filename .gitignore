@@ -1,0 +1,23 @@
+# Third-party research artifacts (large, not ours to redistribute)
+*.apk
+CarbitLink-EasyConnection_6.5.1_APKPure/
+PhoneAuto-beta-2027-01-19/
+.DS_Store
+
+# Android / Gradle
+*.iml
+.gradle/
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.keystore
+*.jks
+
+# USB capture artifacts (may contain session-specific data)
+*.pcap
+*.pcapng
+usbmon-*.log
