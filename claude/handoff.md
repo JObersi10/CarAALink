@@ -7,38 +7,41 @@ wireless-debugging adb) against the real car head unit. See
 `roadmap.md` for full cited detail — this file is the "what actually
 happened and what to do next" summary.
 
-## LATEST (2026-11-01 12:25) — read this first
+## LATEST (2026-11-01, evening) — read this first
 
-ADB layer over AOA now WORKS (uncommitted changes in `AdbHandshakeProbe.kt`,
-see roadmap "jadbd" sections): 24 zero-byte kick on open, jadbd-identical
-CNXN reply (v 0x01000001, echo maxdata, banner without NUL), header and
-payload as separate writes, OKAY every OPEN/WRTE.
+**Live-confirmed so far**: ADB over AOA works (zero kick, jadbd CNXN
+reply), the head unit OPENs tcp:10922, we answer the PXC channel head
+(0x10000 -> 0x10001), and it sends its full CLIENT_INFO JSON.
 
-The head unit then OPENs `tcp:10922` and sends one 16-byte WRTE:
-`00 00 01 00 | 10 00 00 00 | 10 00 01 00 | 3C 00 00 00` (LE: 0x10000, 16,
-0x00010010, 60). 0x00010010 = `ECP_C2P_CLIENT_INFO` per CarbitLink logcat.
-It waits about 1.1 s for a reply, sends CLSE, and retries forever (UI stuck on
-"connecting"). NEXT: decompile CarbitLink Java (`jadx` into scratchpad;
-classes `PXCService`, `PXCForCar-C2P`) and find what the phone server
-sends back on 10922. Then implement that reply, read CLIENT_INFO JSON
-(has screen info), then a black frame, then Android Auto. Owner: no commits
-while iterating; commit only when asked. Owner wants terse replies.
+**Built and committed, NOT yet tested on the car** (`app/.../link/`,
+`app/.../video/`): the real session that replaced the probe for the
+attach flow (`ACTION_START_SESSION`):
+- `AdbTransport` — per-stream ids, OKAY flow control, maxdata chunking.
+- `PxcChannel` (tcp:10922) — channel heads, CLIENT_INFO reply, empty
+  cmd+1 acks for everything else (logged, so we see what it wants).
+- `MirrorControlChannel` (10921) / `MirrorDataChannel` (10920) — the
+  CarbitLink mirror protocol (roadmap "PXC + mirror protocol").
+- `CarVideoEncoder` (H.264 from a Surface) + `CarDisplay`: car home
+  screen (`CarHomePresentation`: clock, date, weather, custom background,
+  tiles Android Auto / Phone screen / Settings) on a private virtual
+  display, or a MediaProjection AUTO_MIRROR of the phone (not a second
+  display, so DeX doesn't start). Car touches drive the home screen; in
+  mirror mode they replay as taps/swipes through the accessibility service.
+- On attach, `MainActivity` starts the session and asks for screen
+  capture once (`ProjectionRequestActivity`).
+- "Android Auto" tile = opens AA (or Maps) on the phone + mirror. Real AA
+  projection would mean implementing the AA head-unit protocol (needs a
+  Google-signed head-unit certificate); not done, not planned to fake.
+- Popup fix: `UsbAccessoryConnection.close()` now closes the PFD.
 
-### Update 12:45
-- PXC head reply WORKS: car got 0x10001, then sent CLIENT_INFO (0x10010,
-  1342-byte JSON) and re-sends it every 1.6 s waiting for a reply.
-- PXC frame = 16-byte LE head: cmd, totalLen, cmd^totalLen, extra; then
-  body. Reply cmd = request cmd + 1 (CarbitLink `z0.e()`, `i.o()`).
-- BUILT, NOT INSTALLED (adb dropped): `maybeAnswerClientInfo` sends 0x10011
-  + JSON (pxcVersion, phone info, token 0, supportH264IFrame). Omits
-  CarbitLink's RSA pubkey/encryptedHUID (car says enableSockServerAuth=false).
-  Next: install, test, see the next C2P command; then video (H.264,
-  black frame first), then Android Auto. jadx output is in scratchpad
-  `carbit-jadx/` (regenerate if gone). Classes:
-  `sdk_communication/{l0,i,z0}.java`, `sdk_communication/C2P/*`.
-- Also uncommitted: no auto-reconnect (service stops on link error),
-  UsbAttachReceiver removed from manifest (it blocked the chooser popup),
-  ADB parser resyncs on bad magic.
+**Next test**: install, plug in, pick CarAALink, tap "Start now", export
+logs (`car-session-*.log` is now included). If no video: check whether
+CONFIG_CAPTURE (0x10) ever arrives on tcp:10921. If it doesn't, the head
+unit is waiting on some PXC reply; the log lists every C2P cmd we acked.
+
+**Ideas queued from the owner**: phone widgets on the car home screen
+(AppWidgetHost), app icon, more tiles (maps, music). Owner wants terse
+replies; commits allowed again (2026-11-01 evening).
 
 ## The big picture, in one paragraph
 
