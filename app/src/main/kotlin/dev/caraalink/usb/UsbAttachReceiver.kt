@@ -8,7 +8,6 @@ import android.hardware.usb.UsbManager
 import android.util.Log
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
-import dev.caraalink.service.UsbLinkForegroundService
 
 /**
  * Fires when the phone is plugged into the car's USB port.
@@ -17,11 +16,9 @@ import dev.caraalink.service.UsbLinkForegroundService
  * *accessory*, the head unit is the *host* — so USB_ACCESSORY_ATTACHED is
  * the only action that actually arrives here on real hardware.
  *
- * Temporary, explicit request (claude/roadmap.md, 2026-11-01): auto-starts
- * the ADB handshake probe the moment the accessory attaches, no manual
- * Developer Tools tap needed, while the owner is iterating on the ADB
- * handshake discovery. This is NOT the real protocol auto-start (that's
- * Phase 3) -- it's wiring an existing diagnostic tool to run automatically.
+ * This only records that the accessory is attached — it does NOT auto-start
+ * the sniffer or the real protocol. The sniffer is a manual dev-tools action
+ * (see claude/roadmap.md); real protocol auto-start lands in Phase 3.
  */
 class UsbAttachReceiver : BroadcastReceiver() {
 
@@ -49,11 +46,5 @@ class UsbAttachReceiver : BroadcastReceiver() {
                 accessoryModel = accessory.model,
             )
         }
-
-        Log.i(TAG, "onReceive: auto-starting ADB handshake probe")
-        val serviceIntent = Intent(context, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
-            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
-        context.startForegroundService(serviceIntent)
     }
 }
