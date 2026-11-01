@@ -41,7 +41,7 @@ object HeadUnitServerLauncher {
         return true
     }
 
-    private fun isAccessibilityServiceEnabled(context: Context): Boolean {
+    fun isAccessibilityServiceEnabled(context: Context): Boolean {
         val expected = ComponentName(context, HeadUnitServerAccessibilityService::class.java)
         val enabled = Settings.Secure.getString(
             context.contentResolver,

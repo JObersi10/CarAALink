@@ -153,6 +153,27 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
 - [x] USB manifest declarations — accessory role + confirmed `Carbit`/
   `CarbitDriverOversea` accessory filter wired into `AndroidManifest.xml` /
   `res/xml/accessory_filter.xml`
+- [x] USB sniffer diagnostic mode (`UsbSnifferDiagnostic` + `DiagnosticLogger`,
+  reachable from "Developer tools" on `MainActivity`) — opens the confirmed
+  accessory connection and dumps every raw byte the head unit sends to a
+  rotating log file (hex+ASCII), exportable via the share sheet. No protocol
+  logic — purely a capture tool to unblock Phase 1 without needing a rooted
+  phone for `usbmon`. Caveat: since it doesn't speak the real handshake, the
+  head unit may retry/give up after a timeout; whatever it sends before that
+  is still real evidence. Not yet tried against the owner's actual head unit.
+- [x] Foreground service (`UsbLinkForegroundService`) — keeps the USB link
+  alive while backgrounded, posts a status notification (phase, byte counts,
+  a Stop action), holds a partial wake lock (CPU only — screen staying off
+  is fine, AA renders to its own virtual display regardless), and
+  auto-reconnects the sniffer with exponential backoff (2s–30s) when
+  `auto_reconnect_usb` is on. Currently only drives the sniffer; swap in the
+  real protocol transport once Phase 3 lands.
+- [x] Connection diagnostics screen (`ConnectionDiagnosticsActivity`) — live
+  phase/accessory/byte-counter/error view backed by `ConnectionStateHolder`.
+- [x] Onboarding checklist (`OnboardingActivity`) — accessibility service,
+  battery-optimization exemption, notification permission (API 33+), each
+  with live status and a one-tap fix. Not yet wired to auto-launch on first
+  run (reachable from MainActivity's "Setup checklist" button for now).
 - [x] One-click "Start head unit server" (`HeadUnitServerAccessibilityService`
   + `HeadUnitServerLauncher`) — automates Settings → Version×10 → ⋮ → Start
   head unit server. Heuristic text/description matching, not a stable API;
