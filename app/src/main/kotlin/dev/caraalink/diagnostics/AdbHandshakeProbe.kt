@@ -107,8 +107,10 @@ class AdbHandshakeProbe(private val context: Context) {
     }
 
     private fun sendConnectReply(conn: UsbAccessoryConnection) {
-        val payload = "device::ro.product.name=caraalink;ro.product.model=CarAALink\u0000"
-            .toByteArray(Charsets.US_ASCII)
+        // Banner string CONFIRMED in CarbitLink's libjadbd.so (strings); the
+        // head unit sat silent for 24s after our own "caraalink" banner.
+        // Trailing NUL mirrors the head unit's own "host::N9r8\0".
+        val payload = "device::ro.product.name=jadbd\u0000".toByteArray(Charsets.US_ASCII)
         val message = buildAdbMessage(CMD_CNXN, VERSION, MAX_DATA, payload)
         Log.i(TAG, "TX CNXN reply (${message.size} bytes)")
         logger.log("TX CNXN reply (${message.size} bytes)")

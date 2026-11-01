@@ -475,3 +475,10 @@ Evidence: `adb-probe-20261101-113131.log` (owner export) + device logcat.
   `0x01000001`+ may skip it. A zero checksum likely got our reply rejected.
   Fix: probe now sends the real sum and reassembles split reads.
   UNVERIFIED until the next live test.
+
+### Retest 11:42 (checksum fix in)
+- CONFIRMED: link stayed up ~24 s after our CNXN (was ~4 s). Head unit
+  sent nothing more, then EIO.
+- CONFIRMED (`strings libjadbd.so`): CarbitLink's banner is
+  `device::ro.product.name=jadbd`. Probe now sends that exact banner.
+  UNVERIFIED whether the head unit gates on it.
