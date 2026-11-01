@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjectionManager
+import dev.caraalink.accessibility.HeadUnitServerAccessibilityService
 import dev.caraalink.link.CarSession
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
@@ -180,19 +181,25 @@ class UsbLinkForegroundService : Service() {
     }
 
     private val phoneActions = object : CarSession.PhoneActions {
-        override fun openAndroidAuto() {
-            val intent = packageManager.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE)
-                ?: packageManager.getLaunchIntentForPackage(GOOGLE_MAPS_PACKAGE)
-                ?: return
-            runCatching { startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-                .onFailure { Log.w(TAG, "openAndroidAuto failed", it) }
+        override fun back() {
+            HeadUnitServerAccessibilityService.instance?.backOnPhone()
+                ?: Log.w(TAG, "back ignored: accessibility service off")
         }
 
         override fun requestScreenCapture() {
-            runCatching {
-                startActivity(Intent(this@UsbLinkForegroundService, ProjectionRequestActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }.onFailure { Log.w(TAG, "requestScreenCapture failed", it) }
+            val ctx = this@UsbLinkForegroundService
+            val intent = Intent(ctx, ProjectionRequestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            runCatching { startActivity(intent) }.onFailure { Log.w(TAG, "requestScreenCapture failed", it) }
+            // Android may silently block activity starts from the background; the notification always works.
+            val manager = getSystemService(NotificationManager::class.java)
+            manager.notify(NOTIFICATION_ID_CAPTURE, NotificationCompat.Builder(ctx, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_menu_slideshow)
+                .setContentTitle("Show phone screen on the car")
+                .setContentText("Tap to allow screen mirroring")
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setContentIntent(PendingIntent.getActivity(ctx, 1, intent, PendingIntent.FLAG_IMMUTABLE))
+                .build())
         }
     }
 
@@ -326,6 +333,7 @@ class UsbLinkForegroundService : Service() {
         private const val TAG = "UsbLinkForegroundService"
         private const val CHANNEL_ID = "usb_link"
         private const val NOTIFICATION_ID = 1
+        private const val NOTIFICATION_ID_CAPTURE = 2
         private const val MAX_RECONNECT_ATTEMPTS = 5
 
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
@@ -335,7 +343,5 @@ class UsbLinkForegroundService : Service() {
         const val ACTION_PROJECTION_GRANTED = "dev.caraalink.service.action.PROJECTION_GRANTED"
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
-        private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
-        private const val GOOGLE_MAPS_PACKAGE = "com.google.android.apps.maps"
     }
 }

@@ -28,4 +28,4 @@ usbmon-*.log
 .claude/
 
 # raw device logcat dumps (contain car/device IDs)
-cl-*.txt
+cl*.txt

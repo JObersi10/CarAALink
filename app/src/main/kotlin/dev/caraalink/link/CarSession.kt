@@ -7,6 +7,7 @@ import android.media.projection.MediaProjection
 import android.util.Log
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
+import dev.caraalink.R
 import dev.caraalink.diagnostics.DiagnosticLogger
 import dev.caraalink.usb.UsbAccessoryConnection
 import dev.caraalink.video.CarDisplay
@@ -28,19 +29,24 @@ class CarSession(
 ) : MirrorHost {
 
     interface PhoneActions {
-        fun openAndroidAuto()
         fun requestScreenCapture()
+        fun back()
     }
 
     private val logger = DiagnosticLogger(context, "car-session")
     private var transport: AdbTransport? = null
     private var config: CaptureConfig? = null
     private var encoder: CarVideoEncoder? = null
+    private var pxc: PxcChannel? = null
+    private val features = CarFeatures(context)
     private val display = CarDisplay(context, listOf(
-        CarHomePresentation.Tile("Android Auto", "▲", Color.parseColor("#1E8E3E")) { openAndroidAuto() },
-        CarHomePresentation.Tile("Phone screen", "▣", Color.parseColor("#1A73E8")) { openMirror() },
-        CarHomePresentation.Tile("Settings", "⚙", Color.parseColor("#5F6368")) { showSettings() },
-    ))
+        CarHomePresentation.Tile("Android Auto", R.drawable.ic_tile_android_auto, Color.parseColor("#1E8E3E")) { openAndroidAuto() },
+        CarHomePresentation.Tile("Phone screen", R.drawable.ic_tile_phone_screen, Color.parseColor("#1A73E8")) { openMirror() },
+        CarHomePresentation.Tile("Settings", R.drawable.ic_tile_settings, Color.parseColor("#5F6368")) { showSettings() },
+    ), onBack = { phone.back() }, onExit = ::exitToHome)
+
+    private fun exitToHome(): Unit { display.showHome() }
+
 
     private val frameLock = Any()
     @Volatile private var dataStream: AdbTransport.Stream? = null
@@ -48,6 +54,11 @@ class CarSession(
     private var configSent = false
     private val pullQueue = ArrayDeque<ByteArray>()
     private var framesSent = 0L
+    private var framesEncoded = 0L
+    private var frameRequests = 0L
+    private var pendingRequests = 0
+    private var waitingForKey = true
+    private var lastKeyFrame: ByteArray? = null
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -59,7 +70,8 @@ class CarSession(
             it.copy(phase = ConnectionPhase.ATTACHED, accessoryManufacturer = accessory.manufacturer,
                 accessoryModel = accessory.model, lastError = null)
         }
-        val pxc = PxcChannel(logger) { info -> onClientInfo(info) }
+        features.start()
+        val pxc = PxcChannel(logger, { info -> onClientInfo(info) }, features::replyBody).also { this.pxc = it }
         val ctrl = MirrorControlChannel(logger, this)
         val data = MirrorDataChannel(logger, this)
         transport = AdbTransport(conn, logger, { service ->
@@ -98,13 +110,16 @@ class CarSession(
     }
 
     fun setProjection(projection: MediaProjection) {
-        display.setProjection(projection)
-        logger.log("Screen capture granted")
+        val show = mirrorWanted
+        mirrorWanted = false
+        display.setProjection(projection, showMirrorNow = show)
+        logger.log("Screen capture granted (showMirror=$show)")
     }
 
     private fun release() {
         weatherThread?.interrupt()
         weatherThread = null
+        android.os.Handler(android.os.Looper.getMainLooper()).post { features.stop() }
         encoder?.release()
         encoder = null
         display.release()
@@ -119,12 +134,15 @@ class CarSession(
     // --- car home screen actions ---
 
     private fun openAndroidAuto() {
-        phone.openAndroidAuto()
-        if (!display.showMirror()) askForCapture() else display.setStatus("Android Auto (phone screen)")
+        display.setStatus("Android Auto: coming soon")
     }
 
+    @Volatile private var mirrorWanted = false
+
     private fun openMirror() {
-        if (!display.showMirror()) askForCapture()
+        if (display.showMirror()) return
+        mirrorWanted = true
+        askForCapture()
     }
 
     private fun askForCapture() {
@@ -191,31 +209,68 @@ class CarSession(
         synchronized(frameLock) {
             dataStream = stream
             configSent = false
+            waitingForKey = true
+            pendingRequests = 0
             pullQueue.clear()
         }
+        logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
         encoder?.requestKeyFrame()
     }
 
     override fun onDataStreamClosed(stream: AdbTransport.Stream) {
         synchronized(frameLock) { if (dataStream === stream) dataStream = null }
+        logger.log("data stream closed; requests=$frameRequests sent=$framesSent encoded=$framesEncoded")
     }
 
     override fun onFrameRequested(stream: AdbTransport.Stream) {
-        val out = synchronized(frameLock) {
-            val cfg = codecConfig
+        frameRequests++
+        if (frameRequests <= 3 || frameRequests % 100 == 0L) logger.log("frame request #$frameRequests (queued=${pullQueue.size})")
+        synchronized(frameLock) {
+            // CarbitLink blocks until the encoder has a frame instead of answering
+            // "none", so hold the request and answer when the next frame lands.
             val next = pullQueue.poll()
-            when {
-                next == null -> MirrorDataChannel.NO_FRAME
-                !configSent && cfg != null -> { configSent = true; MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(next) }
-                else -> MirrorDataChannel.frame(next)
+            if (next == null) {
+                pendingRequests++
+                encoder?.requestKeyFrame()
+                scheduleStarvationCheck(stream)
+                return
             }
+            sendFrameLocked(stream, next)
         }
-        stream.write(out)
-        if (out !== MirrorDataChannel.NO_FRAME) framesSent++
+    }
+
+    private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
+
+    /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
+    private fun scheduleStarvationCheck(stream: AdbTransport.Stream) {
+        watchdog.postDelayed({
+            synchronized(frameLock) {
+                val key = lastKeyFrame
+                if (pendingRequests > 0 && dataStream === stream && key != null) {
+                    pendingRequests--
+                    sendFrameLocked(stream, key)
+                }
+            }
+        }, 80)
+    }
+
+    /** Caller holds [frameLock]. Codec config always precedes the first frame. */
+    private fun sendFrameLocked(stream: AdbTransport.Stream, frame: ByteArray) {
+        val cfg = codecConfig
+        if (!configSent && cfg != null) {
+            stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))
+            configSent = true
+        } else {
+            stream.write(MirrorDataChannel.frame(frame))
+        }
+        framesSent++
+        if (framesSent <= 3 || framesSent % 300 == 0L) logger.log("frame sent #$framesSent (${frame.size} bytes)")
     }
 
     private fun onEncodedFrame(data: ByteArray, isConfig: Boolean, isKey: Boolean) {
+        framesEncoded++
+        if (framesEncoded <= 2) logger.log("encoder output #$framesEncoded config=$isConfig key=$isKey ${data.size} bytes")
         val pull = (config?.wantFps ?: 0) == 0
         synchronized(frameLock) {
             if (isConfig) {
@@ -223,8 +278,19 @@ class CarSession(
                 configSent = false
                 return
             }
+            if (isKey) lastKeyFrame = data
             val stream = dataStream ?: return
+            // The car's decoder needs to start on a keyframe.
+            if (waitingForKey) {
+                if (!isKey) { encoder?.requestKeyFrame(); return }
+                waitingForKey = false
+            }
             if (pull) {
+                if (pendingRequests > 0) {
+                    pendingRequests--
+                    sendFrameLocked(stream, data)
+                    return
+                }
                 if (pullQueue.size >= MAX_PULL_QUEUE) {
                     if (!isKey) { encoder?.requestKeyFrame(); return }
                     pullQueue.clear()
@@ -236,19 +302,14 @@ class CarSession(
                 if (!isKey) { encoder?.requestKeyFrame(); return }
                 stream.clearBacklog()
             }
-            val cfg = codecConfig
-            if (!configSent && cfg != null) {
-                stream.write(MirrorDataChannel.frame(cfg))
-                configSent = true
-            }
-            stream.write(MirrorDataChannel.frame(data))
-            framesSent++
+            sendFrameLocked(stream, data)
         }
     }
 
     companion object {
         private const val TAG = "CarSession"
         private const val DEFAULT_BITRATE = 3_000_000
+        private const val APPSTATUS_BACKGROUND = 0x20030
         private const val MAX_PULL_QUEUE = 8
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
     }

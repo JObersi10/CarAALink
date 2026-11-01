@@ -120,6 +120,7 @@ class AdbTransport(
         repeat(50) { attempt ->
             try {
                 synchronized(writeLock) { conn.output.write(ByteArray(24)); conn.output.flush() }
+                logger.log("zero kick sent (attempt ${attempt + 1}), waiting for CNXN")
                 return
             } catch (e: IOException) {
                 logger.log("zero kick attempt ${attempt + 1} failed: ${e.message}")
@@ -129,7 +130,8 @@ class AdbTransport(
     }
 
     private fun readLoop() {
-        val buffer = ByteArray(64 * 1024)
+        // 16 KB = the accessory driver's bulk buffer; the probe that worked live used this size.
+        val buffer = ByteArray(16 * 1024)
         var pending = ByteArray(0)
         var reason = "eof"
         try {

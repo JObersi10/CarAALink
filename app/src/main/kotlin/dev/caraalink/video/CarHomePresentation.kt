@@ -31,7 +31,7 @@ class CarHomePresentation(
     private val tiles: List<Tile>,
 ) : Presentation(context, display) {
 
-    data class Tile(val label: String, val glyph: String, val color: Int, val onTap: () -> Unit)
+    data class Tile(val label: String, val iconRes: Int, val color: Int, val onTap: () -> Unit)
 
     private lateinit var statusView: TextView
     private lateinit var infoView: TextView
@@ -102,6 +102,17 @@ class CarHomePresentation(
         }
         root.addView(row)
         frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // Some hardware encoders emit nothing for an unchanged screen; the car
+        // pulls frames continuously and gives up if they stop. A 1px view that
+        // flickers between two near-identical colours keeps frames flowing.
+        val ticker = android.view.View(context)
+        frame.addView(ticker, FrameLayout.LayoutParams(1, 1))
+        android.animation.ValueAnimator.ofInt(0, 1).apply {
+            duration = 1000L / 30
+            repeatCount = android.animation.ValueAnimator.INFINITE
+            addUpdateListener { ticker.setBackgroundColor(if (it.animatedValue == 0) 0xFF0A0F12.toInt() else 0xFF0A0F13.toInt()) }
+            start()
+        }
         setContentView(frame)
     }
 
@@ -123,12 +134,10 @@ class CarHomePresentation(
         }
         isClickable = true
         setOnClickListener { tile.onTap() }
-        addView(TextView(context).apply {
-            text = tile.glyph
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 40f)
-        })
+        addView(ImageView(context).apply {
+            setImageResource(tile.iconRes)
+            setColorFilter(Color.WHITE)
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         addView(TextView(context).apply {
             text = tile.label
             gravity = Gravity.CENTER

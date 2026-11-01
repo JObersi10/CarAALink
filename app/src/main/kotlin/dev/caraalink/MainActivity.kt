@@ -21,7 +21,6 @@ import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
 import dev.caraalink.diagnostics.DeveloperToolsActivity
 import dev.caraalink.onboarding.OnboardingActivity
-import dev.caraalink.service.ProjectionRequestActivity
 import dev.caraalink.service.UsbLinkForegroundService
 import dev.caraalink.settings.SettingsActivity
 
@@ -46,10 +45,13 @@ class MainActivity : Activity() {
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED &&
-            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
+            checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
-            // Only for the weather on the car home screen.
-            requestPermissions(arrayOf(android.Manifest.permission.ACCESS_COARSE_LOCATION), 8)
+            // The car asks the phone for GPS (its own nav/clock), plus weather on the home screen.
+            requestPermissions(arrayOf(
+                android.Manifest.permission.ACCESS_FINE_LOCATION,
+                android.Manifest.permission.ACCESS_COARSE_LOCATION,
+            ), 8)
         }
     }
 
@@ -72,9 +74,6 @@ class MainActivity : Activity() {
             .setAction(UsbLinkForegroundService.ACTION_START_SESSION)
             .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
         startForegroundService(serviceIntent)
-        // Ask for screen capture now, while we're in the foreground, so the car's
-        // "Phone screen" tile works without touching the phone later.
-        startActivity(Intent(this, ProjectionRequestActivity::class.java))
     }
 
     @Deprecated("Plain Activity; result API not used")
@@ -99,6 +98,15 @@ class MainActivity : Activity() {
                 render()
             }
         }.start()
+    }
+
+    // When the app is already running, picking it in the USB chooser delivers
+    // the attach intent here instead of onCreate.
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        Log.i(TAG, "onNewIntent: action=${intent.action}")
+        maybeAutoStartOnAttach(intent)
     }
 
     private fun maybeShowOnboarding() {
