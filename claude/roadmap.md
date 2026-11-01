@@ -8,9 +8,9 @@ Last updated: 2026-10-31 (after first RE pass)
 |---|---|
 | USB role (host vs accessory) | **CONFIRMED** — phone is USB *accessory*, head unit is USB *host* |
 | USB VID/PID / accessory ID | **CONFIRMED** — AOA accessory match, not VID/PID (manufacturer `Carbit`, model `CarbitDriverOversea`) |
-| Handshake sequence | **PARTIALLY CONFIRMED by live capture (2026-11-01)** — the head unit's first bytes over the accessory link are a standard **ADB protocol CONNECT** (`"CNXN"` + `"host::..."` banner), not a CarbitLink-specific handshake. See capture below. The RSA-signed auth step from static RE may be a separate/later step, or may not apply if the real transport is ADB-based — open question. |
-| Packet/frame format | **PARTIALLY CONFIRMED by live capture** — see below. Still need bytes beyond the initial ADB CONNECT to know if CarbitLink rides on top of ADB's own OPEN/WRTE/OKAY/CLSE framing or switches to something else after the handshake. |
-| Crypto / obfuscation | PARTIAL — RSA auth/signature path confirmed to exist; no byte-level detail yet |
+| Handshake sequence | **CONFIRMED architecture** (live capture + binary RE, 2026-11-01) — the head unit's first bytes are a real ADB protocol CONNECT, and CarbitLink embeds its own ADB daemon (`libjadbd.so` / `CarbitEPSDK::ADBD`) to speak it. See below for the full picture. |
+| Packet/frame format | **CONFIRMED architecture** — it's ADB's own OPEN/WRTE/OKAY/CLSE stream multiplexing, not a bespoke CarbitLink frame format. Named services (`C2PMainService`, `P2CMainService`, etc.) are opened as ADB streams. Exact service-name strings used on the wire still unconfirmed (see below). |
+| Crypto / obfuscation | PARTIAL — RSA auth/signature path confirmed to exist; now tied to a confirmed UUID-based hardware-auth exchange (`EPHardwareAuth::getCheckUUIDCmd`, `onUuidReceived`) riding on the ADB channel. No byte-level detail yet. |
 | Video transport | **CONFIRMED** — software H.264 (x264) via bundled FFmpeg, YUV in, Annex-B NAL out (MJPEG/PNG fallback also built in) |
 | Touch/control wire format | PARTIAL — Java-level struct confirmed (`EPTouchEventData{type,x,y,slot}`, `EPBtnCode`); on-wire byte encoding unconfirmed |
 | Audio handling | PARTIAL — PCM format enum confirmed at Java boundary; PCM-on-wire vs AAC-encode-before-wire unconfirmed |
@@ -73,6 +73,78 @@ the other end gives up). Next step: have our app actually complete a
 minimal ADB CONNECT handshake (we control the device side; within reach
 since the protocol is public) to see what it asks for next, instead of
 capturing it give up again.
+
+## RE pass 2: CarbitLink embeds its own ADB daemon (2026-11-01)
+
+Live capture showed the head unit's first move is a real ADB CONNECT. Rather
+than guess why, went back into `CarbitLink-EasyConnection_6.5.1_APKPure`'s
+own native libraries (`strings` on the `.so` files directly — no
+disassembler is configured in this environment, `rea doctor` showed Ghidra/
+Hopper/IDA all unavailable, but plain `strings` was enough here since the
+binary isn't stripped of symbol names).
+
+**`libEPSDK.so`'s `lib/arm64-v8a` directory also contains a `libjadbd.so`** —
+literally "Java ADBD". Its demangled symbols are a complete, from-scratch
+ADB protocol daemon implementation in a `jadbd::` C++ namespace: `ADBD`
+(`start(TransportBase*)`/`stop(...)`), `AgentStream`, `SockStream`
+(`createTcpSock`/`createLocalSock` — forwards ADB streams to real local
+sockets, exactly like real `adb forward`), `StreamBase`, `Packet`,
+`StreamManager`, `FdEventManager`. This is a real, generic ADB-protocol
+implementation, not something CarbitLink invented.
+
+**`libEPSDK.so` itself mirrors this almost exactly** under its own
+`CarbitEPSDK::` namespace — `ADBD`, `AgentStream`, `Packet`, `StreamBase`,
+plus a higher-level `CarbitEPSDK::jAdbd` wrapper
+(`initialize(IJAdbdEventListener*)` / `startService(int)` / `stopService()`)
+with an event-listener interface carrying `onError(int, string)` and,
+notably, **`onUuidReceived(const string&)`**. That UUID flows into
+`TransportBase::setUuid()` → confirmed via the literal log string
+`"[aoa]AOATransport:setUuid uuid=%s, isEmpty=%d, size=%d"` — i.e. the ADB
+session carries a UUID that gets attached to the same `AOATransport` object
+RE pass 1 already found driving the USB accessory link.
+
+That UUID feeds a **hardware-auth check**: `CarbitEPSDK::EPHardwareAuth::
+getCheckUUIDCmd()` and `CarbitEPSDK::C2PMainService::handleCheckCarUUID(...)`,
+plus log strings `"[EPSDKContext]updateClientPXCAuthInfo channel=%d, uuid=%s,
+status=%d"` and `"checkClientPXCAuth channel=%d, uuid=%s"` — ties back to RE
+pass 1's RSA-signature finding (`libhud_protocol.so`'s license-key stub,
+`AuthRSA` symbol): the UUID exchanged over this embedded ADB session is
+plausibly what gets checked against the RSA-signed license, though the
+exact mechanics of that check are still unconfirmed.
+
+**Named services, almost certainly the ADB `OPEN` service-name strings
+used on the wire** (class names with a `getName()` virtual method, found as
+literal strings in the binary): `C2PService`, `P2CService`,
+`C2PMainService`, `P2CMainService`, `C2PMInstService`, `P2CMInstService`,
+`F2PService`, `P2FService`, `D2PService`. Reading the naming convention
+(not yet verified against a capture): C2P/P2C = Car-to-Phone / Phone-to-Car
+(main control channel), F2P/P2F = File-to-Phone / Phone-to-File, D2P =
+likely the display/video channel. Literal ADB service-string prefixes
+(`"local:"`, `"tcp:"`, `"localabstract:"`, `"localreserved:"`,
+`"localfilesystem:"`) are also present as strings in `libEPSDK.so`,
+confirming its `AgentStream`/`SockStream` parse standard ADB service syntax.
+
+**What this means for Phase 3**: the wire protocol isn't a bespoke
+CarbitLink framing scheme on top of the USB accessory link — it's a real
+ADB session (CNXN handshake, then OPEN/WRTE/OKAY/CLSE stream multiplexing)
+carrying CarbitLink-specific named services. Implementing our side means:
+(1) a minimal ADB device-role implementation (public protocol, already
+started — see `AdbHandshakeProbe`), (2) handling whatever `OPEN` requests
+arrive with the service names above, (3) the UUID/hardware-auth exchange,
+which may or may not be something we can satisfy without the real
+CarbitLink licensing backend. **Ground rule still applies**: this is
+architectural understanding to build our own clean-room implementation
+from, not license to port CarbitLink's actual compiled code — RSA keys,
+exact auth algorithms, or any literal logic beyond what's cited here as a
+confirmed fact stay out of our implementation unless independently
+re-derived.
+
+**Still unconfirmed**: the exact bytes of an `OPEN` request (service-name
+string actually sent), whether the UUID is generated by the phone or
+requested from the car, and what happens if the hardware-auth check fails
+(does it block media channels only, or the whole session?). Next capture
+should use `AdbHandshakeProbe` (not the passive sniffer) on a fresh
+plug-in, long enough to see the first `OPEN` after our CNXN reply.
 
 ## Real crashes found and fixed (2026-11-01)
 
