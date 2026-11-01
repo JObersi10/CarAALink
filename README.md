@@ -1,4 +1,4 @@
-# headunit-bridge
+# CarAALink
 
 Native Android app that replaces a CarbitLink wireless-CarPlay/Android-Auto
 USB dongle. The phone plugs directly into a car's factory head unit

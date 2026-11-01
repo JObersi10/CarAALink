@@ -21,3 +21,4 @@ captures/
 *.pcap
 *.pcapng
 usbmon-*.log
+.claude/

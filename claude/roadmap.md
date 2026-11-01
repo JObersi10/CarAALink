@@ -150,10 +150,22 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   reverse-engineered wire-format code
 - [x] CI workflow (`.github/workflows/android-ci.yml`) — builds `assembleDebug`
   on a standard JDK 17 + Android SDK runner setup
-- [ ] USB manifest declarations filled in once role + VID/PID confirmed
-- [ ] Native AA head-unit-server bring-up (likely `AccessibilityService`
-  automation of Settings → Android Auto → Version×10 → ⋮ → Start head unit
-  server) — confirm current feasibility on the target Android version first
+- [x] USB manifest declarations — accessory role + confirmed `Carbit`/
+  `CarbitDriverOversea` accessory filter wired into `AndroidManifest.xml` /
+  `res/xml/accessory_filter.xml`
+- [x] One-click "Start head unit server" (`HeadUnitServerAccessibilityService`
+  + `HeadUnitServerLauncher`) — automates Settings → Version×10 → ⋮ → Start
+  head unit server. Heuristic text/description matching, not a stable API;
+  needs on-device testing against the owner's actual Android Auto version,
+  and `auto_start_head_unit_server` isn't wired into `UsbAttachReceiver` yet
+  (TODO there)
+- [x] Settings screen (`SettingsActivity` + `root_preferences.xml` +
+  `AppSettings`) — resolution override (auto/custom), frame rate, video
+  bitrate, audio sample rate/channels, auto-start-head-unit-server,
+  auto-reconnect, USB role override (debug only — role itself is confirmed),
+  verbose logging, debug overlay, accessibility-service shortcut. Nothing in
+  the capture/protocol pipeline reads these yet — wiring happens as that code
+  lands in Phase 2/3
 - [ ] `MediaProjection` + `VirtualDisplay` capture wired to AA's rendered
   surface, sized from the head unit's real display width/height/density
   (from the CarbitLink handshake — not hardcoded)
@@ -170,8 +182,8 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
 
 - [ ] Validate against the owner's actual head unit
 - [ ] Handle reconnect/resync, error frames, version negotiation edge cases
-- [ ] Revisit project name once protocol work is further along (currently a
-  placeholder: `headunit-bridge`)
+- [x] Project name: **CarAALink** (renamed from the `headunit-bridge`
+  placeholder)
 
 ## Open questions carried over from the original brief
 
@@ -180,6 +192,8 @@ Target: `CarbitLink-EasyConnection_6.5.1_APKPure.apk` (primary), `PhoneAuto-beta
   role, since the phone's role could differ.)
 - Is there an API for programmatically starting AA's head-unit-server mode,
   or does it require `AccessibilityService` automation of the developer-mode
-  toggle (as PhoneAuto/CarCast Launcher/TarPlay Tesla reportedly do)? Confirm
-  current feasibility on recent Android versions before committing to this
-  approach.
+  toggle (as PhoneAuto/CarCast Launcher/TarPlay Tesla reportedly do)? **No
+  public API found** — `HeadUnitServerAccessibilityService` (our own
+  implementation, not extracted from PhoneAuto) automates the toggle by text
+  matching. Still needs on-device verification against the owner's actual
+  Android Auto build; AA's settings copy/layout can change between versions.

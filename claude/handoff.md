@@ -46,9 +46,13 @@ hasn't completed yet, resume it rather than starting a fresh RE pass.
 
 ## Repo / workflow notes
 
-- GitHub: repo `JObersi10/headunit-bridge` did not exist at session start;
-  created fresh (private) from this scaffold. Work happens on branches + PRs,
-  not direct pushes to `main`.
+- GitHub: repo created fresh at `JObersi10/headunit-bridge`, then renamed to
+  `JObersi10/CarAALink` once the project name was picked. The owner asked for
+  it to be public, but the auto-mode permission classifier blocks visibility
+  changes from this session ("Create Public Surface") — it's still private
+  as of this note; flip it via `gh repo edit JObersi10/CarAALink --visibility
+  public` or the GitHub UI. Work happens on branches + PRs, not direct
+  pushes to `main`.
 - The two source APKs (and their extracted folders) are gitignored — large,
   third-party binaries, not ours to redistribute. They live locally at the
   repo root for RE tooling to read directly.
