@@ -20,6 +20,7 @@ import dev.caraalink.MainActivity
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionSnapshot
 import dev.caraalink.connection.ConnectionStateHolder
+import dev.caraalink.diagnostics.AdbHandshakeProbe
 import dev.caraalink.diagnostics.UsbSnifferDiagnostic
 import dev.caraalink.settings.AppSettings
 
@@ -35,8 +36,10 @@ class UsbLinkForegroundService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private var wakeLock: PowerManager.WakeLock? = null
     private var sniffer: UsbSnifferDiagnostic? = null
+    private var adbProbe: AdbHandshakeProbe? = null
     private var reconnectRunnable: Runnable? = null
     private var pendingAccessory: UsbAccessory? = null
+    private var resumeActiveMode: ((UsbAccessory) -> Unit)? = null
 
     private val stateListener: (ConnectionSnapshot) -> Unit = { updateNotification(it) }
 
@@ -49,33 +52,8 @@ class UsbLinkForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.i(TAG, "onStartCommand: action=${intent?.action}")
         when (intent?.action) {
-            ACTION_START_SNIFFER -> {
-                val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
-                if (accessory != null) {
-                    Log.i(TAG, "onStartCommand: ACTION_START_SNIFFER with accessory=${accessory.manufacturer}/${accessory.model}")
-                    pendingAccessory = accessory
-                    // CRASH SEEN ON REAL HARDWARE (claude/roadmap.md): starting a
-                    // connectedDevice-typed foreground service throws
-                    // SecurityException once the accessory's permission grant has
-                    // lapsed (e.g. it was unplugged between the intent being sent
-                    // and this running). Don't let that take the whole app down.
-                    val started = try {
-                        startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot))
-                        true
-                    } catch (e: SecurityException) {
-                        Log.w(TAG, "startForeground(connectedDevice) refused -- accessory permission likely lapsed", e)
-                        ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = "No USB accessory permission") }
-                        stopSelf()
-                        false
-                    }
-                    if (started) {
-                        acquireWakeLock()
-                        beginSniffing(accessory)
-                    }
-                } else {
-                    Log.w(TAG, "onStartCommand: ACTION_START_SNIFFER with no EXTRA_ACCESSORY")
-                }
-            }
+            ACTION_START_SNIFFER -> handleStart(intent) { accessory -> beginSniffing(accessory) }
+            ACTION_START_ADB_PROBE -> handleStart(intent) { accessory -> beginAdbProbe(accessory) }
             ACTION_STOP -> {
                 Log.i(TAG, "onStartCommand: ACTION_STOP")
                 stopSelfCleanly()
@@ -84,18 +62,59 @@ class UsbLinkForegroundService : Service() {
         return START_NOT_STICKY
     }
 
+    private fun handleStart(intent: Intent, begin: (UsbAccessory) -> Unit) {
+        val accessory = intent.getParcelableExtra<UsbAccessory>(UsbManager.EXTRA_ACCESSORY)
+        if (accessory == null) {
+            Log.w(TAG, "handleStart: ${intent.action} with no EXTRA_ACCESSORY")
+            return
+        }
+        Log.i(TAG, "handleStart: ${intent.action} with accessory=${accessory.manufacturer}/${accessory.model}")
+        pendingAccessory = accessory
+        // CRASH SEEN ON REAL HARDWARE (claude/roadmap.md): starting a
+        // connectedDevice-typed foreground service throws SecurityException
+        // once the accessory's permission grant has lapsed (e.g. it was
+        // unplugged between the intent being sent and this running). Don't
+        // let that take the whole app down.
+        val started = try {
+            startForeground(NOTIFICATION_ID, buildNotification(ConnectionStateHolder.snapshot))
+            true
+        } catch (e: SecurityException) {
+            Log.w(TAG, "startForeground(connectedDevice) refused -- accessory permission likely lapsed", e)
+            ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = "No USB accessory permission") }
+            stopSelf()
+            false
+        }
+        if (started) {
+            acquireWakeLock()
+            begin(accessory)
+        }
+    }
+
     private fun beginSniffing(accessory: UsbAccessory) {
         Log.i(TAG, "beginSniffing: ${accessory.manufacturer}/${accessory.model}")
+        adbProbe?.stop()
         sniffer?.stop()
         val s = UsbSnifferDiagnostic(this)
         sniffer = s
+        resumeActiveMode = ::beginSniffing
         s.start(accessory)
+    }
+
+    private fun beginAdbProbe(accessory: UsbAccessory) {
+        Log.i(TAG, "beginAdbProbe: ${accessory.manufacturer}/${accessory.model}")
+        sniffer?.stop()
+        adbProbe?.stop()
+        val p = AdbHandshakeProbe(this)
+        adbProbe = p
+        resumeActiveMode = ::beginAdbProbe
+        p.start(accessory)
     }
 
     override fun onDestroy() {
         ConnectionStateHolder.removeListener(stateListener)
         reconnectRunnable?.let { handler.removeCallbacks(it) }
         sniffer?.stop()
+        adbProbe?.stop()
         releaseWakeLock()
         super.onDestroy()
     }
@@ -131,7 +150,7 @@ class UsbLinkForegroundService : Service() {
                 it.manufacturer == accessory.manufacturer && it.model == accessory.model
             } == true
             if (stillPresent) {
-                beginSniffing(accessory)
+                (resumeActiveMode ?: ::beginSniffing)(accessory)
             } else {
                 Log.w(TAG, "maybeScheduleReconnect: accessory no longer present, not retrying")
                 pendingAccessory = null
@@ -213,6 +232,7 @@ class UsbLinkForegroundService : Service() {
         private const val MAX_RECONNECT_ATTEMPTS = 5
 
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
+        const val ACTION_START_ADB_PROBE = "dev.caraalink.service.action.START_ADB_PROBE"
         const val ACTION_STOP = "dev.caraalink.service.action.STOP"
     }
 }

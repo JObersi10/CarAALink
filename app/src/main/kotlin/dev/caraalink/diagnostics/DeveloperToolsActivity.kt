@@ -38,6 +38,17 @@ class DeveloperToolsActivity : Activity() {
             setOnClickListener { startSniffer() }
         })
 
+        root.addView(TextView(this).apply {
+            text = "ADB handshake probe: completes the CNXN handshake the head unit " +
+                "opens with (confirmed real ADB, see claude/roadmap.md), then logs " +
+                "whatever it asks for next. Doesn't act on anything it receives."
+        })
+
+        root.addView(Button(this).apply {
+            text = "Start ADB handshake probe"
+            setOnClickListener { startAdbProbe() }
+        })
+
         root.addView(Button(this).apply {
             text = "Stop"
             setOnClickListener {
@@ -72,11 +83,30 @@ class DeveloperToolsActivity : Activity() {
         Log.i(TAG, "startSniffer: sent ACTION_START_SNIFFER to UsbLinkForegroundService")
     }
 
+    private fun startAdbProbe() {
+        val usbManager = getSystemService(USB_SERVICE) as UsbManager
+        val list = usbManager.accessoryList
+        Log.i(TAG, "startAdbProbe: accessoryList size=${list?.size ?: 0}")
+        val accessory = list?.firstOrNull()
+        if (accessory == null) {
+            Log.w(TAG, "startAdbProbe: no accessory in UsbManager.accessoryList")
+            Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
+            return
+        }
+        Log.i(TAG, "startAdbProbe: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model}")
+        val intent = Intent(this, UsbLinkForegroundService::class.java)
+            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
+            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
+        startForegroundService(intent)
+        Log.i(TAG, "startAdbProbe: sent ACTION_START_ADB_PROBE to UsbLinkForegroundService")
+    }
+
     private fun exportLatestLog() {
         val allFiles = DiagnosticLogger(this, "app").allLogFiles() // shared logs/ dir, all tags
         val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
         val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
-        val toShare = listOfNotNull(latestApp, latestSniff)
+        val latestProbe = allFiles.firstOrNull { it.name.startsWith("adb-probe-") }
+        val toShare = listOfNotNull(latestApp, latestSniff, latestProbe)
         if (toShare.isEmpty()) {
             Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
