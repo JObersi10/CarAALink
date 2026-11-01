@@ -52,7 +52,13 @@ that limitation stays visible there, not silently papered over elsewhere.
   project, protocol understanding will revise as new evidence comes in.
 - Use the `/reverse-engineer-anything` skill (REA MCP tools) for any new
   static-analysis pass on either APK. Cite Evidence IDs / file paths in
-  `roadmap.md` when a finding lands.
+  `roadmap.md` when a finding lands. Note: the REA Android tools
+  (`inspect_android_package`, `search_android_classes`, etc.) need
+  `REA_JADX_MCP_JAR` pointed at a jadx-headless-mcp JAR, which isn't
+  configured in this environment. When that's the blocker, `jadx` itself
+  *is* installed (`brew`), so fall back to the plain CLI:
+  `jadx -d <output-dir> <path-to-apk>`, then read/grep the decompiled
+  `sources/` tree directly — no MCP server needed for this.
 - If static analysis can't resolve something (native `.so` logic, obfuscation,
   per-session crypto), say so and switch to a live USB capture
   (`usbmon` on a rooted phone acting as USB host between the real CarbitLink

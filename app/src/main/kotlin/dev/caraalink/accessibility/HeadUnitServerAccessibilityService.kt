@@ -3,44 +3,63 @@ package dev.caraalink.accessibility
 import android.accessibilityservice.AccessibilityService
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
 /**
- * Automates Android Auto's own hidden developer toggle so the user doesn't
- * have to do it by hand every time: Settings -> tap "Version" 10x -> overflow
- * menu -> "Start head unit server". These are AA's own publicly known steps
- * (the same ones described in the project brief), not anything extracted from
- * a third-party app's source — see claude/claude.md's no-fabrication rule and
- * claude/roadmap.md item 8 (PhoneAuto's HeadUnitServerAccessibilityService
- * confirms this is gated behind a first-party AA feature, not custom
- * automation on Google's side; this class is our own automation of it).
+ * Automates the one step that's actually safe to automate: once Android
+ * Auto's own Settings screen is in front, open its overflow menu and tap
+ * "Start head unit server". The "tap Version 10x" developer-mode toggle is
+ * deliberately NOT automated here.
  *
- * This is heuristic UI automation driven by visible text, not a stable API:
- * AA can change its Settings layout or copy between versions, which would
- * require updating the text/description matches below.
+ * CONFIRMED by decompiling PhoneAuto-beta-2027-01-19.apk (jadx, this
+ * session — see claude/roadmap.md): its own
+ * com.google.android.projection.sink.ui.HeadUnitServerAccessibilityService
+ * does exactly this and nothing more. The Version-tap stays a one-time
+ * manual step guided by that app's own on-screen instructions, not something
+ * their accessibility service touches. Our first implementation tried to
+ * automate that step too and that's exactly why it failed on real hardware
+ * (gave up at "FIND_VERSION") -- this rewrite matches the confirmed real
+ * behavior instead of guessing at a fix.
+ *
+ * Action strings, the overflow content-description, and the arm-before-
+ * launch pattern below are all taken directly from that decompiled source,
+ * not invented.
  */
 class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "HeadUnitServerA11y"
-        private const val VERSION_TAPS_NEEDED = 10
-        private const val POLL_DELAY_MS = 350L
-        private const val TAP_DELAY_MS = 150L
-        private const val MAX_POLL_ATTEMPTS = 40
+        private const val ARM_WINDOW_MS = 20_000L
+
+        private val START_TEXTS = arrayOf("Start head unit server", "Start headunit server")
+        private val STOP_TEXTS = arrayOf("Stop head unit server", "Stop headunit server")
+        private val OVERFLOW_DESCRIPTIONS = arrayOf("More options", "More")
 
         @Volatile
         var instance: HeadUnitServerAccessibilityService? = null
+
+        @Volatile
+        private var armed = false
+
+        @Volatile
+        private var armedUntil = 0L
+
+        /** Call right before launching Android Auto's Settings UI. */
+        fun arm() {
+            armed = true
+            armedUntil = SystemClock.uptimeMillis() + ARM_WINDOW_MS
+        }
+
+        fun disarm() {
+            armed = false
+        }
     }
 
     private val handler = Handler(Looper.getMainLooper())
-
-    private enum class Stage { IDLE, FIND_VERSION, TAP_VERSION, FIND_OVERFLOW, FIND_START_ITEM, DONE }
-
-    private var stage = Stage.IDLE
-    private var versionTapsRemaining = 0
-    private var attemptsLeft = 0
+    private var overflowOpened = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -49,128 +68,94 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         if (instance == this) instance = null
-        stage = Stage.IDLE
         super.onDestroy()
-    }
-
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Intentionally unused: the poll loop below drives this rather than
-        // individual window events, which AA's settings screens don't fire
-        // reliably for every state change we care about.
     }
 
     override fun onInterrupt() {}
 
-    /** Call once Android Auto's own app is already in the foreground. */
-    fun requestHeadUnitServerStart() {
-        stage = Stage.FIND_VERSION
-        versionTapsRemaining = VERSION_TAPS_NEEDED
-        attemptsLeft = MAX_POLL_ATTEMPTS
-        handler.postDelayed(::poll, POLL_DELAY_MS)
-    }
-
-    private fun poll() {
-        if (stage == Stage.IDLE || stage == Stage.DONE) return
-        if (attemptsLeft-- <= 0) {
-            Log.w(TAG, "Gave up at stage $stage — AA's settings UI didn't match the expected text")
-            stage = Stage.IDLE
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (!armed) return
+        if (SystemClock.uptimeMillis() >= armedUntil) {
+            armed = false
+            overflowOpened = false
             return
         }
 
-        val root = rootInActiveWindow
-        if (root == null) {
-            handler.postDelayed(::poll, POLL_DELAY_MS)
+        val type = event?.eventType ?: return
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
+            type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
+        ) {
             return
         }
 
-        when (stage) {
-            Stage.FIND_VERSION -> {
-                val versionNode = findByText(root, "Version")
-                if (versionNode != null) {
-                    clickNode(versionNode)
-                    versionTapsRemaining--
-                    stage = Stage.TAP_VERSION
-                    handler.postDelayed(::poll, TAP_DELAY_MS)
-                } else {
-                    scrollDown(root)
-                    handler.postDelayed(::poll, POLL_DELAY_MS)
-                }
+        val root = rootInActiveWindow ?: return
+        try {
+            if (clickExactText(root, START_TEXTS)) {
+                Log.i(TAG, "Tapped 'Start head unit server'")
+                deactivate(pressBack = false)
+                return
             }
 
-            Stage.TAP_VERSION -> {
-                val versionNode = findByText(root, "Version")
-                if (versionNode != null && versionTapsRemaining > 0) {
-                    clickNode(versionNode)
-                    versionTapsRemaining--
-                    handler.postDelayed(::poll, TAP_DELAY_MS)
-                } else {
-                    stage = Stage.FIND_OVERFLOW
-                    attemptsLeft = MAX_POLL_ATTEMPTS
-                    handler.postDelayed(::poll, 500L)
-                }
+            if (overflowOpened && findExactText(root, STOP_TEXTS) != null) {
+                // Menu shows "Stop..." -- it's already running. Leave it
+                // alone, just close the menu.
+                Log.i(TAG, "Head unit server already running")
+                deactivate(pressBack = true)
+                return
             }
 
-            Stage.FIND_OVERFLOW -> {
-                val overflow = findByDescription(root, "More options")
-                if (overflow != null) {
-                    clickNode(overflow)
-                    stage = Stage.FIND_START_ITEM
-                    attemptsLeft = MAX_POLL_ATTEMPTS
-                    handler.postDelayed(::poll, 400L)
-                } else {
-                    handler.postDelayed(::poll, POLL_DELAY_MS)
-                }
+            if (!overflowOpened && clickByDescription(root, OVERFLOW_DESCRIPTIONS)) {
+                Log.i(TAG, "Opened overflow menu")
+                overflowOpened = true
             }
-
-            Stage.FIND_START_ITEM -> {
-                val startItem = findByText(root, "Start head unit server")
-                if (startItem != null) {
-                    clickNode(startItem)
-                    stage = Stage.DONE
-                    Log.i(TAG, "Tapped 'Start head unit server'")
-                } else {
-                    handler.postDelayed(::poll, POLL_DELAY_MS)
-                }
-            }
-
-            else -> {}
+        } finally {
+            root.recycle()
         }
     }
 
-    private fun findByText(root: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? =
-        root.findAccessibilityNodeInfosByText(text).firstOrNull()
-
-    private fun findByDescription(root: AccessibilityNodeInfo, description: String): AccessibilityNodeInfo? {
-        fun search(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-            if (node == null) return null
-            if (node.contentDescription?.toString()?.contains(description, ignoreCase = true) == true) {
-                return node
-            }
-            for (i in 0 until node.childCount) {
-                search(node.getChild(i))?.let { return it }
-            }
-            return null
+    private fun deactivate(pressBack: Boolean) {
+        armed = false
+        overflowOpened = false
+        if (pressBack) {
+            handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 600L)
         }
-        return search(root)
     }
 
-    private fun clickNode(node: AccessibilityNodeInfo) {
+    private fun findExactText(root: AccessibilityNodeInfo, candidates: Array<String>): AccessibilityNodeInfo? {
+        for (candidate in candidates) {
+            val matches = root.findAccessibilityNodeInfosByText(candidate) ?: continue
+            for (node in matches) {
+                if (node.text?.toString()?.equals(candidate, ignoreCase = true) == true) return node
+            }
+        }
+        return null
+    }
+
+    private fun clickExactText(root: AccessibilityNodeInfo, candidates: Array<String>): Boolean {
+        val node = findExactText(root, candidates) ?: return false
+        return clickUpToAncestor(node)
+    }
+
+    private fun clickByDescription(node: AccessibilityNodeInfo, candidates: Array<String>): Boolean {
+        val desc = node.contentDescription?.toString()
+        if (desc != null && candidates.any { it.equals(desc, ignoreCase = true) } && clickUpToAncestor(node)) {
+            return true
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (clickByDescription(child, candidates)) return true
+        }
+        return false
+    }
+
+    private fun clickUpToAncestor(node: AccessibilityNodeInfo): Boolean {
         var target: AccessibilityNodeInfo? = node
-        while (target != null && !target.isClickable) {
+        var hops = 0
+        while (target != null && hops < 6) {
+            if (target.isClickable && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
             target = target.parent
+            hops++
         }
-        (target ?: node).performAction(AccessibilityNodeInfo.ACTION_CLICK)
-    }
-
-    private fun scrollDown(root: AccessibilityNodeInfo) {
-        fun search(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-            if (node == null) return null
-            if (node.isScrollable) return node
-            for (i in 0 until node.childCount) {
-                search(node.getChild(i))?.let { return it }
-            }
-            return null
-        }
-        search(root)?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+        return false
     }
 }

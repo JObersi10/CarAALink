@@ -3,22 +3,29 @@ package dev.caraalink.accessibility
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
+import android.content.SharedPreferences
 import android.net.Uri
 import android.provider.Settings
-import android.util.Log
+import androidx.preference.PreferenceManager
 import android.widget.Toast
 
 /**
- * One-click entry point: launches Android Auto and asks the accessibility
- * service to drive its "Start head unit server" developer toggle, so the
- * user doesn't have to do Settings -> Version x10 -> overflow -> Start by
- * hand every time (see HeadUnitServerAccessibilityService).
+ * One-click entry point: launches Android Auto's Settings screen and arms
+ * the accessibility service to tap its overflow menu's "Start head unit
+ * server" item, so the user doesn't have to do that part by hand every time.
+ *
+ * The settings-intent fallback chain and the "tap Version 10x is a one-time
+ * manual step, not something to automate" design are both CONFIRMED by
+ * decompiling PhoneAuto-beta-2027-01-19.apk (jadx, this session — see
+ * claude/roadmap.md): its HeadUnitServerGuide.a() tries these exact intents
+ * in this exact order. Our first implementation only tried the generic
+ * launcher intent (step 3 below), which is why it landed on the wrong
+ * screen on real hardware instead of AA's actual Settings.
  */
 object HeadUnitServerLauncher {
 
     private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
-    private const val TAG = "HeadUnitServerLauncher"
+    private const val PREF_VERSION_TAP_GUIDED = "head_unit_server_version_guided"
 
     fun start(context: Context) {
         if (!isAccessibilityServiceEnabled(context)) {
@@ -26,61 +33,66 @@ object HeadUnitServerLauncher {
             return
         }
 
-        if (launchAndroidAuto(context)) {
-            instance()?.requestHeadUnitServerStart()
-            return
-        }
+        maybeShowOneTimeVersionTapGuide(context)
 
-        // Didn't manage to bring AA's own UI to the front -- don't run the
-        // automation against whatever screen happens to be open. Offer the
-        // app-info page as a manual way in instead.
-        Toast.makeText(
-            context,
-            "Couldn't open Android Auto automatically — opening its app info instead; launch it from there, then retry",
-            Toast.LENGTH_LONG,
-        ).show()
-        runCatching {
-            context.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
-                    .setData(Uri.parse("package:$ANDROID_AUTO_PACKAGE"))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            )
+        // Arm BEFORE launching -- the service needs to be listening for the
+        // very first window-state-changed event once AA's Settings appears.
+        HeadUnitServerAccessibilityService.arm()
+
+        if (!launchAndroidAutoSettings(context)) {
+            HeadUnitServerAccessibilityService.disarm()
+            Toast.makeText(
+                context,
+                "Couldn't open Android Auto Settings automatically — opening its app info instead",
+                Toast.LENGTH_LONG,
+            ).show()
+            runCatching {
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(Uri.parse("package:$ANDROID_AUTO_PACKAGE"))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
         }
     }
 
-    private fun instance(): HeadUnitServerAccessibilityService? =
-        HeadUnitServerAccessibilityService.instance
-
     /**
-     * Android Auto often has no standard LAUNCHER activity (it's designed to
-     * run invisibly in the background on most phones), so
-     * [PackageManager.getLaunchIntentForPackage] usually returns null for it
-     * even when it's installed — that's the "Android Auto isn't installed"
-     * false negative. We fall back to resolving any activity the package
-     * declares that answers ACTION_MAIN, launching it explicitly by the
-     * component PackageManager gives us at runtime (never a hardcoded,
-     * version-specific class name).
+     * CONFIRMED order and content from HeadUnitServerGuide.a() in the
+     * decompiled reference app: a dedicated settings deep-link action first,
+     * then an explicit settings activity component, then the generic
+     * launcher intent (unreliable for AA -- see the old comment this
+     * replaced), then app-info as the final fallback.
      */
-    private fun launchAndroidAuto(context: Context): Boolean {
-        val pm = context.packageManager
-
-        pm.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE)?.let {
-            it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(it)
-            return true
-        }
-
-        val probe = Intent(Intent.ACTION_MAIN).setPackage(ANDROID_AUTO_PACKAGE)
-        val resolved = pm.resolveActivity(probe, PackageManager.MATCH_DEFAULT_ONLY)
-            ?: pm.queryIntentActivities(probe, 0).firstOrNull()?.also {
-                Log.i(TAG, "Resolved $ANDROID_AUTO_PACKAGE via queryIntentActivities fallback")
-            }
-        val activityInfo = resolved?.activityInfo ?: return false
-        val component = ComponentName(activityInfo.packageName, activityInfo.name)
-        context.startActivity(
-            Intent(Intent.ACTION_MAIN).setComponent(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    private fun launchAndroidAutoSettings(context: Context): Boolean {
+        val candidates = listOf(
+            Intent("com.google.android.projection.gearhead.SETTINGS").setPackage(ANDROID_AUTO_PACKAGE),
+            Intent().setClassName(
+                ANDROID_AUTO_PACKAGE,
+                "com.google.android.projection.gearhead.companion.settings.DefaultSettingsActivity",
+            ),
+            context.packageManager.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE),
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$ANDROID_AUTO_PACKAGE")),
         )
-        return true
+        for (intent in candidates) {
+            if (intent == null) continue
+            val result = runCatching {
+                context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+            if (result.isSuccess) return true
+        }
+        return false
+    }
+
+    private fun maybeShowOneTimeVersionTapGuide(context: Context) {
+        val prefs: SharedPreferences = PreferenceManager.getDefaultSharedPreferences(context)
+        if (prefs.getBoolean(PREF_VERSION_TAP_GUIDED, false)) return
+        prefs.edit().putBoolean(PREF_VERSION_TAP_GUIDED, true).apply()
+        Toast.makeText(
+            context,
+            "First time only: in Android Auto's Settings, scroll to the bottom and tap " +
+                "\"Version\" 10 times to turn on developer mode, then tap this again.",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 
     fun isAccessibilityServiceEnabled(context: Context): Boolean {
