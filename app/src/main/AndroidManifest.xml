@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Without this, ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS silently
+         fails on many OEM builds instead of showing the system dialog. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- Package visibility (API 30+): needed to launch Android Auto for the
          one-click head-unit-server start. -->
@@ -18,7 +21,8 @@
 
     <application
         android:label="@string/app_name"
-        android:allowBackup="false">
+        android:allowBackup="false"
+        android:theme="@style/Theme.CarAALink">
 
         <activity
             android:name=".MainActivity"

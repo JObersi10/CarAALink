@@ -92,10 +92,18 @@ class OnboardingActivity : Activity() {
     }
 
     private fun requestIgnoreBatteryOptimizations() {
-        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+        val direct = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
             data = Uri.parse("package:$packageName")
         }
-        startActivity(intent)
+        try {
+            startActivity(direct)
+        } catch (e: Exception) {
+            // Some OEM builds (and ones missing the exemption permission —
+            // see AndroidManifest.xml) refuse the direct per-app dialog.
+            // Fall back to the generic list so the user can still find and
+            // exempt the app manually.
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
     }
 
     private fun hasNotificationPermission(): Boolean {
