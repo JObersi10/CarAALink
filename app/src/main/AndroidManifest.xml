@@ -65,6 +65,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".aa.AaPreviewActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".service.ProjectionRequestActivity"
             android:exported="false"
             android:excludeFromRecents="true"

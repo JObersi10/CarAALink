@@ -71,6 +71,45 @@ class AaSessionProbe(
     private var socket: Socket? = null
     private var worker: Thread? = null
 
+    /**
+     * Called for each `MEDIA_MESSAGE_DATA` (id 0) frame on the video channel,
+     * with the raw H.264 Annex-B NAL bytes (the 8-byte big-endian timestamp
+     * aasdk's `Timestamp`/`handleMediaWithTimestampIndication()` prefixes
+     * each frame with is already stripped). Set before [start]; null means
+     * frames are just logged and discarded.
+     */
+    @Volatile
+    var videoSink: ((timestampUs: Long, nal: ByteArray) -> Unit)? = null
+
+    @Volatile
+    private var activeChannel: AaTlsChannel? = null
+
+    /**
+     * Sends one touch event on the INPUT_SOURCE channel: `InputReport{
+     * timestamp=1, touch_event=3 {pointer_data=1 [{x,y,pointer_id}],
+     * action_index=2, action=3}}`, `INPUT_MESSAGE_INPUT_REPORT` (32769),
+     * ENCRYPTED/SPECIFIC -- cited from aasdk's
+     * `InputSourceService::sendInputReport()`. No-op if no channel is
+     * established (e.g. still mid-handshake, or no session running).
+     * [action] is a `PointerAction`: DOWN=0, UP=1, MOVED=2.
+     */
+    fun sendTouch(x: Int, y: Int, action: Int, pointerId: Int = 0) {
+        val channel = activeChannel ?: return
+        val pointer = AaProtobuf.Writer().int(1, x).int(2, y).int(3, pointerId).build()
+        val touchEvent = AaProtobuf.Writer()
+            .message(1, pointer)
+            .int(2, 0) // action_index
+            .int(3, action)
+            .build()
+        val report = AaProtobuf.Writer()
+            .varint(1, System.nanoTime() / 1000) // timestamp (us)
+            .message(3, touchEvent)
+            .build()
+        runCatching {
+            channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_INPUT_SOURCE, AaFraming.MSG_INPUT_REPORT, report)
+        }.onFailure { Log.w(TAG, "sendTouch failed", it) }
+    }
+
     fun start() {
         if (!running.compareAndSet(false, true)) {
             Log.w(TAG, "start: already running")
@@ -173,6 +212,7 @@ class AaSessionProbe(
             // SERVICE_DISCOVERY_RESPONSE (ENCRYPTED). So there is nothing to
             // send unprompted here -- we listen and decode.
             val channel = AaTlsChannel(engine, input, output, logger)
+            activeChannel = channel
 
             // AUTH_COMPLETE (PLAIN) immediately after the handshake.
             // openauto's AndroidAutoEntity::onHandshake() does exactly this:
@@ -239,6 +279,15 @@ class AaSessionProbe(
                             val focus = AaProtobuf.Writer().int(1, 1).bool(2, false).build()
                             channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION, focus)
                         }
+                    } else if (chId == AaFraming.MSG_MEDIA_DATA && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
+                        // handleMediaWithTimestampIndication(): payload is an
+                        // 8-byte big-endian Timestamp (microseconds) followed
+                        // by the raw H.264 Annex-B bytes.
+                        if (chBody.size > 8) {
+                            var ts = 0L
+                            for (i in 0 until 8) ts = (ts shl 8) or (chBody[i].toLong() and 0xFF)
+                            videoSink?.invoke(ts, chBody.copyOfRange(8, chBody.size))
+                        }
                     } else if (chId == AaFraming.MSG_SENSOR_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_SENSOR) {
                         // SensorRequest{type=1, min_update_period=2}. Reply
                         // SensorStartResponseMessage{status=0} on
@@ -283,6 +332,7 @@ class AaSessionProbe(
             Log.w(TAG, "session failed", e)
             false
         } finally {
+            activeChannel = null
             runCatching { socket?.close() }
             socket = null
         }

@@ -96,6 +96,19 @@ class DeveloperToolsActivity : Activity() {
             setOnClickListener { exportLatestLog() }
         })
 
+        root.addView(TextView(this).apply {
+            text = "AA on-phone preview: starts (or attaches to) the AA session and " +
+                "renders its video on this phone's screen, with touch forwarded to the " +
+                "input channel -- for testing without the car."
+        })
+
+        root.addView(Button(this).apply {
+            text = "Preview AA session (interactive)"
+            setOnClickListener {
+                startActivity(Intent(this@DeveloperToolsActivity, dev.caraalink.aa.AaPreviewActivity::class.java))
+            }
+        })
+
         setContentView(root)
     }
 

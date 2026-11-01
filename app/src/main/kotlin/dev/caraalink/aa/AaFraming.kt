@@ -59,6 +59,7 @@ object AaFraming {
     const val MSG_AUDIO_FOCUS_NOTIFICATION = 19
 
     // MediaMessageId.proto (media sink/source channels)
+    const val MSG_MEDIA_DATA = 0
     const val MSG_MEDIA_SETUP = 32768
     const val MSG_MEDIA_START = 32769
     const val MSG_MEDIA_STOP = 32770
@@ -69,6 +70,9 @@ object AaFraming {
     // SensorMessageId.proto (sensor channel)
     const val MSG_SENSOR_REQUEST = 32769
     const val MSG_SENSOR_RESPONSE = 32770
+
+    // InputMessageId.proto (input channel)
+    const val MSG_INPUT_REPORT = 32769
 
     /** include/aasdk/Version.hpp — what aasdk advertises to the gearhead. */
     const val PROTOCOL_MAJOR = 1
@@ -177,6 +181,7 @@ object AaFraming {
         MSG_CHANNEL_OPEN_RESPONSE -> "CHANNEL_OPEN_RESPONSE"
         MSG_AUDIO_FOCUS_REQUEST -> "AUDIO_FOCUS_REQUEST"
         MSG_AUDIO_FOCUS_NOTIFICATION -> "AUDIO_FOCUS_NOTIFICATION"
+        MSG_MEDIA_DATA -> "MEDIA_DATA"
         MSG_MEDIA_SETUP -> "MEDIA_SETUP"
         MSG_MEDIA_START -> "MEDIA_START/SENSOR_REQUEST" // same numeric id, different channel namespace
         MSG_MEDIA_STOP -> "MEDIA_STOP"
