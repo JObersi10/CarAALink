@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjectionManager
+import dev.caraalink.accessibility.HeadUnitServerAccessibilityService
 import dev.caraalink.link.CarSession
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
@@ -180,6 +181,11 @@ class UsbLinkForegroundService : Service() {
     }
 
     private val phoneActions = object : CarSession.PhoneActions {
+        override fun back() {
+            HeadUnitServerAccessibilityService.instance?.backOnPhone()
+                ?: Log.w(TAG, "back ignored: accessibility service off")
+        }
+
         override fun requestScreenCapture() {
             val ctx = this@UsbLinkForegroundService
             val intent = Intent(ctx, ProjectionRequestActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

@@ -584,3 +584,24 @@ pulls each frame with 0x72 (8-byte head + ext[displayId, ackFrames]);
 else frames are pushed. Frame (non-movie mode) = `int32 LE length` +
 H.264 Annex-B bytes; codec config (SPS/PPS) sent first the same way.
 `int 0` = no frame available.
+
+## Status: working video + touch (2026-11-01, late)
+
+The clean-room CarbitLink replacement now mirrors video and takes touch on
+the real head unit. See handoff.md "LATEST" for the full working-state
+summary. Key wire facts confirmed and implemented this pass:
+- Pull-mode video (wantFps=0): car sends 0x72 per frame; reply = int32 LE
+  length + Annex-B, codec config (SPS/PPS) sent as its own length-framed
+  chunk before the first frame. Encoder must never starve or the car drops
+  the data stream after ~4 s.
+- P2C heartbeat: phone sends 0x70000000 on channel 0x20000 every 1 s, or
+  the car disconnects after ~5 s.
+- GPS reply 0x10430 and network-capability reply 0x10750 (pp/m0, pp/i).
+
+## Not implemented, by policy: AA/CarPlay projection
+Android Auto / CarPlay to the car needs a Google/Apple-trusted receiver
+certificate. The only known way (PhoneAuto Nd.java/B9.java embed an RSA
+private key + Google certs; open-headunit self mode; DiPlay) is a stolen
+extracted key. Clean-room rule applies: we do not embed, BYO-gitignore, or
+copy that key or their code. A self-signed cert cannot pass the handshake,
+so there is no legitimate path today.

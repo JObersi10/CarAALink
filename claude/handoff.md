@@ -7,41 +7,70 @@ wireless-debugging adb) against the real car head unit. See
 `roadmap.md` for full cited detail — this file is the "what actually
 happened and what to do next" summary.
 
-## LATEST (2026-11-01, evening) — read this first
+## LATEST (2026-11-01, late) — read this first
 
-**Live-confirmed so far**: ADB over AOA works (zero kick, jadbd CNXN
-reply), the head unit OPENs tcp:10922, we answer the PXC channel head
-(0x10000 -> 0x10001), and it sends its full CLIENT_INFO JSON.
+**IT WORKS ON THE CAR.** The head unit shows CarAALink's own home screen,
+plays live phone-screen mirroring, and takes touch. This is a working
+CarbitLink replacement for video + touch. Branch `car-video-live`
+(PR open); most of the session's video work is there, newer UI/features
+committed on top.
 
-**Built and committed, NOT yet tested on the car** (`app/.../link/`,
-`app/.../video/`): the real session that replaced the probe for the
-attach flow (`ACTION_START_SESSION`):
-- `AdbTransport` — per-stream ids, OKAY flow control, maxdata chunking.
-- `PxcChannel` (tcp:10922) — channel heads, CLIENT_INFO reply, empty
-  cmd+1 acks for everything else (logged, so we see what it wants).
-- `MirrorControlChannel` (10921) / `MirrorDataChannel` (10920) — the
-  CarbitLink mirror protocol (roadmap "PXC + mirror protocol").
-- `CarVideoEncoder` (H.264 from a Surface) + `CarDisplay`: car home
-  screen (`CarHomePresentation`: clock, date, weather, custom background,
-  tiles Android Auto / Phone screen / Settings) on a private virtual
-  display, or a MediaProjection AUTO_MIRROR of the phone (not a second
-  display, so DeX doesn't start). Car touches drive the home screen; in
-  mirror mode they replay as taps/swipes through the accessibility service.
-- On attach, `MainActivity` starts the session and asks for screen
-  capture once (`ProjectionRequestActivity`).
-- "Android Auto" tile = opens AA (or Maps) on the phone + mirror. Real AA
-  projection would mean implementing the AA head-unit protocol (needs a
-  Google-signed head-unit certificate); not done, not planned to fake.
-- Popup fix: `UsbAccessoryConnection.close()` now closes the PFD.
+### What's confirmed working on real hardware
+- Full handshake: ADB-over-AOA (24-byte zero kick, jadbd-identical CNXN
+  reply) -> head unit OPENs tcp:10922/10921/10920 -> PXC CLIENT_INFO ->
+  CONFIG_CAPTURE (1920x720, H.264, ~4 Mbps, pull mode wantFps=0).
+- H.264 video to the car: `CarVideoEncoder` (Surface -> Annex-B) feeding
+  the car's pull requests (0x72). Keyframe-first, codec-config prefixed,
+  starvation watchdog + a 1px animating view so the hardware encoder never
+  goes silent (the car drops the stream after ~4 s of no frames).
+- Stays connected: `PxcChannel` sends the 0x70000000 heartbeat every 1 s
+  on the P2C channel (0x20000). Without it the car disconnected after ~5 s.
+- Car home screen (`CarHomePresentation`): big clock, date, weather
+  (Open-Meteo, no key), custom background (owner picks a photo in the app),
+  tiles with real vector icons (Android Auto / Phone screen / Settings).
+- Phone mirroring: `MediaProjection` AUTO_MIRROR into a TextureView on the
+  car display (NOT a second display, so Samsung DeX never starts). One tap
+  on "Phone screen" -> allow once -> mirror opens (double-tap bug fixed via
+  `setProjection(showMirrorNow)`). A Back button overlay (top-left): tap =
+  phone Back (accessibility GLOBAL_ACTION_BACK), hold = exit to CarAALink
+  home. Car taps/swipes replay on the phone as gestures (needs the
+  accessibility service ON).
+- Car integration (`CarFeatures`): answers the car's GPS query (0x10430)
+  with the phone's real location/speed/heading, and its network-capability
+  check (0x10750). Formats confirmed from CarbitLink pp/m0, pp/i.
+- App launcher icon (adaptive, teal, head-unit + play glyph).
 
-**Next test**: install, plug in, pick CarAALink, tap "Start now", export
-logs (`car-session-*.log` is now included). If no video: check whether
-CONFIG_CAPTURE (0x10) ever arrives on tcp:10921. If it doesn't, the head
-unit is waiting on some PXC reply; the log lists every C2P cmd we acked.
+### Chooser / USB fixes (all live-confirmed)
+- `MainActivity` is `singleTask` + `onNewIntent`: picking CarAALink in the
+  USB chooser starts the session even when the app is already open (this
+  was why early taps did nothing).
+- No auto-reconnect; `UsbAccessoryConnection.close()` closes the PFD; the
+  manifest USB-attach receiver was removed. Together these stopped the app
+  from holding the accessory and blocking Android's app chooser.
 
-**Ideas queued from the owner**: phone widgets on the car home screen
-(AppWidgetHost), app icon, more tiles (maps, music). Owner wants terse
-replies; commits allowed again (2026-11-01 evening).
+### HARD LINE — do not cross (owner pushed on this repeatedly; still no)
+Android Auto / CarPlay projection to the car is NOT implemented and will
+not be faked. Real AA/CarPlay receivers pass a TLS handshake against a
+Google/Apple key; PhoneAuto, open-headunit ("self mode" included), and
+DiPlay all embed a *stolen* extracted key to clear it. We do NOT embed,
+fetch, gitignore-and-BYO, or copy that key or those projects' code — a
+self-signed/own-info cert cannot pass the check, so there is no clean
+path today. The "Android Auto" tile is a placeholder ("coming soon").
+If a legit path appears (Android-for-Cars partner cert), the forwarding
+half is already built.
+
+### Next ideas (owner's list, not yet built)
+Music now-playing + transport controls and recent notifications on the car
+home screen (MediaSessionManager + NotificationListenerService — files were
+started then removed; redo cleanly). Phone widgets via AppWidgetHost.
+Multi-touch (car reports it supports it). Turn-by-turn nav icons (0x10040).
+
+### Workflow notes
+Owner wants terse replies. Commits allowed. Live testing is wireless-adb
+whose IP:port churns constantly — ask for a fresh one each time; prefer the
+in-app "Export latest log" (now includes `car-session-*.log`) over fighting
+adb. `cl-run.txt` (real CarbitLink capture) and `cl4.txt` are gitignored
+local logs with the car's IDs.
 
 ## The big picture, in one paragraph
 

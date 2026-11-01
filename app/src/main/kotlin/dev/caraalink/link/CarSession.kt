@@ -7,6 +7,7 @@ import android.media.projection.MediaProjection
 import android.util.Log
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
+import dev.caraalink.R
 import dev.caraalink.diagnostics.DiagnosticLogger
 import dev.caraalink.usb.UsbAccessoryConnection
 import dev.caraalink.video.CarDisplay
@@ -29,6 +30,7 @@ class CarSession(
 
     interface PhoneActions {
         fun requestScreenCapture()
+        fun back()
     }
 
     private val logger = DiagnosticLogger(context, "car-session")
@@ -38,29 +40,13 @@ class CarSession(
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
     private val display = CarDisplay(context, listOf(
-        CarHomePresentation.Tile("Android Auto", "▲", Color.parseColor("#1E8E3E")) { openAndroidAuto() },
-        CarHomePresentation.Tile("Phone screen", "▣", Color.parseColor("#1A73E8")) { openMirror() },
-        CarHomePresentation.Tile("Settings", "⚙", Color.parseColor("#5F6368")) { showSettings() },
-    ), onCarHome = { goToCarHome() })
+        CarHomePresentation.Tile("Android Auto", R.drawable.ic_tile_android_auto, Color.parseColor("#1E8E3E")) { openAndroidAuto() },
+        CarHomePresentation.Tile("Phone screen", R.drawable.ic_tile_phone_screen, Color.parseColor("#1A73E8")) { openMirror() },
+        CarHomePresentation.Tile("Settings", R.drawable.ic_tile_settings, Color.parseColor("#5F6368")) { showSettings() },
+    ), onBack = { phone.back() }, onExit = ::exitToHome)
 
-    /**
-     * Ask the head unit to show its own home screen. Uses CarbitLink's
-     * APPSTATUS_BACKGROUND (P2C 0x20030, mode 2 = phone UI not on screen),
-     * which is how their app hands the screen back to the car. EXPERIMENTAL:
-     * this head unit reports supportBackDesktop=false.
-     */
-    private fun goToCarHome() {
-        val c = config
-        val body = JSONObject()
-            .put("mode", 2)
-            .put("displayRotation", 0)
-            .put("width", c?.width ?: 0)
-            .put("height", c?.height ?: 0)
-            .put("enableAccessibility", true)
-            .put("enableAOAHid", false)
-            .toString().toByteArray(Charsets.UTF_8)
-        if (pxc?.sendP2C(APPSTATUS_BACKGROUND, body) != true) display.setStatus("Car home: not connected yet")
-    }
+    private fun exitToHome(): Unit { display.showHome() }
+
 
     private val frameLock = Any()
     @Volatile private var dataStream: AdbTransport.Stream? = null
@@ -124,13 +110,10 @@ class CarSession(
     }
 
     fun setProjection(projection: MediaProjection) {
-        display.setProjection(projection)
-        logger.log("Screen capture granted")
-        // The user asked for the mirror before granting; open it now instead of needing a second tap.
-        if (mirrorWanted) {
-            mirrorWanted = false
-            display.showMirror()
-        }
+        val show = mirrorWanted
+        mirrorWanted = false
+        display.setProjection(projection, showMirrorNow = show)
+        logger.log("Screen capture granted (showMirror=$show)")
     }
 
     private fun release() {

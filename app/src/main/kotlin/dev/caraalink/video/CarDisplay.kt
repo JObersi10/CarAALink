@@ -26,7 +26,8 @@ import dev.caraalink.accessibility.HeadUnitServerAccessibilityService
 class CarDisplay(
     private val context: Context,
     private val tiles: List<CarHomePresentation.Tile>,
-    private val onCarHome: () -> Unit,
+    private val onBack: () -> Unit,
+    private val onExit: () -> Unit,
 ) {
     enum class Mode { HOME, MIRROR }
 
@@ -67,11 +68,17 @@ class CarDisplay(
 
     fun hasProjection() = projection != null
 
-    fun setProjection(p: MediaProjection) = main.post {
+    fun setProjection(p: MediaProjection, showMirrorNow: Boolean) = main.post {
         projection?.stop()
         mirrorDisplay?.release()
         mirrorDisplay = null
         projection = p
+        // Show the mirror in the same main-thread step the projection lands, so
+        // the user's "Phone screen" tap takes effect without a second tap.
+        if (showMirrorNow) {
+            mode = Mode.MIRROR
+            showCurrent()
+        }
         p.registerCallback(object : MediaProjection.Callback() {
             override fun onStop() {
                 main.post {
@@ -130,8 +137,8 @@ class CarDisplay(
         val mh = phone.y / 2
         return MirrorPresentation(
             context, display, mw, mh,
-            onHome = { showHome() },
-            onCarHome = onCarHome,
+            onBack = onBack,
+            onExit = onExit,
             onSurface = { s -> attachMirror(s, mw, mh) },
             onPhoneStroke = { x1, y1, x2, y2, ms -> replayOnPhone(x1, y1, x2, y2, ms) },
         )

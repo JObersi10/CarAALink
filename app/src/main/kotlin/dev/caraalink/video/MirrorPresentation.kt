@@ -28,8 +28,8 @@ class MirrorPresentation(
     display: Display,
     private val phoneWidth: Int,
     private val phoneHeight: Int,
-    private val onHome: () -> Unit,
-    private val onCarHome: () -> Unit,
+    private val onBack: () -> Unit,
+    private val onExit: () -> Unit,
     private val onSurface: (Surface?) -> Unit,
     private val onPhoneStroke: (x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) -> Unit,
 ) : Presentation(context, display) {
@@ -85,21 +85,21 @@ class MirrorPresentation(
             }
         }
         root.addView(area, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        // Small home button, like CarbitLink's: tap = CarAALink home, hold = car's own home.
+        // Small back button: tap = Back on the phone, hold = exit mirror to CarAALink home.
         root.addView(TextView(context).apply {
-            text = "⌂"
+            text = "‹"
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
             typeface = Typeface.DEFAULT_BOLD
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
                 setColor(Color.argb(200, 31, 42, 48))
             }
             isClickable = true
-            setOnClickListener { onHome() }
-            setOnLongClickListener { onCarHome(); true }
-        }, FrameLayout.LayoutParams(dp(56), dp(56), Gravity.TOP or Gravity.START).apply {
+            setOnClickListener { onBack() }
+            setOnLongClickListener { onExit(); true }
+        }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START).apply {
             setMargins(dp(12), dp(12), 0, 0)
         })
         setContentView(root)

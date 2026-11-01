@@ -73,6 +73,10 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
+    fun backOnPhone() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
     /** Replays a car tap/swipe on the phone screen while mirroring. */
     fun dispatchStroke(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long) {
         val path = android.graphics.Path().apply {

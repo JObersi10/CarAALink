@@ -31,7 +31,7 @@ class CarHomePresentation(
     private val tiles: List<Tile>,
 ) : Presentation(context, display) {
 
-    data class Tile(val label: String, val glyph: String, val color: Int, val onTap: () -> Unit)
+    data class Tile(val label: String, val iconRes: Int, val color: Int, val onTap: () -> Unit)
 
     private lateinit var statusView: TextView
     private lateinit var infoView: TextView
@@ -134,12 +134,10 @@ class CarHomePresentation(
         }
         isClickable = true
         setOnClickListener { tile.onTap() }
-        addView(TextView(context).apply {
-            text = tile.glyph
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 40f)
-        })
+        addView(ImageView(context).apply {
+            setImageResource(tile.iconRes)
+            setColorFilter(Color.WHITE)
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         addView(TextView(context).apply {
             text = tile.label
             gravity = Gravity.CENTER
