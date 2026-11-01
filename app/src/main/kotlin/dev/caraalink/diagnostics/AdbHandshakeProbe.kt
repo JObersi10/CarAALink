@@ -103,7 +103,12 @@ class AdbHandshakeProbe(private val context: Context) {
             }
             ConnectionStateHolder.update { it.copy(bytesRead = totalRead) }
         }
-        running.set(false)
+        // Link died on its own: release the accessory fd, or Android won't
+        // offer the app chooser on the next plug-in until we're force-quit.
+        if (running.compareAndSet(true, false)) {
+            conn.close()
+            connection = null
+        }
     }
 
     private fun sendConnectReply(conn: UsbAccessoryConnection) {

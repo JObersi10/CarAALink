@@ -496,3 +496,27 @@ Evidence: `adb-probe-20261101-113131.log` (owner export) + device logcat.
   The candidates are the libEPSDK service names (`P2CMainService` etc.).
   Needs a disassembler pass on `AgentStream::open` to confirm. Do not guess
   the service string on the wire.
+
+## Live capture: real CarbitLink session (2026-11-01 12:06, logcat)
+
+Source: device logcat while the real CarbitLink app connected (raw dump
+kept local, gitignored, since it has car/device IDs).
+
+- CONFIRMED: `AccessoryManager.openAccessory` -> `initJAdbd()` ->
+  `jadbd: onUuidReceived() uuid=N9r8` within 4 ms. The UUID is the suffix
+  of the head unit's `host::N9r8` CNXN banner.
+- CONFIRMED: CarbitLink's Java `PXCService` opens a TCP ServerSocket on
+  **localport 10922** and accepts a client from **127.0.0.1** ~0.5 s after
+  `initJAdbd`. That client is jadbd forwarding a stream the head unit
+  OPENed. INFERENCE: the OPEN service string is `tcp:10922` (jadbd's
+  `createStream` supports `tcp:` / `local:` / `localfilesystem:`).
+  UNVERIFIED on the wire.
+- CONFIRMED: first app-level message on that stream is car->phone
+  `0x00010010` `ECP_C2P_CLIENT_INFO`, a JSON object (HUID, HUName,
+  screenType, mirrorMode, pxcVersion "1.0.2", sdkVersion "0.9.24", ...).
+- So the head unit DOES send OPEN to real jadbd. It does not to our probe,
+  so our CNXN reply still differs from jadbd's in some way. jadbd's own
+  log goes to a file (`initJAdbd logFile:null`), not logcat, so its wire
+  bytes are not visible here. Next: disassemble `TransportBase::handleConn`
+  (the "old adb version" path) with `xcrun llvm-objdump` to read exactly
+  what jadbd sends back. Facts only, no porting.
