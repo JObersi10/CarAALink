@@ -93,22 +93,19 @@ class DeveloperToolsActivity : Activity() {
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics).toInt()
 
     private fun exportLatestLog() {
-        // One file, everything already interleaved chronologically -- no more
-        // sending five attachments and reading them side by side by hand.
+        // Every subsystem's DiagnosticLogger now writes into the one shared,
+        // already-interleaved current log file -- nothing to merge anymore.
         val logger = DiagnosticLogger(this, "app")
-        val merged = runCatching { logger.mergedLogFile() }.getOrElse { e ->
-            Log.e(TAG, "exportLatestLog: merge failed", e)
-            null
-        }
-        if (merged == null) {
+        val file = logger.latestLogFile()
+        if (!file.exists() || file.length() == 0L) {
             Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
         }
-        Log.i(TAG, "exportLatestLog: sharing merged ${merged.name} (${merged.length()} bytes)")
-        Toast.makeText(this, "Sharing ${merged.name}", Toast.LENGTH_SHORT).show()
+        Log.i(TAG, "exportLatestLog: sharing ${file.name} (${file.length()} bytes)")
+        Toast.makeText(this, "Sharing ${file.name}", Toast.LENGTH_SHORT).show()
         startActivity(
             Intent.createChooser(
-                logger.shareFileIntent(merged),
+                logger.shareFileIntent(file),
                 "Share CarAALink logs",
             )
         )

@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.hardware.usb.UsbAccessory
 import android.media.projection.MediaProjection
 import android.util.Log
-import dev.caraalink.aa.AaTlsReceiver
 import dev.caraalink.connection.ConnectionPhase
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.R
@@ -40,7 +39,6 @@ class CarSession(
     private var encoder: CarVideoEncoder? = null
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
-    private var aaReceiver: AaTlsReceiver? = null
     private val display = CarDisplay(context, listOf(
         CarHomePresentation.Tile("Android Auto", R.drawable.ic_tile_android_auto, Color.parseColor("#1E8E3E")) { openAndroidAuto() },
         CarHomePresentation.Tile("Phone screen", R.drawable.ic_tile_phone_screen, Color.parseColor("#1A73E8")) { openMirror() },
@@ -119,8 +117,9 @@ class CarSession(
     }
 
     private fun release() {
-        aaReceiver?.stop()
-        aaReceiver = null
+        dev.caraalink.aa.AaSessionProbe.active?.stop()
+        aaDecoder?.stop()
+        aaDecoder = null
         weatherThread?.interrupt()
         weatherThread = null
         android.os.Handler(android.os.Looper.getMainLooper()).post { features.stop() }
@@ -137,27 +136,44 @@ class CarSession(
 
     // --- car home screen actions ---
 
+    private var aaDecoder: dev.caraalink.aa.AaVideoDecoder? = null
+
     /**
-     * Starts a real AA receiver instead of the old "coming soon" stub: dials
-     * the phone's own gearhead (127.0.0.1:5277) and opens the TLS handshake
-     * as a client presenting the head-unit identity in assets/aa.
+     * Starts the real AA receiver (dev.caraalink.aa.AaSessionProbe -- the
+     * old AaTlsReceiver above this comment used to be wired here, but it's
+     * a dead end that never got past a raw TLS handshake; superseded) and
+     * shows its decoded video + live touch on the car's own screen, at
+     * whatever resolution Settings > Video actually negotiates. Audio plays
+     * on the *phone's* speaker -- CarbitLink's own wire protocol doesn't
+     * carry audio to the car at all yet (not implemented anywhere, mirroring
+     * included), so that's a separate, later piece of work.
      */
     private fun openAndroidAuto() {
-        if (AaTlsReceiver.active != null) {
-            display.setStatus("AA: receiver already running")
-            return
+        if (dev.caraalink.aa.AaSessionProbe.active != null) {
+            display.setStatus("AA: already running")
+        } else {
+            display.setStatus("AA: connecting to the phone's gearhead…")
+            logger.log("openAndroidAuto: starting AA session probe")
+            dev.caraalink.aa.AaSessionProbe(context).start()
         }
-        display.setStatus("AA: connecting to the phone's gearhead…")
-        logger.log("openAndroidAuto: starting AA TLS receiver")
-        val receiver = AaTlsReceiver(context, AaTlsReceiver.Config(
-            mode = AaTlsReceiver.Mode.DIAL,
-            host = "127.0.0.1",
-            port = 5277,
-            tlsRole = AaTlsReceiver.TlsRole.CLIENT,
-        ))
-        receiver.statusSink = { display.setStatus(it) }
-        aaReceiver = receiver
-        receiver.start()
+        val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
+        display.showAa(
+            videoWidth = config.resolution.width,
+            videoHeight = config.resolution.height,
+            onSurface = { surface ->
+                if (surface != null) {
+                    val dec = dev.caraalink.aa.AaVideoDecoder(config.resolution.width, config.resolution.height)
+                    dec.start(surface)
+                    aaDecoder = dec
+                    dev.caraalink.aa.AaSessionProbe.active?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
+                } else {
+                    dev.caraalink.aa.AaSessionProbe.active?.videoSink = null
+                    aaDecoder?.stop()
+                    aaDecoder = null
+                }
+            },
+            onTouch = { x, y, action -> dev.caraalink.aa.AaSessionProbe.active?.sendTouch(x, y, action) },
+        )
     }
 
     @Volatile private var mirrorWanted = false
