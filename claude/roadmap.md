@@ -992,6 +992,51 @@ Not scoped/started, just grounding for whoever picks these up.
     in `SettingsActivity` calling back into `CarSession` to stop and
     restart `AaSessionProbe`. Deferred to the next PR, not in this one.
 
+### Aspect-ratio/margin follow-up (2026-11-02), confirmed from a real live capture
+
+A live `CONFIG_CAPTURE` on this exact head unit confirms the panel is
+genuinely **1920x720** (2.67:1) -- not a guess, read straight off the
+car. Combined with the already-confirmed "no 2.67:1 `VideoCodecResolutionType`
+exists" above, this closes out whether `width_margin`/`height_margin`
+could do better than the app's own Fit/Fill scaling:
+
+- **Nonzero margins shrink AA's own render canvas, but change nothing
+  about encode cost.** AA honors a margin by rendering into a smaller
+  inner rectangle and painting the margin zone black itself -- but the
+  hardware encoder still encodes the *full* nominal resolution (e.g.
+  1920x1080) either way. Margins are a software canvas inset, not a
+  resolution reduction: identical USB bandwidth, identical decode cost,
+  whether margins are 0 or aggressive. Gearhead also clamps/falls back
+  if margins push the inner canvas outside a safe aspect-ratio bound, so
+  this isn't even a reliable way to coax AA into an arbitrary shape.
+- **`content_insets`/`stable_content_insets` (part of `UiConfig`) only
+  reposition AA's own UI elements** (buttons, route guidance) away from
+  known obstructions -- they don't touch the raw frame's aspect ratio or
+  replace letterboxing/pillarboxing. Real practical value for a Fill/crop
+  setup though: setting these to match the cropped-off zones would keep
+  AA's own interactive controls from landing in the part of the frame
+  this app clips, instead of just hoping they don't. **Not implemented
+  yet** -- `AaServiceDiscovery.build()` doesn't send a `UiConfig` at all
+  today; this would need those insets added to the `VideoConfiguration`
+  it builds, sized from the current Fit/Fill choice and the actual
+  clipped margin on each axis. Worth doing if Fill mode turns out to clip
+  AA's own buttons in practice.
+- **No standard head unit gets true native 2.67:1 over plain AA either.**
+  OEM ultrawide dashes either request a normal 16:9 stream and
+  scale/crop it with their own board's hardware, or use vendor-specific
+  extensions outside the open AA spec entirely -- which is exactly why
+  this project needs its own mirror bridge (CarbitLink) rather than
+  native AA support, consistent with this whole project's premise.
+- **Conclusion: the app's current Fit/Fill approach (scale client-side,
+  nothing protocol-level) is already the right one, not a stopgap for
+  something better.** Protocol-level margins give zero efficiency
+  benefit over app-side scaling and are harder to control precisely
+  (AA's own clamping/fallback behavior isn't fully predictable) -- so
+  there's no reason to chase margin-based cropping instead of what's
+  already shipped. The one real remaining improvement is the UiConfig
+  insets point above, and only if Fill mode's clipping turns out to cut
+  off interactive AA elements in practice, not preemptively.
+
 ### Feasibility check (2026-11-02), four more requested items
 
 All four checked against what this app actually is (checked: **no NDK/
