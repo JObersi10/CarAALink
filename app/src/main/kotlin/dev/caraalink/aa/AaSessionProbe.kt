@@ -300,7 +300,19 @@ class AaSessionProbe(
                 attemptOnce()
                 if (!running.get()) return
                 if (everEstablished) attempt = 0
-                Thread.sleep(config.retryDelayMs)
+                // stop() interrupts this worker thread -- if that lands
+                // while it's sleeping here between retries, Thread.sleep()
+                // throws InterruptedException, which was uncaught anywhere
+                // in run() and crashed the ENTIRE APP. Confirmed from a real
+                // crash log: toggling "Start Head Unit Server" while a probe
+                // was mid-retry did exactly this. A stop mid-sleep is just
+                // stop() doing its job, not a real error -- treat it as one.
+                try {
+                    Thread.sleep(config.retryDelayMs)
+                } catch (e: InterruptedException) {
+                    logger.log("sleep interrupted (stop() requested) -- ending retry loop")
+                    return
+                }
             }
             logger.log("gave up after $attempt attempt(s)")
         } finally {
