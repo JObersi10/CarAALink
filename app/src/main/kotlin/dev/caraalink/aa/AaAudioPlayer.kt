@@ -104,6 +104,17 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
         } else {
             logger.log("AA audio -> default routing (device-only setting)")
         }
+        // PCM has repeatedly shown up as genuinely written to AudioTrack
+        // (confirmed via its own "frames delivered" log on stop()) while
+        // still being reported inaudible -- logging the actual media stream
+        // volume here rules in/out "phone was just muted/turned down" as the
+        // cause on the next test, instead of guessing again.
+        runCatching {
+            val am = context.getSystemService(AudioManager::class.java)
+            val vol = am?.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val max = am?.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+            logger.log("AA audio: STREAM_MUSIC volume = $vol/$max")
+        }
         // NOT t.play() here -- see feed(). Starting it now, before any real
         // PCM exists to write, was confirmed from a real exported log: the
         // track sat started-but-empty and the system kept cycling it

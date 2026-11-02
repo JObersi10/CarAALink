@@ -144,17 +144,32 @@ object AaServiceDiscovery {
      * makes the preview look like a normal-sized app on it.
      */
     fun configFromSettings(context: Context, preview: Boolean = false): Config {
-        val portrait = when (AppSettings.carOrientation(context)) {
-            AppSettings.CarOrientation.PORTRAIT -> true
-            AppSettings.CarOrientation.LANDSCAPE -> false
-            // AUTO: go by what the car itself reported; unknown (no car
-            // connected yet, e.g. the on-phone preview) falls back to
-            // landscape, the overwhelmingly common case.
-            AppSettings.CarOrientation.AUTO -> dev.caraalink.link.CarScreenInfo.isPortrait ?: false
+        // Car orientation/resolution settings (and CarScreenInfo, which only
+        // ever reflects the last REAL car connected) describe the car's own
+        // panel, not whatever phone happens to be running the preview --
+        // using them here produced a landscape 1920x1080 feed on a portrait
+        // phone screen, confirmed from a real log. Preview always matches
+        // the phone's own current screen shape and size instead.
+        val metrics = context.resources.displayMetrics
+        val portrait = if (preview) {
+            metrics.heightPixels >= metrics.widthPixels
+        } else {
+            when (AppSettings.carOrientation(context)) {
+                AppSettings.CarOrientation.PORTRAIT -> true
+                AppSettings.CarOrientation.LANDSCAPE -> false
+                // AUTO: go by what the car itself reported; unknown (no car
+                // connected yet) falls back to landscape, the overwhelmingly
+                // common case.
+                AppSettings.CarOrientation.AUTO -> dev.caraalink.link.CarScreenInfo.isPortrait ?: false
+            }
         }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
         val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
-        val resolution = if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
+        val resolution = if (preview) {
+            candidates.minByOrNull {
+                kotlin.math.abs(it.width * it.height - metrics.widthPixels * metrics.heightPixels)
+            } ?: defaultRes
+        } else if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
             val (w, h) = AppSettings.customResolution(context) ?: (defaultRes.width to defaultRes.height)
             candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
         } else {
