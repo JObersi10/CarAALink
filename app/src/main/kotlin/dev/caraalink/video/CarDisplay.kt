@@ -124,6 +124,18 @@ class CarDisplay(
     }
 
     fun showHome() = main.post {
+        // Leaving an active mirror session used to just swap the on-screen
+        // Presentation -- the underlying MediaProjection (and the system's
+        // "screen is being recorded" capture, battery drain included) kept
+        // running in the background indefinitely, only ever actually
+        // stopped by release() (the whole car-session teardown). Stop it
+        // for real when genuinely leaving mirror, not just hiding it.
+        if (mode == Mode.MIRROR) {
+            projection?.stop()
+            projection = null
+            mirrorDisplay?.release()
+            mirrorDisplay = null
+        }
         mode = Mode.HOME
         showCurrent()
     }
