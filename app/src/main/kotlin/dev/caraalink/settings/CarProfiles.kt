@@ -29,6 +29,7 @@ object CarProfiles {
     )
 
     private fun store(context: Context) = context.getSharedPreferences(PREFS_FILE, Context.MODE_PRIVATE)
+    private fun logger(context: Context) = dev.caraalink.diagnostics.DiagnosticLogger(context, "car-profiles")
 
     fun listProfiles(context: Context): List<String> =
         store(context).all.keys.sorted()
@@ -46,6 +47,7 @@ object CarProfiles {
             }
         }
         store(context).edit().putString(name.trim(), snapshot.toString()).apply()
+        logger(context).log("saved profile '${name.trim()}': $snapshot")
     }
 
     /** Returns false if [name] isn't a saved profile. */
@@ -62,11 +64,13 @@ object CarProfiles {
             }
         }
         editor.apply()
+        logger(context).log("loaded profile '$name': $snapshot")
         return true
     }
 
     fun deleteProfile(context: Context, name: String) {
         store(context).edit().remove(name).apply()
+        logger(context).log("deleted profile '$name'")
     }
 }
 

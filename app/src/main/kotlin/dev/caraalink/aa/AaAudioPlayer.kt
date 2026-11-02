@@ -34,6 +34,7 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
     private var track: AudioTrack? = null
     private val bufferInfo = MediaCodec.BufferInfo()
     private var lastCsd0: ByteArray? = null
+    private val logger = dev.caraalink.diagnostics.DiagnosticLogger(context, "aa-audio")
 
     /**
      * No-ops if [csd0] matches what's already configured and a decoder is
@@ -56,7 +57,10 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
                 configure(format, null, null, 0)
                 start()
             }
-        }.onFailure { Log.w(TAG, "decoder init failed", it) }.getOrNull() ?: return
+        }.onFailure {
+            Log.w(TAG, "decoder init failed", it)
+            logger.log("AAC decoder init failed: $it")
+        }.getOrNull() ?: return
 
         val channelMask = if (channelCount >= 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
         val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_16BIT)
@@ -90,7 +94,14 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
             val am = context.getSystemService(AudioManager::class.java)
             val a2dp = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-            if (a2dp != null) runCatching { t.preferredDevice = a2dp }
+            if (a2dp != null) {
+                runCatching { t.preferredDevice = a2dp }
+                logger.log("AA audio -> Bluetooth A2DP (${a2dp.productName})")
+            } else {
+                logger.log("AA audio: BT-preferred but no A2DP device connected, falling back to default routing")
+            }
+        } else {
+            logger.log("AA audio -> default routing (device-only setting)")
         }
         t.play()
 

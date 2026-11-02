@@ -218,6 +218,14 @@ class CarSession(
             openAndroidAuto()
         }
         val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
+        val fillMode = dev.caraalink.settings.AppSettings.aaFillMode(context)
+        logger.log(
+            "AA config: resolution=${config.resolution.width}x${config.resolution.height} " +
+                "fps=${config.frameRate} density=${config.density} " +
+                "widthMargin=${config.widthMargin} heightMargin=${config.heightMargin} " +
+                "autoCrop=${dev.caraalink.settings.AppSettings.aaAutoCrop(context)} fillMode=$fillMode " +
+                "carScreen=${dev.caraalink.link.CarScreenInfo.width}x${dev.caraalink.link.CarScreenInfo.height}",
+        )
         display.showAa(
             videoWidth = config.resolution.width,
             videoHeight = config.resolution.height,
