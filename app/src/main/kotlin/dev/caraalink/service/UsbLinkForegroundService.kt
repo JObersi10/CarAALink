@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.projection.MediaProjectionManager
 import dev.caraalink.accessibility.HeadUnitServerAccessibilityService
@@ -26,7 +28,6 @@ import dev.caraalink.connection.ConnectionSnapshot
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.AdbHandshakeProbe
 import dev.caraalink.diagnostics.UsbSnifferDiagnostic
-import dev.caraalink.settings.AppSettings
 
 /**
  * Keeps the USB link alive while the app is backgrounded (screen off is
@@ -43,16 +44,40 @@ class UsbLinkForegroundService : Service() {
     private var adbProbe: AdbHandshakeProbe? = null
     private var session: CarSession? = null
     private var pendingProjection: Pair<Int, Intent>? = null
-    private var reconnectRunnable: Runnable? = null
     private var pendingAccessory: UsbAccessory? = null
     private var resumeActiveMode: ((UsbAccessory) -> Unit)? = null
+    private var detachStopRunnable: Runnable? = null
 
     private val stateListener: (ConnectionSnapshot) -> Unit = { updateNotification(it) }
+
+    // Shouldn't keep running (and showing a notification) indefinitely once
+    // actually unplugged from the car -- 30s grace in case it's a brief
+    // reseat, then quietly stop: no lingering service, no lingering AA
+    // reconnect loop, notification gone.
+    private val detachReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            Log.i(TAG, "USB_ACCESSORY_DETACHED -- stopping in 30s unless reattached")
+            detachStopRunnable?.let { handler.removeCallbacks(it) }
+            val runnable = Runnable {
+                Log.i(TAG, "detachStopRunnable: still unplugged after 30s, stopping")
+                stopSelfCleanly()
+            }
+            detachStopRunnable = runnable
+            handler.postDelayed(runnable, 30_000L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         ConnectionStateHolder.addListener(stateListener)
+        val filter = IntentFilter(UsbManager.ACTION_USB_ACCESSORY_DETACHED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(detachReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(detachReceiver, filter)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -78,6 +103,8 @@ class UsbLinkForegroundService : Service() {
         }
         Log.i(TAG, "handleStart: ${intent.action} with accessory=${accessory.manufacturer}/${accessory.model}")
         pendingAccessory = accessory
+        detachStopRunnable?.let { handler.removeCallbacks(it) }
+        detachStopRunnable = null
         // CRASH SEEN ON REAL HARDWARE (claude/roadmap.md): starting a
         // connectedDevice-typed foreground service throws SecurityException
         // once the accessory's permission grant has lapsed (e.g. it was
@@ -207,7 +234,9 @@ class UsbLinkForegroundService : Service() {
         session?.stop()
         session = null
         ConnectionStateHolder.removeListener(stateListener)
-        reconnectRunnable?.let { handler.removeCallbacks(it) }
+        detachStopRunnable?.let { handler.removeCallbacks(it) }
+        detachStopRunnable = null
+        runCatching { unregisterReceiver(detachReceiver) }
         sniffer?.stop()
         adbProbe?.stop()
         releaseWakeLock()
@@ -216,49 +245,16 @@ class UsbLinkForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /** Called by the sniffer/transport layer (via ConnectionStateHolder) on link loss. */
+    /**
+     * Called by the sniffer/transport layer (via ConnectionStateHolder) on
+     * link loss. No auto-retry here (holding/retrying the accessory blocked
+     * Android's app chooser on the next plug-in) -- just release everything;
+     * [detachReceiver] handles the real "give it 30s in case it's a brief
+     * reseat" grace period off the actual USB detach event instead.
+     */
     private fun maybeScheduleReconnect(snapshot: ConnectionSnapshot) {
         if (snapshot.phase != ConnectionPhase.ERROR) return
-        // No auto-reconnect: holding/retrying the accessory blocked Android's
-        // app chooser on the next plug-in. Release everything instead.
         stopSelfCleanly()
-        return
-        @Suppress("UNREACHABLE_CODE")
-        if (!AppSettings.autoReconnectUsb(this)) return
-        val accessory = pendingAccessory ?: return
-
-        if (snapshot.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "maybeScheduleReconnect: giving up after $MAX_RECONNECT_ATTEMPTS attempts")
-            stopSelfCleanly()
-            return
-        }
-
-        val attempt = snapshot.reconnectAttempts + 1
-        val delayMs = (1000L * (1 shl minOf(attempt, 5))).coerceAtMost(30_000L) // 2s..30s backoff
-        ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.RECONNECTING, reconnectAttempts = attempt) }
-
-        val runnable = Runnable {
-            // CRASH SEEN ON REAL HARDWARE (claude/roadmap.md): retrying with a
-            // stale UsbAccessory reference after it's actually been unplugged
-            // throws from openAccessory() instead of failing gracefully.
-            // UsbAccessoryConnection.open() now catches that, but checking
-            // the accessory is still actually present first avoids the retry
-            // (and the crash-triggering startForeground/openAccessory calls)
-            // entirely when there's nothing left to reconnect to.
-            val usbManager = getSystemService(USB_SERVICE) as UsbManager
-            val stillPresent = usbManager.accessoryList?.any {
-                it.manufacturer == accessory.manufacturer && it.model == accessory.model
-            } == true
-            if (stillPresent) {
-                (resumeActiveMode ?: ::beginSniffing)(accessory)
-            } else {
-                Log.w(TAG, "maybeScheduleReconnect: accessory no longer present, not retrying")
-                pendingAccessory = null
-                stopSelfCleanly()
-            }
-        }
-        reconnectRunnable = runnable
-        handler.postDelayed(runnable, delayMs)
     }
 
     private fun stopSelfCleanly() {
@@ -334,7 +330,6 @@ class UsbLinkForegroundService : Service() {
         private const val CHANNEL_ID = "usb_link"
         private const val NOTIFICATION_ID = 1
         private const val NOTIFICATION_ID_CAPTURE = 2
-        private const val MAX_RECONNECT_ATTEMPTS = 5
 
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
         const val ACTION_START_ADB_PROBE = "dev.caraalink.service.action.START_ADB_PROBE"

@@ -83,6 +83,7 @@ private class ReqFramer {
 class MirrorControlChannel(
     private val logger: DiagnosticLogger,
     private val host: MirrorHost,
+    private val context: android.content.Context? = null,
 ) : AdbTransport.StreamHandler {
 
     private val framers = HashMap<Int, ReqFramer>()
@@ -101,8 +102,14 @@ class MirrorControlChannel(
     }
 
     private fun handle(stream: AdbTransport.Stream, type: Int, body: ByteArray) {
+        // Protocol sniffer (Settings > Debug > "Verbose protocol logging"):
+        // normally heartbeat/screen-event are too frequent to log, but when
+        // the sniffer is on, log every message with a hex preview.
+        val sniffing = context != null && dev.caraalink.settings.AppSettings.verboseLogging(context)
         if (type != REQ_SCREEN_EVENT && type != REQ_HEARTBEAT) {
-            logger.log("MIRROR ctrl 0x%04X len=%d".format(type, body.size))
+            logger.log("MIRROR ctrl 0x%04X len=%d".format(type, body.size) + if (sniffing) " " + dev.caraalink.diagnostics.ProtocolSniffer.hexPreview(body) else "")
+        } else if (sniffing) {
+            logger.log("MIRROR ctrl 0x%04X len=%d [sniff] ".format(type, body.size) + dev.caraalink.diagnostics.ProtocolSniffer.hexPreview(body))
         }
         when (type) {
             REQ_GET_VERSION -> stream.write(req(0x31, ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN).putInt(5002).putInt(1).array()))

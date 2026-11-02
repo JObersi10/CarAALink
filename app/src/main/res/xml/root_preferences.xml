@@ -3,6 +3,13 @@
 
     <PreferenceCategory android:title="Video">
         <ListPreference
+            android:key="car_orientation"
+            android:title="Car screen shape"
+            android:summary="Detected from your head unit automatically; override only if it's wrong"
+            android:entries="@array/car_orientation_entries"
+            android:entryValues="@array/car_orientation_values"
+            android:defaultValue="auto" />
+        <ListPreference
             android:key="video_resolution_mode"
             android:title="Resolution"
             android:summary="Match the head unit's reported display, or force a size"
@@ -28,6 +35,17 @@
             android:title="Video bitrate (kbps)"
             android:inputType="number"
             android:defaultValue="6000" />
+        <SwitchPreferenceCompat
+            android:key="video_dpi_auto"
+            android:title="Auto-detect DPI"
+            android:summary="Use this phone's own screen density for the AA session"
+            android:defaultValue="true" />
+        <EditTextPreference
+            android:key="video_dpi_manual"
+            android:title="Manual DPI"
+            android:summary="Only used when auto-detect is off"
+            android:inputType="number"
+            android:defaultValue="160" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Audio">
@@ -41,6 +59,35 @@
             android:key="audio_stereo"
             android:title="Stereo"
             android:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Android Auto">
+        <SwitchPreferenceCompat
+            android:key="aa_auto_launch"
+            android:title="Jump straight to Android Auto"
+            android:summary="Skip the CarAALink home screen and start the AA session as soon as the head unit server is up"
+            android:defaultValue="false" />
+        <ListPreference
+            android:key="aa_audio_route"
+            android:title="Mic / speaker for Android Auto"
+            android:summary="Which device handles AA voice/media audio in and out"
+            android:entries="@array/aa_audio_route_entries"
+            android:entryValues="@array/aa_audio_route_values"
+            android:defaultValue="bt_preferred" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Appearance">
+        <Preference
+            android:key="car_background"
+            android:title="Car home background"
+            android:summary="Pick a photo for the car home screen" />
+        <Preference
+            android:key="car_background_reset"
+            android:title="Reset car background" />
+        <Preference
+            android:key="notification_access"
+            android:title="Now playing on car home"
+            android:summary="Grant notification access so the car home screen can show what's playing" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Connection">
@@ -66,17 +113,22 @@
     <PreferenceCategory android:title="Debug">
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"
-            android:title="Verbose logging"
+            android:title="Protocol sniffer"
+            android:summary="Log every CarbitLink/Android Auto control message with a hex preview, including video/audio frames (noisy -- exported from Developer tools)"
             android:defaultValue="false" />
         <SwitchPreferenceCompat
             android:key="debug_overlay"
             android:title="On-screen debug overlay"
-            android:summary="Show capture/transport stats over the mirrored output"
+            android:summary="Show fps/bitrate/drops over the mirror, AA session, and this app's own screen"
             android:defaultValue="false" />
         <Preference
             android:key="accessibility_service_shortcut"
             android:title="Accessibility service"
             android:summary="Required for one-click head-unit-server start — tap to open system settings" />
+        <Preference
+            android:key="developer_tools"
+            android:title="Developer tools"
+            android:summary="Log export, Car Preview" />
     </PreferenceCategory>
 
 </androidx.preference.PreferenceScreen>

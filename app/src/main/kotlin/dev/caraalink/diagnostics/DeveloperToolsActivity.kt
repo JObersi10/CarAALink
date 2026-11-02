@@ -2,20 +2,26 @@ package dev.caraalink.diagnostics
 
 import android.app.Activity
 import android.content.Intent
-import android.hardware.usb.UsbManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
-import android.widget.Button
+import android.util.TypedValue
+import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
-import dev.caraalink.service.UsbLinkForegroundService
+import com.google.android.material.button.MaterialButton
 
 /**
- * Dev menu: start/stop the USB sniffer diagnostic and export whatever it's
- * captured so far. Everything here is for feeding evidence back into the
- * protocol RE work (claude/roadmap.md Phase 1) — none of it is part of the
- * real app flow.
+ * What's actually still useful day to day: export logs, and the interactive
+ * on-phone AA preview. The early RE-phase probes (USB sniffer, ADB
+ * handshake probe, raw AA TLS receiver, AA version-only probe) are
+ * superseded by the real session path (AaSessionProbe) and were removed
+ * from here -- their code is untouched (AaTlsReceiver.kt, AaVersionProbe.kt,
+ * UsbLinkForegroundService's sniffer/ADB-probe actions) in case protocol
+ * work ever needs to isolate a single rung again.
  */
 class DeveloperToolsActivity : Activity() {
 
@@ -26,96 +32,80 @@ class DeveloperToolsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val pad = dp(24)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(Color.parseColor("#0E1116"))
+        }
 
         root.addView(TextView(this).apply {
-            text = "USB sniffer logs raw bytes from the head unit to a file — " +
-                "no protocol logic, just capture. Needs a USB accessory already attached."
+            text = "Developer tools"
+            setTextColor(Color.parseColor("#F2F5F7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            setPadding(0, 0, 0, dp(20))
         })
 
-        root.addView(Button(this).apply {
-            text = "Start USB sniffer"
-            setOnClickListener { startSniffer() }
+        root.addView(button("Export latest log") { exportLatestLog() })
+
+        root.addView(section("Car Preview: shows CarAALink's own car home screen on this phone, " +
+            "same as the car sees it -- tap its Android Auto tile to start (or attach to) a " +
+            "real AA session with decoded video and touch, for testing without the car."))
+
+        root.addView(button("Car Preview") {
+            startActivity(Intent(this@DeveloperToolsActivity, dev.caraalink.aa.AaPreviewActivity::class.java))
         })
 
-        root.addView(TextView(this).apply {
-            text = "ADB handshake probe: completes the CNXN handshake the head unit " +
-                "opens with (confirmed real ADB, see claude/roadmap.md), then logs " +
-                "whatever it asks for next. Doesn't act on anything it receives."
-        })
-
-        root.addView(Button(this).apply {
-            text = "Start ADB handshake probe"
-            setOnClickListener { startAdbProbe() }
-        })
-
-        root.addView(Button(this).apply {
-            text = "Stop"
-            setOnClickListener {
-                startService(Intent(this@DeveloperToolsActivity, UsbLinkForegroundService::class.java)
-                    .setAction(UsbLinkForegroundService.ACTION_STOP))
-            }
-        })
-
-        root.addView(Button(this).apply {
-            text = "Export latest log"
-            setOnClickListener { exportLatestLog() }
-        })
-
-        setContentView(root)
+        setContentView(
+            ScrollView(this).apply {
+                addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            },
+        )
     }
 
-    private fun startSniffer() {
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val list = usbManager.accessoryList
-        Log.i(TAG, "startSniffer: accessoryList size=${list?.size ?: 0}")
-        val accessory = list?.firstOrNull()
-        if (accessory == null) {
-            Log.w(TAG, "startSniffer: no accessory in UsbManager.accessoryList -- nothing to sniff")
-            Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
-            return
+    private fun section(text: String) = TextView(this).apply {
+        this.text = text
+        setTextColor(Color.parseColor("#9AA7B2"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        setPadding(0, dp(16), 0, dp(8))
+    }
+
+    private fun button(label: String, onClick: () -> Unit) = MaterialButton(
+        this,
+        null,
+        com.google.android.material.R.attr.materialButtonOutlinedStyle,
+    ).apply {
+        text = label
+        isAllCaps = false
+        textSize = 15f
+        setOnClickListener { onClick() }
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52)).apply {
+            topMargin = dp(6)
         }
-        Log.i(TAG, "startSniffer: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
-        val intent = Intent(this, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_SNIFFER)
-            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
-        startForegroundService(intent)
-        Log.i(TAG, "startSniffer: sent ACTION_START_SNIFFER to UsbLinkForegroundService")
+        cornerRadius = dp(16)
+        setTextColor(Color.parseColor("#F2F5F7"))
+        strokeColor = ColorStateList.valueOf(Color.parseColor("#2C3640"))
+        strokeWidth = dp(1)
+        rippleColor = ColorStateList.valueOf(Color.parseColor("#4036C9C6"))
     }
 
-    private fun startAdbProbe() {
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val list = usbManager.accessoryList
-        Log.i(TAG, "startAdbProbe: accessoryList size=${list?.size ?: 0}")
-        val accessory = list?.firstOrNull()
-        if (accessory == null) {
-            Log.w(TAG, "startAdbProbe: no accessory in UsbManager.accessoryList")
-            Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
-            return
-        }
-        Log.i(TAG, "startAdbProbe: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model}")
-        val intent = Intent(this, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
-            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
-        startForegroundService(intent)
-        Log.i(TAG, "startAdbProbe: sent ACTION_START_ADB_PROBE to UsbLinkForegroundService")
-    }
+    private fun dp(value: Int): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics).toInt()
 
     private fun exportLatestLog() {
-        val allFiles = DiagnosticLogger(this, "app").allLogFiles() // shared logs/ dir, all tags
-        val latestApp = allFiles.firstOrNull { it.name.startsWith("app-") }
-        val latestSniff = allFiles.firstOrNull { it.name.startsWith("usb-sniff-") }
-        val latestProbe = allFiles.firstOrNull { it.name.startsWith("adb-probe-") }
-        val latestSession = allFiles.firstOrNull { it.name.startsWith("car-session-") }
-        val toShare = listOfNotNull(latestApp, latestSession, latestProbe, latestSniff)
-        if (toShare.isEmpty()) {
+        // Every subsystem's DiagnosticLogger now writes into the one shared,
+        // already-interleaved current log file -- nothing to merge anymore.
+        val logger = DiagnosticLogger(this, "app")
+        val file = logger.latestLogFile()
+        if (!file.exists() || file.length() == 0L) {
             Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
             return
         }
-        Log.i(TAG, "exportLatestLog: sharing ${toShare.map { it.name }}")
+        Log.i(TAG, "exportLatestLog: sharing ${file.name} (${file.length()} bytes)")
+        Toast.makeText(this, "Sharing ${file.name}", Toast.LENGTH_SHORT).show()
         startActivity(
             Intent.createChooser(
-                DiagnosticLogger.shareFilesIntent(this, toShare),
+                logger.shareFileIntent(file),
                 "Share CarAALink logs",
             )
         )

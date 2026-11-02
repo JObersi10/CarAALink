@@ -1,13 +1,332 @@
 # Handoff
 
-Last rewritten: 2026-11-01, end of a long live-testing session. Everything
-below reflects the current state of `main` (through PR #12) plus live
-testing done directly on the owner's phone (Samsung Galaxy S25 Ultra,
-wireless-debugging adb) against the real car head unit. See
-`roadmap.md` for full cited detail — this file is the "what actually
-happened and what to do next" summary.
+Last rewritten: 2026-11-02, continuing the 2026-11-01 session on branch
+`aa-receiver` (PR #17, not yet merged). See `roadmap.md` for full cited
+CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol
 
-## LATEST (2026-11-01, late) — read this first
+## LATEST (2026-11-02, later still) -- portrait cars, auto-detect, and the post-"real car tile" feature batch
+
+Picked up right after the live verification pass below, on the same
+`aa-receiver` branch (PR #17, still open, heading toward v1.0.0). Owner's
+own confirmation photo of a real AA session (Maps + a media app) actually
+rendering on their BMW's head unit screen came in during this entry --
+genuine proof the real-car-tile fix below is working on real hardware, not
+just the phone preview.
+
+- **Portrait car screens.** `AaResolution` only had AA's 5 *landscape*
+  `VideoCodecResolutionType` values -- the 4 portrait ones (720x1280 ...
+  2160x3840) were documented in `AaServiceDiscovery`'s own doc comment but
+  never implemented, so a portrait head unit always got a landscape frame
+  forced onto it. Added them, plus a "Car screen shape" setting that
+  defaults to **auto** -- `CarScreenInfo`, updated from the head unit's own
+  `CONFIG_CAPTURE` width/height in `CarSession.onCaptureConfig` (the car
+  reports its real screen shape; no need to ask the user). Also fixed the
+  advertised touch size to match the actual negotiated resolution instead
+  of a hardcoded 1920x720 (a latent mismatch -- touch events are mapped
+  into `config.resolution` space, so advertising a different size was
+  always wrong, just never surfaced as a visible bug yet).
+- **AA-tile tap no longer force-opens Accessibility Settings.**
+  `HeadUnitServerLauncher.start()` used to open Accessibility Settings
+  every time the tile was tapped and the service wasn't enabled yet --
+  disruptive from the car, and presumptuous about what the user wants. Now
+  it just posts a notification telling them to open Android Auto
+  themselves (tap it -> opens AA); no settings screen forced open.
+- **Phone widgets on the car home screen.** Battery + now-playing
+  (title/artist), refreshed every 3s in `buildHomeContent()`. Now-playing
+  needs notification access (`MediaListenerService`, a
+  `NotificationListenerService` that exists only to hold the permission
+  `MediaSessionManager.getActiveSessions` requires -- it never reads
+  notification content) -- Settings > Appearance > "Now playing on car
+  home" opens that system screen.
+- **Performance/latency HUD, on the car *and* the phone.** `PerfStats`
+  (fps/kbps/dropped-frames/AA-reconnect-count), wired into both the
+  CarbitLink mirror encoder and the AA decoder, gated by the existing (but
+  previously unwired) "On-screen debug overlay" setting. Shown in
+  `AaCarPresentation`/`MirrorPresentation` (car) and `MainActivity`/
+  `AaPreviewActivity` (phone) per the explicit ask that it "lowk show that
+  info also on the phone."
+- **Protocol sniffer, for real this time.** The `debug_verbose_logging`
+  setting existed but did nothing; renamed to "Protocol sniffer" and now
+  gates a hex preview on both channels' messages. Found and fixed a real
+  perf bug while wiring it up: `AaSessionProbe`'s `"MESSAGE on ..."` log
+  was firing unconditionally for *every single* video/audio frame through
+  `DiagnosticLogger`'s synchronous file write -- quietly throttling decode
+  the whole time. Now off by default, hex dump only when the sniffer's on.
+- **AA audio routing, the honest version.** CarbitLink's own wire protocol
+  still can't carry audio (its `Packet` audio framing is genuinely
+  unconfirmed -- see `roadmap.md`'s RE pass 1 findings -- so nothing was
+  invented for it, per `claude.md`'s hard rule, even though it was asked
+  for). Shipped instead: `AaAudioPlayer` now explicitly steers output to a
+  connected Bluetooth A2DP device when BT-preferred, so AA audio reaches
+  the car's speakers over the car's own Bluetooth rather than only the
+  phone's own speaker.
+- **Local crash marker + AA watchdog.** `CrashMarker` persists a one-shot
+  "crashed last run" summary (SharedPreferences, no network -- there's no
+  backend, so this was always going to be local-only) surfaced as a toast
+  on next launch; the stack trace itself was already in the unified log.
+  `CarSession` now polls `AaSessionProbe.lastVideoFrameAt` every 5s and
+  restarts a frozen-but-still-connected AA session after a 10s stall --
+  covers the case `everEstablished`'s own reconnect logic doesn't (no
+  actual socket/TLS error, just nothing arriving anymore).
+- **Explicitly deferred to the next PR** (opening as PR #18 off this
+  branch once this one's close to merging): mid-session resolution/DPI
+  change via automatic AA-session teardown+reconnect (true live
+  renegotiation is now CONFIRMED impossible -- see `roadmap.md`'s updated
+  research notes, citing `mrmees/open-android-auto`'s own protocol docs),
+  multi-profile/multi-car management (the most UI-heavy ask, intentionally
+  not rushed), and USB bulk-transfer tuning (checked and **not
+  applicable** -- the 16 KB read buffer already matches the accessory
+  driver's own confirmed bulk size, no headroom available through the AOA
+  stream API this app uses).
+- Also elaborated (design notes only, not implemented): the AA-to-
+  CarbitLink bridge (decode+re-encode through the existing mirror pipeline
+  vs. risky direct NAL passthrough) and a headless JVM-testable harness
+  for both protocol state machines, replaying this doc's own confirmed
+  capture bytes as golden fixtures. Both written up in full in
+  `roadmap.md`'s "Future ideas" section.
+
+## Earlier (2026-11-02, late) -- real on-device verification pass
+
+Finally got a stable connection (USB debugging, owner gave the phone
+passcode so the session could unlock/test autonomously) and drove the
+actual Car Preview / real AA tile path end to end. Verified live:
+
+- **Real AA session confirmed working through the actual Car Preview /
+  AA tile path**: version -> TLS -> discovery -> channel-open ->
+  video+audio decode, with Google Maps and Spotify/Apple Music genuinely
+  rendering and updating. Touch confirmed landing correctly (found via
+  `uiautomator dump` that two earlier taps had simply missed the tile's
+  real bounds -- not an app bug, a testing-coordinate bug).
+- **AA music audio: strong live evidence it now works.** `dumpsys audio`
+  showed our `AudioTrack` active, unmuted, correctly formatted
+  (48kHz/stereo), continuously fed with zero decode errors, routed to a
+  real output device shared with another app's audio stream. Couldn't
+  literally hear it through adb -- owner should confirm by ear next time,
+  but every available signal says it's playing.
+- **Reopen-after-lock black screen: real bug, found and partially fixed.**
+  Root cause confirmed live: on reattach we were replaying cached SPS/PPS
+  only, but SPS/PPS alone can't produce a picture -- the new decoder needs
+  an actual IDR/keyframe, and the stream's own next one (H.264 GOP
+  interval) could be arbitrarily far off. Added a NAL scanner that caches
+  the last IDR alongside the codec config and replays both. Result: went
+  from "black forever" to "one frame renders, then freezes" -- real
+  improvement, not a full fix. Later P-frames apparently don't decode
+  cleanly against a keyframe replayed out of the live encoder sequence. A
+  full fix likely means accepting a brief (bounded) black gap until the
+  next real IDR arrives instead, or isn't fully fixable from the head
+  unit's side at all -- there's no "request a keyframe" message exposed
+  to a head unit in this protocol as far as confirmed.
+- Also found and fixed along the way: `CarAALinkApplication` continuously
+  mirrors this process's own logcat into the unified log file (pre-existing
+  design, not new this session) -- worth knowing when reading logs, lines
+  with a nested real logcat timestamp are that, not a second subsystem.
+
+### Earlier in this entry (2026-11-02, before the live pass above)
+
+The single biggest finding of this session: **the actual "Android Auto"
+tile on the car home screen (`CarSession.openAndroidAuto()`) was still
+calling the old dead-end `AaTlsReceiver`** -- every bit of AA testing the
+previous session did went through a separate debug-only preview path
+(`AaPreviewActivity`), never the real car tile. Fixed: `openAndroidAuto()`
+now starts the real `AaSessionProbe`, and a new `AaCarPresentation` /
+`CarDisplay.Mode.AA` show its decoded video + forward touch on the car's
+own screen, at whatever resolution `AaServiceDiscovery.configFromSettings()`
+negotiates. Also added: a quick 127.0.0.1:5277 liveness check before
+starting (triggers the accessibility-driven head-unit-server auto-start if
+nothing's listening, instead of just failing), a DPI setting
+(auto-detect/manual, fixed later the same session to replicate
+`CarDisplay.attach()`'s own formula instead of the phone's screen
+density), and removed the redundant back-button overlay (AA has its own
+in-app back/exit UI; kept a long-press-only exit-to-home corner). This is
+the fix the live pass above actually verified.
+
+### Owner's live-test feedback, same session (from actually running the
+### *previous* build, i.e. before the real-car-tile fix above)
+
+Reported, roughly in the order given, candor about what's real vs.
+unconfirmed:
+
+- **"It works really well"** overall, but: felt laggy, bitrate/resolution
+  seemed to drop; unclear if that's our encode, gearhead's own developer-
+  mode throttling (observed all session: video arrives at ~3fps not the
+  requested 30fps even when the protocol-level negotiation is correct --
+  never root-caused, see "Known open issue" in the previous entry below),
+  or something else. **Not investigated further this session -- no live
+  capture correlating it to anything on our side.**
+- **AA music/media audio didn't play**, but *other* Bluetooth audio
+  (unrelated to AA) did. `AaAudioPlayer` (AAC-LC decode -> AudioTrack,
+  added this session) was wired in but never confirmed working live before
+  this report came in -- can't tell yet whether it's a real bug in that
+  decoder/player or audio focus, or whether it's actually fine now and this
+  feedback predates it. Needs a live check with the current build.
+- **Touch reportedly stopped working** on a reopen after the AA session
+  had been closed and reopened. Could easily be the real-car-tile bug
+  above (the tile was pointed at the dead `AaTlsReceiver`, so "touch"
+  there was never real to begin with) rather than a regression in the
+  working `AaSessionProbe.sendTouch()` path -- needs re-testing now that
+  the tile is actually wired correctly.
+- **Reopening AA after exiting showed a black screen**, with the phone's
+  own notification still saying "connected to your vehicle." Same caveat:
+  may well be explained by the dead-receiver bug above. `AaPreviewActivity`
+  had an analogous black-screen-on-reopen bug this session, root-caused
+  (phone sends SPS/PPS once per TCP session, not per attach) and fixed via
+  `AaSessionProbe.attachVideoSink()`/`cachedCodecConfig`; the new
+  `AaCarPresentation` path reuses `attachVideoSink()` too, so it may
+  already be fixed as a side effect, but this is unverified.
+- Resolution: owner unsure if what they saw was actually 1080p or 4K --
+  `configFromSettings()` (new this session) should make this explicit and
+  controllable now (Settings > Video > Resolution), worth confirming it
+  actually reads as expected on a live run.
+
+### Still on the list, not started
+
+- **Phone widgets on the car home screen.** New feature ask, not scoped.
+- **Roadmap item for later:** making the phone itself act as a CarPlay/AA
+  *server* (simulator) for other devices too -- owner explicitly said this
+  is a later idea, just record it here so it isn't lost.
+- Piping decoded AA video/audio into the actual CarbitLink video path
+  (still separate from the on-phone preview and now also separate from the
+  car `AaCarPresentation` path -- three different consumers of the same
+  decoder/sink architecture now, which is fine, just worth knowing).
+
+## Infra changes this session (2026-11-02), unrelated to the above
+
+- **Unified logging.** Every `DiagnosticLogger` instance (aa-session,
+  car-session, usb-sniff, adb-probe, aa-version, aa-tls, app) used to write
+  its own separate timestamped file, needing a merge step to read side by
+  side. Now they all write into one shared rotating current file (tag as a
+  line prefix instead of a filename), so `DeveloperToolsActivity`'s
+  "Export latest log" shares that directly -- no more merge step.
+- **Quiet shutdown after USB unplug.** `UsbLinkForegroundService` had no
+  `USB_ACCESSORY_DETACHED` detection at all before this -- disconnect was
+  only noticed indirectly via transport read/write failures. Added an
+  explicit detach receiver: 30s grace (cancelled if a new session starts
+  in that window), then a clean stop -- service, notification, and the AA
+  session's own reconnect loop all actually end instead of only doing so
+  if a transport error happened to fire.
+
+## Earlier entry (2026-11-01), AA video/audio pipeline working
+
+Built on top of the working AA video pipeline: touch/input channel, mic
+passthrough, **AA audio playback** (media-sink audio channel was negotiating
+and streaming fine but nothing ever played it back -- that was the real
+"no AA audio" cause, not Bluetooth routing), auto-reconnect, and a
+`configFromSettings()` path so Settings > Video resolution/frame rate
+actually apply to the AA session instead of always using the 1920x1080
+default. Fixed a reopen-preview bug (phone sends SPS/PPS once per TCP
+session, not per attach -- now cached and replayed). `AaPreviewActivity`
+("Car Preview") now opens CarAALink's own home screen first and only starts
+the AA session when its tile is tapped, reusing the same view-building code
+as the real car `Presentation` (`buildHomeContent()`). UI modernization pass
+across Main/Settings/Onboarding/DeveloperTools/ConnectionDiagnostics; dev
+tools trimmed and moved into Settings; onboarding got a one-time intro
+screen; README got a banner + CI now publishes a rolling `dev` pre-release.
+
+**Verified live tonight:** version→TLS→discovery→channel-open→video+audio
+decode→touch, all working on hardware (gearhead 18.0.664244, S25 Ultra),
+including the owner confirming touch control working in the on-phone
+preview. **NOT yet re-verified on hardware** (built clean, untested on
+device as of this writing): the reopen-black-screen fix, audio playback,
+resolution-setting wiring end to end, landscape resize/rotation, and the
+new home-first preview flow. Do a device pass on these before anything else.
+
+**Known open issue, unconfirmed:** the AA session appears to drop and
+reconnect roughly every minute even while foregrounded. Checked the
+ping-echo logic (PingRequest/PingResponse timestamp field) against aasdk
+source -- it's structurally correct, so this isn't a fabricated-protocol
+issue, but the actual cause is still unknown. Needs a live capture
+correlating gearhead's own disconnect/reconnect log line with what we were
+doing at that moment, not more guessing from source alone.
+
+**Also not done yet:** decoded AA video/audio aren't piped into the actual
+CarbitLink video path (still only the on-phone preview) -- that's the next
+real integration step once the open items above are confirmed stable.
+
+## Earlier state (through the H.264-flowing milestone)
+
+**Two separate workstreams live here now:**
+1. **CarbitLink mirroring** — works on the car (below).
+2. **Android Auto receiver** — working through live H.264 video (see LATEST
+   above for what's built on top of it since).
+
+## LATEST — Android Auto receiver: H.264 VIDEO IS FLOWING (2026-11-01)
+
+Live on gearhead 18.0.664244 / S25 Ultra: version -> TLS -> AUTH_COMPLETE ->
+discovery accepted -> audio focus -> all 8 service channels opened -> video
+MEDIA_SETUP/CONFIG + VIDEO_FOCUS_NOTIFICATION -> sensor started -> **real
+H.264 NAL data arriving continuously on MEDIA_SINK_VIDEO (msg#0 =
+MEDIA_MESSAGE_DATA), sustained 30+s, no drops**. This was three separate bugs,
+found by diffing byte-for-byte against openauto/aasdk source (cloned to
+scratchpad, not committed):
+
+1. `SensorSourceService` in our discovery response was empty; openauto's
+   advertises 3 real sensors. Fixed, didn't matter much on its own.
+2. **The real blocker:** `MediaSourceService` (microphone, channel 9) had no
+   `audio_config` -- phone logged `CAR.SERVICE: Critical error 2 detail: 24
+   msg: No audio/mic` and dropped right after discovery. Gave it a real
+   16kHz/16-bit/mono config and discovery was accepted.
+3. `AaSessionProbe.maxMessages` defaulted to 10 -- exactly consumed by
+   discovery + audio-focus-request + 8x channel-open, so the probe's own loop
+   exited and closed the socket in `finally` right as the real session began.
+   Looked identical to a protocol rejection (`gearhead` logged
+   `FRAMER_READ_END_OF_STREAM` at that instant) but was 100% us. Raised to
+   2000.
+
+Also newly handled: `MESSAGE_AUDIO_FOCUS_REQUEST` (control id 18, not
+previously handled at all -- phone was asking for it right after discovery),
+per-channel `CHANNEL_OPEN_REQUEST`/`RESPONSE` (`MessageType::CONTROL` flag,
+not `SPECIFIC` -- different frame flag from every other message we send),
+`MEDIA_MESSAGE_SETUP`/`CONFIG`/`VIDEO_FOCUS_NOTIFICATION` on the video+audio
+sink channels, `SENSOR_MESSAGE_REQUEST`/`RESPONSE` on the sensor channel.
+
+**Not done yet:** we parse but discard the H.264 bytes. Next: feed
+`MEDIA_MESSAGE_DATA` payloads (first byte(s) are a timestamp per
+`MediaChannelMessage`/`AVChannelMessage` framing -- not yet decoded, check
+aasdk's `AVMediaChannelMessage`) into the CarbitLink video path instead of
+logging them, then do the same for the input/touch channel.
+
+## Earlier notes below (service discovery was the blocker; now fixed, kept for the citations)
+
+The "Android Auto" tile is no longer a stub: it drives a real AA receiver.
+Full detail, citations and dead ends are in
+[`aa-receiver-notes.md`](aa-receiver-notes.md). Summary:
+
+**Working, reproducible on hardware:**
+- Version exchange: TX `00 03 00 06 00 01 00 01 00 06` → RX
+  `00 02 00 01 00 07 00 00` (VERSION_RESPONSE 1.7, status 0).
+- TLS handshake carried **inside** AA frames as `ENCAPSULATED_SSL` (msg id 3).
+  Pinned to TLSv1.2 with a leaf-only client cert so the flight sizes match the
+  reference app exactly (ClientHello 138 B, cert flight 1191 B, final 51 B).
+  The phone's `CarService` cert chains to the same Google Automotive Link CA
+  we ship, so both ends are in one PKI.
+- **`AUTH_COMPLETE` (PLAIN, msg id 4, `AuthResponse{status=0}`) immediately
+  after the handshake** — this was the step that unblocked everything. Without
+  it the phone stays silent forever. With it, the phone sends
+  `SERVICE_DISCOVERY_REQUEST` (`label_text='Android'`,
+  `device_name='samsung SM-S938B'`, `phone_info`).
+
+**Blocked:** the phone rejects our `SERVICE_DISCOVERY_RESPONSE` and closes the
+socket ~0.82 s later (`EOFException`; gearhead logs `GEARHEAD_ENDPOINTS_FAILED`).
+Our protobuf decodes cleanly field-by-field, so it is not malformed — something
+the phone needs is missing. Next step is to diff against openauto's exact
+response rather than keep guessing.
+
+**Resolution question — settled:** AA has **no 1920x720 mode** (only
+800x480 / 1280x720 / 1920x1080 / 2560x1440 / 3840x2160 + portrait) and never
+renders at the panel size. openauto just does
+`videoWidget_->setGeometry(screenGeometry)` and scales. So we keep
+**1920x1080 @30 fps H.264 Baseline (16:9)** and let the CarbitLink side fit it
+into the car's 1920x720. `width_margin`/`height_margin` exist but their exact
+semantics are unconfirmed; both default to 0.
+
+**Operational trap (cost hours):** gearhead's head-unit server binds 5277,
+fills its accept backlog and never calls `accept()`. You connect, get silence
+forever. `adb shell "ss -ltn | grep 5277"` with a non-zero `Recv-Q` means
+stale — the only fix is the UI toggle (AA Settings → ⋮ → Stop, then ⋮ → Start).
+Retrying makes it worse; one clean attempt after a fresh toggle is the winning
+pattern.
+
+## CarbitLink mirroring (2026-11-01, late) — read this second
 
 **IT WORKS ON THE CAR.** The head unit shows CarAALink's own home screen,
 plays live phone-screen mirroring, and takes touch. This is a working
@@ -48,16 +367,17 @@ committed on top.
   manifest USB-attach receiver was removed. Together these stopped the app
   from holding the accessory and blocking Android's app chooser.
 
-### HARD LINE — do not cross (owner pushed on this repeatedly; still no)
-Android Auto / CarPlay projection to the car is NOT implemented and will
-not be faked. Real AA/CarPlay receivers pass a TLS handshake against a
-Google/Apple key; PhoneAuto, open-headunit ("self mode" included), and
-DiPlay all embed a *stolen* extracted key to clear it. We do NOT embed,
-fetch, gitignore-and-BYO, or copy that key or those projects' code — a
-self-signed/own-info cert cannot pass the check, so there is no clean
-path today. The "Android Auto" tile is a placeholder ("coming soon").
-If a legit path appears (Android-for-Cars partner cert), the forwarding
-half is already built.
+### AA projection — status
+
+Superseded by the "Android Auto receiver" section at the top and
+[`aa-receiver-notes.md`](aa-receiver-notes.md). Short version: rungs 1-3 of the
+AA protocol work on hardware through the phone's `SERVICE_DISCOVERY_REQUEST`;
+the phone then rejects our `SERVICE_DISCOVERY_RESPONSE` and drops the link. No
+video/touch is wired to the car yet.
+
+The tiles on the car home screen are unchanged: "Phone screen" and "Settings"
+work, "Android Auto" launches the AA receiver (and currently ends in the
+rejection above rather than showing AA).
 
 ### Next ideas (owner's list, not yet built)
 Music now-playing + transport controls and recent notifications on the car

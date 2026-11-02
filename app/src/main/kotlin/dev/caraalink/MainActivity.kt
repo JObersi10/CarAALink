@@ -2,11 +2,8 @@ package dev.caraalink
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.widget.Toast
-import dev.caraalink.video.CarHomePresentation
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Bundle
@@ -16,10 +13,12 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.google.android.material.button.MaterialButton
+import dev.caraalink.aa.AaTlsReceiver
+import dev.caraalink.aa.AaSessionProbe
+import dev.caraalink.aa.AaVersionProbe
 import dev.caraalink.accessibility.HeadUnitServerLauncher
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
-import dev.caraalink.diagnostics.DeveloperToolsActivity
 import dev.caraalink.onboarding.OnboardingActivity
 import dev.caraalink.service.UsbLinkForegroundService
 import dev.caraalink.settings.SettingsActivity
@@ -35,15 +34,18 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val PREF_ONBOARDING_SHOWN = "onboarding_shown"
-        private const val REQUEST_BACKGROUND = 7
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: launch intent action=${intent?.action} extras=${intent?.extras}")
+        dev.caraalink.diagnostics.CrashMarker.consumeLastCrash(this)?.let { summary ->
+            Toast.makeText(this, "Restarted after a crash: $summary", Toast.LENGTH_LONG).show()
+        }
         render()
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
+        maybeStartAaTls(intent)
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED &&
             checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) {
@@ -65,6 +67,78 @@ class MainActivity : Activity() {
      * picked. MainActivity only ever gets this intent when CarAALink is the
      * one chosen, so there's no race with CarbitLink anymore.
      */
+    /**
+     * Debug-build-only headless entry point for the AA TLS receiver, so it can
+     * be driven over adb rather than by tapping Developer Tools:
+     *
+     *   adb shell am start -n dev.caraalink/.MainActivity --es aa_tls start \
+     *       [--es aa_mode dial|listen] [--es aa_role server|client|auto] \
+     *       [--ei aa_port 5277] [--es aa_host 127.0.0.1]
+     *
+     *   adb shell am start -n dev.caraalink/.MainActivity --es aa_tls stop
+     *
+     * Refuses to do anything outside a debuggable build, so a release APK
+     * can't be poked into opening a listener from the shell.
+     */
+    private fun maybeStartAaTls(intent: Intent?) {
+        val probe = intent?.getStringExtra("aa_probe")
+        if (probe != null) {
+            if ((applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
+                when (probe) {
+                    "stop" -> { AaVersionProbe.active?.stop(); AaSessionProbe.active?.stop() }
+                    "session" -> if (AaSessionProbe.active == null) {
+                        val cfg = AaSessionProbe.Config(
+                            versionMajor = intent.getIntExtra("aa_vmajor", -1).takeIf { it >= 0 },
+                            versionMinor = intent.getIntExtra("aa_vminor", -1).takeIf { it >= 0 },
+                        )
+                        AaSessionProbe(this, cfg).start()
+                    }
+                    else -> if (AaVersionProbe.active == null) AaVersionProbe(this).start()
+                }
+            }
+            return
+        }
+
+        val op = intent?.getStringExtra("aa_tls") ?: return
+        val debuggable = (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!debuggable) {
+            Log.w(TAG, "aa_tls='$op' ignored: not a debuggable build")
+            return
+        }
+
+        if (op == "stop") {
+            Log.i(TAG, "aa_tls: stopping receiver")
+            AaTlsReceiver.active?.stop()
+            Toast.makeText(this, "AA TLS receiver stopped", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        if (AaTlsReceiver.active != null) {
+            Log.w(TAG, "aa_tls: receiver already running, ignoring '$op'")
+            Toast.makeText(this, "AA TLS receiver already running", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val mode = when (intent.getStringExtra("aa_mode")?.lowercase()) {
+            "listen" -> AaTlsReceiver.Mode.LISTEN
+            else -> AaTlsReceiver.Mode.DIAL
+        }
+        val role = when (intent.getStringExtra("aa_role")?.lowercase()) {
+            "server" -> AaTlsReceiver.TlsRole.SERVER
+            "client" -> AaTlsReceiver.TlsRole.CLIENT
+            else -> AaTlsReceiver.TlsRole.AUTO
+        }
+        val config = AaTlsReceiver.Config(
+            mode = mode,
+            host = intent.getStringExtra("aa_host") ?: "127.0.0.1",
+            port = intent.getIntExtra("aa_port", 5277),
+            tlsRole = role,
+        )
+        Log.i(TAG, "aa_tls: starting receiver $config")
+        AaTlsReceiver(this, config).start()
+        Toast.makeText(this, "AA TLS receiver: ${mode.name}/${role.name}", Toast.LENGTH_SHORT).show()
+    }
+
     private fun maybeAutoStartOnAttach(intent: Intent?) {
         if (intent?.action != UsbManager.ACTION_USB_ACCESSORY_ATTACHED) return
         @Suppress("DEPRECATION")
@@ -76,30 +150,6 @@ class MainActivity : Activity() {
         startForegroundService(serviceIntent)
     }
 
-    @Deprecated("Plain Activity; result API not used")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        val uri = data?.data
-        if (requestCode != REQUEST_BACKGROUND || resultCode != RESULT_OK || uri == null) return
-        Thread {
-            // Downscale so a 50 MP photo doesn't blow up memory on every car connect.
-            val ok = runCatching {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                var sample = 1
-                while (bounds.outWidth / sample > 2560 || bounds.outHeight / sample > 2560) sample *= 2
-                val bmp = contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-                } ?: error("decode failed")
-                CarHomePresentation.backgroundFile(this).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-            }.isSuccess
-            runOnUiThread {
-                Toast.makeText(this, if (ok) "Car background set (shows on next connect)" else "Couldn't read that image", Toast.LENGTH_SHORT).show()
-                render()
-            }
-        }.start()
-    }
-
     // When the app is already running, picking it in the USB chooser delivers
     // the attach intent here instead of onCreate.
     override fun onNewIntent(intent: Intent) {
@@ -107,6 +157,7 @@ class MainActivity : Activity() {
         setIntent(intent)
         Log.i(TAG, "onNewIntent: action=${intent.action}")
         maybeAutoStartOnAttach(intent)
+        maybeStartAaTls(intent)
     }
 
     private fun maybeShowOnboarding() {
@@ -147,33 +198,23 @@ class MainActivity : Activity() {
         spacer(root)
         outlineButton("Connection diagnostics") { open(ConnectionDiagnosticsActivity::class.java) }.also { root.addView(it) }
         spacer(root)
-        outlineButton("Developer tools") { open(DeveloperToolsActivity::class.java) }.also { root.addView(it) }
-        spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
-        spacer(root)
-        val bgSet = CarHomePresentation.backgroundFile(this).exists()
-        outlineButton(if (bgSet) "Car background: custom (hold to reset)" else "Car background: pick a photo") {
-            startActivityForResult(
-                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
-                REQUEST_BACKGROUND,
-            )
-        }.also { button ->
-            button.setOnLongClickListener {
-                CarHomePresentation.backgroundFile(this).delete()
-                render()
-                true
-            }
-            root.addView(button)
-        }
 
-        setContentView(root)
+        val frame = android.widget.FrameLayout(this)
+        frame.addView(root, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        dev.caraalink.diagnostics.PerfStats.attachHud(this, frame)
+        setContentView(frame)
     }
 
     private fun primaryButton(label: String, onClick: () -> Unit) = MaterialButton(this).apply {
         text = label
+        isAllCaps = false // ALL CAPS buttons are what makes flat Material look dated/Holo-era
+        textSize = 16f
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        cornerRadius = dp(12)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+        cornerRadius = dp(18)
+        setPadding(dp(20), 0, dp(20), 0)
+        elevation = dp(2).toFloat()
         setBackgroundColor(Color.parseColor("#36C9C6"))
         setTextColor(Color.parseColor("#0A0F12"))
     }
@@ -184,16 +225,21 @@ class MainActivity : Activity() {
         com.google.android.material.R.attr.materialButtonOutlinedStyle,
     ).apply {
         text = label
+        isAllCaps = false
+        textSize = 16f
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        cornerRadius = dp(12)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+        cornerRadius = dp(18)
+        setPadding(dp(20), 0, dp(20), 0)
         setTextColor(Color.parseColor("#F2F5F7"))
-        strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#36C9C6"))
+        strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#2C3640"))
+        strokeWidth = dp(1)
+        rippleColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#4036C9C6"))
     }
 
     private fun spacer(parent: LinearLayout) {
         parent.addView(android.view.View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14))
         })
     }
 

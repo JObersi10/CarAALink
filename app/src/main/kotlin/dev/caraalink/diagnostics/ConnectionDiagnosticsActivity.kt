@@ -1,9 +1,11 @@
 package dev.caraalink.diagnostics
 
 import android.app.Activity
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.TypedValue
 import android.widget.LinearLayout
 import android.widget.TextView
 import dev.caraalink.connection.ConnectionSnapshot
@@ -25,13 +27,29 @@ class ConnectionDiagnosticsActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        statusView = TextView(this)
+        statusView = TextView(this).apply {
+            setTextColor(Color.parseColor("#F2F5F7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            setLineSpacing(dp(6).toFloat(), 1f)
+        }
+        val pad = dp(24)
         setContentView(LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+            setBackgroundColor(Color.parseColor("#0E1116"))
+            addView(TextView(this@ConnectionDiagnosticsActivity).apply {
+                text = "Connection diagnostics"
+                setTextColor(Color.parseColor("#F2F5F7"))
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+                setPadding(0, 0, 0, dp(20))
+            })
             addView(statusView)
         })
         render(ConnectionStateHolder.snapshot)
     }
+
+    private fun dp(value: Int): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics).toInt()
 
     override fun onResume() {
         super.onResume()

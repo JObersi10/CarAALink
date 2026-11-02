@@ -72,7 +72,7 @@ class CarSession(
         }
         features.start()
         val pxc = PxcChannel(logger, { info -> onClientInfo(info) }, features::replyBody).also { this.pxc = it }
-        val ctrl = MirrorControlChannel(logger, this)
+        val ctrl = MirrorControlChannel(logger, this, context)
         val data = MirrorDataChannel(logger, this)
         transport = AdbTransport(conn, logger, { service ->
             when (service) {
@@ -117,6 +117,10 @@ class CarSession(
     }
 
     private fun release() {
+        aaWatchdog.removeCallbacks(aaWatchdogTick)
+        dev.caraalink.aa.AaSessionProbe.active?.stop()
+        aaDecoder?.stop()
+        aaDecoder = null
         weatherThread?.interrupt()
         weatherThread = null
         android.os.Handler(android.os.Looper.getMainLooper()).post { features.stop() }
@@ -133,8 +137,95 @@ class CarSession(
 
     // --- car home screen actions ---
 
+    private var aaDecoder: dev.caraalink.aa.AaVideoDecoder? = null
+
+    /**
+     * Starts the real AA receiver (dev.caraalink.aa.AaSessionProbe -- the
+     * old AaTlsReceiver above this comment used to be wired here, but it's
+     * a dead end that never got past a raw TLS handshake; superseded) and
+     * shows its decoded video + live touch on the car's own screen, at
+     * whatever resolution Settings > Video actually negotiates. Audio plays
+     * on the *phone's* speaker -- CarbitLink's own wire protocol doesn't
+     * carry audio to the car at all yet (not implemented anywhere, mirroring
+     * included), so that's a separate, later piece of work.
+     */
     private fun openAndroidAuto() {
-        display.setStatus("Android Auto: coming soon")
+        if (dev.caraalink.aa.AaSessionProbe.active != null) {
+            display.setStatus("AA: already running")
+            showAaSurface()
+            return
+        }
+        display.setStatus("AA: checking head unit server…")
+        logger.log("openAndroidAuto: checking 127.0.0.1:5277 before starting")
+        Thread({
+            val serverUp = runCatching {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5277), 400) }
+                true
+            }.getOrDefault(false)
+            if (!serverUp) {
+                logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    display.setStatus("AA: starting head unit server…")
+                    dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+                }
+                // Give the accessibility-driven toggle a moment to actually bind the
+                // listener before we try to connect to it.
+                Thread.sleep(2500)
+            }
+            logger.log("openAndroidAuto: starting AA session probe")
+            dev.caraalink.aa.AaSessionProbe(context).start()
+            android.os.Handler(android.os.Looper.getMainLooper()).post { showAaSurface() }
+        }, "AA-server-check").start()
+    }
+
+    /**
+     * Auto-recovery for a frozen (not disconnected) AA session: the TCP
+     * socket can stay open with no data ever arriving again (head unit
+     * reboot on the AA side, a wedged gearhead service, etc.) without
+     * throwing anything AaSessionProbe's own reconnect logic would catch --
+     * that logic only fires on an actual socket/TLS error. This polls
+     * [AaSessionProbe.lastVideoFrameAt] and, if it's gone stale while the
+     * car is actually showing the AA screen, tears down and restarts the
+     * whole session instead of leaving a dead picture up indefinitely.
+     */
+    private val aaWatchdog = android.os.Handler(android.os.Looper.getMainLooper())
+    private val aaWatchdogTick = object : Runnable {
+        override fun run() {
+            val probe = dev.caraalink.aa.AaSessionProbe.active
+            if (probe != null && display.mode == CarDisplay.Mode.AA) {
+                val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                if (staleMs > AA_WATCHDOG_STALL_MS) {
+                    logger.log("AA watchdog: no video frame in ${staleMs}ms -- restarting session")
+                    dev.caraalink.diagnostics.PerfStats.aaReconnects++
+                    probe.stop()
+                    openAndroidAuto()
+                }
+            }
+            aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
+        }
+    }
+
+    private fun showAaSurface() {
+        aaWatchdog.removeCallbacks(aaWatchdogTick)
+        aaWatchdog.postDelayed(aaWatchdogTick, AA_WATCHDOG_CHECK_MS)
+        val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
+        display.showAa(
+            videoWidth = config.resolution.width,
+            videoHeight = config.resolution.height,
+            onSurface = { surface ->
+                if (surface != null) {
+                    val dec = dev.caraalink.aa.AaVideoDecoder(config.resolution.width, config.resolution.height)
+                    dec.start(surface)
+                    aaDecoder = dec
+                    dev.caraalink.aa.AaSessionProbe.active?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
+                } else {
+                    dev.caraalink.aa.AaSessionProbe.active?.videoSink = null
+                    aaDecoder?.stop()
+                    aaDecoder = null
+                }
+            },
+            onTouch = { x, y, action -> dev.caraalink.aa.AaSessionProbe.active?.sendTouch(x, y, action) },
+        )
     }
 
     @Volatile private var mirrorWanted = false
@@ -163,9 +254,17 @@ class CarSession(
 
     override fun onCaptureConfig(config: CaptureConfig) {
         this.config = config
+        CarScreenInfo.update(config.width, config.height)
         encoder?.release()
         val fps = if (config.wantFps > 0) config.wantFps else 30
-        val bitRate = if (config.bitRate > 0) config.bitRate else DEFAULT_BITRATE
+        // Settings > Video > bitrate used to be decorative -- nothing ever
+        // read it, the encoder always used either the car's own requested
+        // bitrate or DEFAULT_BITRATE. Now it's a floor: the car's request
+        // (it may know its own decode limits) is still respected if it's
+        // already asking for more than the setting.
+        val settingsBitrate = dev.caraalink.settings.AppSettings.videoBitrateKbps(context) * 1000
+        val carBitrate = if (config.bitRate > 0) config.bitRate else DEFAULT_BITRATE
+        val bitRate = maxOf(carBitrate, settingsBitrate)
         val enc = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
@@ -270,6 +369,7 @@ class CarSession(
 
     private fun onEncodedFrame(data: ByteArray, isConfig: Boolean, isKey: Boolean) {
         framesEncoded++
+        if (!isConfig) dev.caraalink.diagnostics.PerfStats.recordMirrorFrame(data.size)
         if (framesEncoded <= 2) logger.log("encoder output #$framesEncoded config=$isConfig key=$isKey ${data.size} bytes")
         val pull = (config?.wantFps ?: 0) == 0
         synchronized(frameLock) {
@@ -293,6 +393,7 @@ class CarSession(
                 }
                 if (pullQueue.size >= MAX_PULL_QUEUE) {
                     if (!isKey) { encoder?.requestKeyFrame(); return }
+                    dev.caraalink.diagnostics.PerfStats.mirrorFramesDropped += pullQueue.size
                     pullQueue.clear()
                 }
                 pullQueue.add(data)
@@ -312,5 +413,7 @@ class CarSession(
         private const val APPSTATUS_BACKGROUND = 0x20030
         private const val MAX_PULL_QUEUE = 8
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
+        private const val AA_WATCHDOG_CHECK_MS = 5_000L
+        private const val AA_WATCHDOG_STALL_MS = 10_000L
     }
 }

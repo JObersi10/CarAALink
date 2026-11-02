@@ -10,36 +10,18 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * Writes timestamped hex+ASCII dumps of USB traffic (or anything else worth
- * capturing for RE) to a rotating log file under this app's own external
- * files dir, and can hand the latest file to the share sheet so it's easy to
- * get off the phone and into a conversation here. Purely a diagnostic tool —
- * nothing it writes is consumed by the app itself.
+ * Writes timestamped lines to ONE shared, app-wide log file (no more
+ * separate `aa-session-*.log` / `car-session-*.log` / `usb-sniff-*.log`
+ * files that needed merging to read side by side) -- every subsystem's
+ * [DiagnosticLogger] instance, whatever [tag] it's constructed with, writes
+ * into the same rotating current file, each line prefixed with that tag.
+ * Purely a diagnostic tool -- nothing it writes is consumed by the app
+ * itself.
  */
 class DiagnosticLogger(private val context: Context, private val tag: String) {
 
-    private val maxBytesPerFile = 4L * 1024 * 1024 // 4 MiB, then roll over
-    private val timestampFormat = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
-
-    private val logDir: File
-        get() = File(context.getExternalFilesDir(null), "logs").apply { mkdirs() }
-
-    @Volatile
-    private var currentFile: File = newFile()
-
-    private fun newFile(): File {
-        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-        return File(logDir, "$tag-$stamp.log")
-    }
-
     @Synchronized
-    fun log(line: String) {
-        if (currentFile.exists() && currentFile.length() > maxBytesPerFile) {
-            currentFile = newFile()
-        }
-        val timestamped = "${timestampFormat.format(Date())}  $line\n"
-        currentFile.appendText(timestamped)
-    }
+    fun log(line: String) = write("[$tag] $line")
 
     /** Logs [bytes] as a classic hex+ASCII dump, [direction] e.g. "RX"/"TX". */
     fun logBytes(direction: String, bytes: ByteArray, length: Int) {
@@ -53,12 +35,10 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
         log("$direction ($length bytes): $hex | $ascii")
     }
 
-    fun latestLogFile(): File = currentFile
+    fun latestLogFile(): File = currentFile(context)
 
-    fun allLogFiles(): List<File> = logDir.listFiles()?.sortedByDescending { it.lastModified() } ?: emptyList()
-
-    /** Builds a share-sheet [Intent] for the most recent log file. */
-    fun shareLatestIntent(): Intent = shareFileIntent(currentFile)
+    /** Builds a share-sheet [Intent] for the current log file. */
+    fun shareLatestIntent(): Intent = shareFileIntent(latestLogFile())
 
     fun shareFileIntent(file: File): Intent {
         val uri: Uri = FileProvider.getUriForFile(
@@ -74,16 +54,29 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
     }
 
     companion object {
-        /** Shares several files (e.g. the app log and the USB sniffer log) in one go. */
-        fun shareFilesIntent(context: Context, files: List<File>): Intent {
-            val uris = ArrayList(files.map {
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
-            })
-            return Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-                type = "text/plain"
-                putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
+        private const val MAX_BYTES_PER_FILE = 4L * 1024 * 1024 // 4 MiB, then roll over
+        private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
+
+        @Volatile
+        private var currentFileRef: File? = null
+
+        private fun logDir(context: Context): File =
+            File(context.getExternalFilesDir(null), "logs").apply { mkdirs() }
+
+        @Synchronized
+        private fun currentFile(context: Context): File {
+            val existing = currentFileRef
+            if (existing != null && (!existing.exists() || existing.length() <= MAX_BYTES_PER_FILE)) return existing
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+            return File(logDir(context), "caraalink-$stamp.log").also { currentFileRef = it }
+        }
+
+        @Synchronized
+        private fun write(context: Context, line: String) {
+            val timestamped = "${TIMESTAMP_FORMAT.format(Date())}  $line\n"
+            currentFile(context).appendText(timestamped)
         }
     }
+
+    private fun write(line: String) = write(context, line)
 }

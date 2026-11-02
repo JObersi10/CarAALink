@@ -7,16 +7,21 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
+import dev.caraalink.widgets.NowPlayingInfo
 import java.io.File
 
 /**
@@ -38,70 +43,11 @@ class CarHomePresentation(
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val pad = dp(24)
         val frame = FrameLayout(context).apply { setBackgroundColor(Color.parseColor("#0A0F12")) }
-        backgroundFile(context).takeIf { it.exists() }?.let { file ->
-            BitmapFactory.decodeFile(file.path)?.let { bmp ->
-                frame.addView(ImageView(context).apply {
-                    scaleType = ImageView.ScaleType.CENTER_CROP
-                    setImageDrawable(BitmapDrawable(resources, bmp))
-                    setColorFilter(Color.argb(90, 0, 0, 0)) // keep text readable on bright photos
-                }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-            }
-        }
-
-        val root = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-        }
-        statusView = TextView(context).apply {
-            setTextColor(Color.parseColor("#C9D3DA"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
-        }
-        root.addView(statusView)
-
-        val center = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        }
-        center.addView(TextClock(context).apply {
-            format12Hour = "h:mm"
-            format24Hour = "HH:mm"
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 84f)
-            typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
-        })
-        center.addView(TextClock(context).apply {
-            format12Hour = "EEEE, MMMM d"
-            format24Hour = "EEEE, d MMMM"
-            gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#E3E8EC"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-        })
-        infoView = TextView(context).apply {
-            gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#E3E8EC"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
-            setPadding(0, dp(6), 0, 0)
-        }
-        center.addView(infoView)
-        root.addView(center)
-
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150))
-        }
-        tiles.forEachIndexed { i, tile ->
-            row.addView(tileView(tile).apply {
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
-                    if (i > 0) marginStart = dp(16)
-                }
-            })
-        }
-        root.addView(row)
-        frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        val built = buildHomeContent(context, tiles)
+        statusView = built.statusView
+        infoView = built.infoView
+        frame.addView(built.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // Some hardware encoders emit nothing for an unchanged screen; the car
         // pulls frames continuously and gives up if they stop. A 1px view that
         // flickers between two near-identical colours keeps frames flowing.
@@ -125,7 +71,26 @@ class CarHomePresentation(
         if (::infoView.isInitialized) infoView.text = text
     }
 
-    private fun tileView(tile: Tile) = LinearLayout(context).apply {
+    companion object {
+        /** Image the owner picked on the phone (Settings tab in the app). */
+        fun backgroundFile(context: Context) = File(context.applicationContext.filesDir, "car_background.jpg")
+    }
+}
+
+/** What [buildHomeContent] returns: the full view plus the two live-updatable pieces. */
+data class CarHomeContent(val root: android.view.View, val statusView: TextView, val infoView: TextView)
+
+/**
+ * Builds the car home screen's content -- background photo, clock, tiles --
+ * as a plain [android.view.View] tree, decoupled from [Presentation] so the
+ * exact same screen can be shown both on the car (via [CarHomePresentation])
+ * and in an on-phone preview ([dev.caraalink.aa.AaPreviewActivity]) without
+ * two implementations drifting apart.
+ */
+fun buildHomeContent(context: Context, tiles: List<CarHomePresentation.Tile>): CarHomeContent {
+    fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics).toInt()
+
+    fun tileView(tile: CarHomePresentation.Tile) = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
         gravity = Gravity.CENTER
         background = GradientDrawable().apply {
@@ -148,12 +113,95 @@ class CarHomePresentation(
         })
     }
 
-    private fun dp(v: Int) = TypedValue.applyDimension(
-        TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics,
-    ).toInt()
-
-    companion object {
-        /** Image the owner picked on the phone (Settings tab in the app). */
-        fun backgroundFile(context: Context) = File(context.applicationContext.filesDir, "car_background.jpg")
+    val pad = dp(24)
+    val frame = FrameLayout(context).apply { setBackgroundColor(Color.parseColor("#0A0F12")) }
+    CarHomePresentation.backgroundFile(context).takeIf { it.exists() }?.let { file ->
+        BitmapFactory.decodeFile(file.path)?.let { bmp ->
+            frame.addView(ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                setImageDrawable(BitmapDrawable(context.resources, bmp))
+                setColorFilter(Color.argb(90, 0, 0, 0)) // keep text readable on bright photos
+            }, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
     }
+
+    val root = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(pad, pad, pad, pad)
+    }
+    val statusView = TextView(context).apply {
+        setTextColor(Color.parseColor("#C9D3DA"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+    }
+    root.addView(statusView)
+
+    // Phone widgets: battery (always available) and now-playing (needs
+    // notification access -- see MediaListenerService -- so it just shows
+    // nothing when that permission isn't granted, rather than an error).
+    val widgetsView = TextView(context).apply {
+        setTextColor(Color.parseColor("#9AA7AE"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        setPadding(0, dp(4), 0, 0)
+    }
+    root.addView(widgetsView)
+    val widgetHandler = Handler(Looper.getMainLooper())
+    val widgetTick = object : Runnable {
+        override fun run() {
+            val battery = context.getSystemService(BatteryManager::class.java)
+                ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+            val parts = mutableListOf<String>()
+            if (battery != null) parts += "Phone battery $battery%"
+            NowPlayingInfo.summary()?.let { parts += if (NowPlayingInfo.isPlaying) "Playing: $it" else "Paused: $it" }
+            widgetsView.text = parts.joinToString("   •   ")
+            widgetHandler.postDelayed(this, 3000)
+        }
+    }
+    widgetsView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) { widgetTick.run() }
+        override fun onViewDetachedFromWindow(v: View) { widgetHandler.removeCallbacks(widgetTick) }
+    })
+
+    val center = LinearLayout(context).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+    }
+    center.addView(TextClock(context).apply {
+        format12Hour = "h:mm"
+        format24Hour = "HH:mm"
+        gravity = Gravity.CENTER
+        setTextColor(Color.WHITE)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 84f)
+        typeface = Typeface.create("sans-serif-light", Typeface.NORMAL)
+    })
+    center.addView(TextClock(context).apply {
+        format12Hour = "EEEE, MMMM d"
+        format24Hour = "EEEE, d MMMM"
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#E3E8EC"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+    })
+    val infoView = TextView(context).apply {
+        gravity = Gravity.CENTER
+        setTextColor(Color.parseColor("#E3E8EC"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+        setPadding(0, dp(6), 0, 0)
+    }
+    center.addView(infoView)
+    root.addView(center)
+
+    val row = LinearLayout(context).apply {
+        orientation = LinearLayout.HORIZONTAL
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(150))
+    }
+    tiles.forEachIndexed { i, tile ->
+        row.addView(tileView(tile).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f).apply {
+                if (i > 0) marginStart = dp(16)
+            }
+        })
+    }
+    root.addView(row)
+    frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+    return CarHomeContent(frame, statusView, infoView)
 }

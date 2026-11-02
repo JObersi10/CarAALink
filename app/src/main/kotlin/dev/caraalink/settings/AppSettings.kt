@@ -13,6 +13,8 @@ object AppSettings {
 
     enum class ResolutionMode { AUTO, CUSTOM }
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
+    enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
+    enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -30,11 +32,41 @@ object AppSettings {
         return if (w != null && h != null) w to h else null
     }
 
+    /**
+     * Shape of the actual head unit panel -- picks which AA resolution set
+     * is valid. Defaults to AUTO, which goes by what the car itself reported
+     * in its `CONFIG_CAPTURE` ([dev.caraalink.link.CarScreenInfo]); the
+     * manual landscape/portrait options stay for when that hasn't happened
+     * yet (e.g. the on-phone preview before ever connecting to a car) or the
+     * car is wrong/unavailable.
+     */
+    fun carOrientation(context: Context): CarOrientation =
+        when (prefs(context).getString("car_orientation", "auto")) {
+            "landscape" -> CarOrientation.LANDSCAPE
+            "portrait" -> CarOrientation.PORTRAIT
+            else -> CarOrientation.AUTO
+        }
+
     fun frameRate(context: Context): Int =
         prefs(context).getString("video_frame_rate", "30")?.toIntOrNull() ?: 30
 
     fun videoBitrateKbps(context: Context): Int =
         prefs(context).getString("video_bitrate_kbps", "6000")?.toIntOrNull() ?: 6000
+
+    /**
+     * Auto-detect replicates the exact formula CarDisplay.attach() already
+     * uses for the car's own virtual display -- scaled off the video's own
+     * [width]x[height], not the phone's screen density (that sized the car
+     * home screen correctly; the phone's own density has nothing to do with
+     * how big things render on the car's panel). Manual is a straight AA
+     * `density` value.
+     */
+    fun videoDpi(context: Context, width: Int, height: Int): Int {
+        if (prefs(context).getBoolean("video_dpi_auto", true)) {
+            return (minOf(width, height) / 720f * 213).toInt().coerceIn(120, 320)
+        }
+        return prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
+    }
 
     fun audioSampleRateHz(context: Context): Int =
         prefs(context).getString("audio_sample_rate", "48000")?.toIntOrNull() ?: 48000
@@ -61,4 +93,13 @@ object AppSettings {
 
     fun debugOverlay(context: Context): Boolean =
         prefs(context).getBoolean("debug_overlay", false)
+
+    fun aaAutoLaunch(context: Context): Boolean =
+        prefs(context).getBoolean("aa_auto_launch", false)
+
+    fun aaAudioRoute(context: Context): AaAudioRoute =
+        when (prefs(context).getString("aa_audio_route", "bt_preferred")) {
+            "device_only" -> AaAudioRoute.DEVICE_ONLY
+            else -> AaAudioRoute.BT_PREFERRED
+        }
 }

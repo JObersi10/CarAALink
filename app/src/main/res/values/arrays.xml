@@ -9,6 +9,17 @@
         <item>custom</item>
     </string-array>
 
+    <string-array name="car_orientation_entries">
+        <item>Auto-detect from car</item>
+        <item>Landscape (wide screen)</item>
+        <item>Portrait (tall screen)</item>
+    </string-array>
+    <string-array name="car_orientation_values">
+        <item>auto</item>
+        <item>landscape</item>
+        <item>portrait</item>
+    </string-array>
+
     <string-array name="frame_rate_entries">
         <item>24 fps</item>
         <item>30 fps</item>
@@ -27,6 +38,15 @@
     <string-array name="sample_rate_values">
         <item>44100</item>
         <item>48000</item>
+    </string-array>
+
+    <string-array name="aa_audio_route_entries">
+        <item>Bluetooth if connected, else phone</item>
+        <item>Always phone mic/speaker</item>
+    </string-array>
+    <string-array name="aa_audio_route_values">
+        <item>bt_preferred</item>
+        <item>device_only</item>
     </string-array>
 
     <!--

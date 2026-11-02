@@ -29,7 +29,7 @@ class CarDisplay(
     private val onBack: () -> Unit,
     private val onExit: () -> Unit,
 ) {
-    enum class Mode { HOME, MIRROR }
+    enum class Mode { HOME, MIRROR, AA }
 
     private val main = Handler(Looper.getMainLooper())
     private var carDisplay: VirtualDisplay? = null
@@ -108,12 +108,32 @@ class CarDisplay(
         return true
     }
 
+    /**
+     * Shows a live Android Auto session at [videoWidth]x[videoHeight] (the
+     * resolution actually negotiated with the phone -- see
+     * AaServiceDiscovery.configFromSettings()). [onSurface]/[onTouch] wire
+     * the decoder and touch forwarding; the caller (CarSession) owns the
+     * actual AaSessionProbe/AaVideoDecoder/AaAudioPlayer.
+     */
+    fun showAa(videoWidth: Int, videoHeight: Int, onSurface: (Surface?) -> Unit, onTouch: (Int, Int, Int) -> Unit) = main.post {
+        aaVideoSize = videoWidth to videoHeight
+        aaOnSurface = onSurface
+        aaOnTouch = onTouch
+        mode = Mode.AA
+        showCurrent()
+    }
+
+    private var aaVideoSize: Pair<Int, Int>? = null
+    private var aaOnSurface: ((Surface?) -> Unit)? = null
+    private var aaOnTouch: ((Int, Int, Int) -> Unit)? = null
+
     private fun showCurrent() {
         val display = carDisplay?.display ?: return
         presentation?.dismiss()
         presentation = try {
             when {
                 mode == Mode.MIRROR && projection != null -> mirrorPresentation(display)
+                mode == Mode.AA && aaVideoSize != null -> aaPresentation(display)
                 else -> {
                     mode = Mode.HOME
                     mirrorDisplay?.surface = null
@@ -128,6 +148,16 @@ class CarDisplay(
             Log.e(TAG, "presentation failed", e)
             null
         }
+    }
+
+    private fun aaPresentation(display: Display): Presentation {
+        val (w, h) = aaVideoSize!!
+        return AaCarPresentation(
+            context, display, w, h,
+            onExit = onExit,
+            onSurface = { s -> aaOnSurface?.invoke(s) },
+            onTouch = { x, y, action -> aaOnTouch?.invoke(x, y, action) },
+        )
     }
 
     private fun mirrorPresentation(display: Display): Presentation {

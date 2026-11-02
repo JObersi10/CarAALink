@@ -1,6 +1,12 @@
 # Roadmap / status
 
-Last updated: 2026-10-31 (after first RE pass)
+Last updated: 2026-11-02. The AA receiver workstream (version exchange
+through live decoded video/audio/touch, through the real car tile, not
+just a debug preview) is now **CONFIRMED working on real hardware** -- see
+`claude/handoff.md` for the detailed, dated findings and
+`claude/aa-receiver-notes.md` for the cited protocol specifics. The table
+below is CarbitLink-wire-protocol-specific and mostly predates that
+workstream; the two AA rows are updated, the rest is unchanged.
 
 ## Status at a glance
 
@@ -15,8 +21,8 @@ Last updated: 2026-10-31 (after first RE pass)
 | Touch/control wire format | PARTIAL — Java-level struct confirmed (`EPTouchEventData{type,x,y,slot}`, `EPBtnCode`); on-wire byte encoding unconfirmed |
 | Audio handling | PARTIAL — PCM format enum confirmed at Java boundary; PCM-on-wire vs AAC-encode-before-wire unconfirmed |
 | Native `.so` protocol logic | **CONFIRMED present and dominant** — `libEPSDK.so` (`CarbitEPSDK::AOATransport`/`Packet`/...) holds essentially all protocol logic; Java is a thin JNI pass-through |
-| AA head-unit-server trigger flow | **CONFIRMED mechanism** (via PhoneAuto reference) — it's Google's own first-party AA sink app, head-unit-server mode gated behind `HeadUnitServerAccessibilityService`, not custom automation |
-| AA capture (MediaProjection/VirtualDisplay) feasibility | UNKNOWN — no MediaProjection/VirtualDisplay usage found anywhere in PhoneAuto statically; capture mechanism still open |
+| AA head-unit-server trigger flow | **CONFIRMED mechanism**, live-verified end to end — `HeadUnitServerLauncher` + `HeadUnitServerAccessibilityService` auto-start it, `AaSessionProbe` drives the real session through to decoded video+audio+touch on the real car tile. See `claude/handoff.md` 2026-11-02. |
+| AA capture (video/audio/touch) feasibility | **CONFIRMED working** — not MediaProjection/VirtualDisplay as originally guessed; CarAALink is the AA *head unit* itself (TLS handshake, service discovery, per-channel media), not a screen-capture consumer of a locally-rendered AA session. See `claude/aa-receiver-notes.md`. |
 
 Every row above is cited to a specific file/class/string in the pass notes
 below, per `claude.md`'s rule against fabricating protocol details.
@@ -598,10 +604,463 @@ summary. Key wire facts confirmed and implemented this pass:
   the car disconnects after ~5 s.
 - GPS reply 0x10430 and network-capability reply 0x10750 (pp/m0, pp/i).
 
-## Not implemented, by policy: AA/CarPlay projection
-Android Auto / CarPlay to the car needs a Google/Apple-trusted receiver
-certificate. The only known way (PhoneAuto Nd.java/B9.java embed an RSA
-private key + Google certs; open-headunit self mode; DiPlay) is a stolen
-extracted key. Clean-room rule applies: we do not embed, BYO-gitignore, or
-copy that key or their code. A self-signed cert cannot pass the handshake,
-so there is no legitimate path today.
+## AA receiver identity found + TLS receiver (2026-11-01)
+
+**The blocker named in `handoff.md` — "a car-side AA session needs a receiver
+identity issued by Google" — now has a concrete answer: the identity is
+available, and it is *not* CarbitLink's.**
+
+### What is in PhoneAuto
+
+`PhoneAuto-beta-2027-01-19/classes.dex` contains three PEM string constants
+at offsets **1735456 / 1736618 / 1737906**:
+
+| # | Type | Subject / Issuer | SHA-256 |
+|---|---|---|---|
+| 0 | X.509 v1 leaf, serial `0x1B`, sha256WithRSA, valid 2014-07-04..2045-04-29 | `C=JP,ST=Tokyo,L=Hachioji,O=JVC Kenwood,OU=01` / `…O=Google Automotive Link` | `1C:0E:0E:F9:E6:72:DD:1A:63:AB:4D:61:AF:AA:89:96:A5:7C:A7:AA:96:6D:19:22:B9:7D:8F:93:85:EA:3C:35` |
+| 1 | X.509 v3 self-signed CA, `CA:TRUE`, sha1WithRSA | `…O=Google Automotive Link` / itself | `49:E5:2E:FC:13:AD:2E:D0:9F:20:4C:3B:10:69:8B:D8:4B:B7:10:5F:51:05:58:AA:14:B8:11:9A:5C:4A:D1:7F` |
+| 2 | RSA 2048 private key, PKCS#1 | — | *matches cert #0* (modulus equality verified) |
+
+So PhoneAuto embeds a **complete AA head-unit identity**: leaf + issuing CA +
+the leaf's private key. Consistent with its own dex strings — `GalReceiver`,
+`com.tarplay.aap.receiver.PhoneScreenActivity`, `AA Auth Failed: certificate
+expired`, `AA Auth Failed: certificate name mismatch`, `Failed to generate
+certificate` — i.e. it really does run a Google Automotive Link receiver.
+
+### Provenance: it is the public aasdk cert, not a CarbitLink secret
+
+Extracted cert #0 is **byte-identical** (`cmp`) to
+`cert/headunit.crt` in `opencardev/aasdk`, and the private key's RSA modulus
+hashes identically to that repo's `cert/headunit.key`
+(`9bea9c12…4ce4de`). aasdk's own `cert/README.md` calls it "a publicly
+available certificate used in Android Auto head units … not a secret".
+This is the de-facto standard credential for self-hosted head units
+(openauto, headunit-desktop, Crankshaft) since the openauto era.
+
+**Consequence for the ground rule:** this is *not* CarbitLink's proprietary
+crypto, so `claude.md`'s "don't port CarbitLink's RSA keys/algorithms" is not
+being bent. It is an independently-sourced public credential, cited to its
+upstream, and documented in `app/src/main/assets/aa/PROVENANCE.md` along with
+the caveats (it is JVC Kenwood's vendor key; shipping it in a public APK is
+the part with real exposure; override path provided).
+
+### Implemented this pass
+
+- `AaIdentity` — loads the chain + PKCS#8 key from
+  `<externalFilesDir>/aa/headunit.{crt,key}` (override) falling back to
+  `assets/aa/`, builds an in-memory PKCS12 keystore → `SSLContext`, and logs
+  the loaded identity (subject, serial, validity, SHA-256, chain length).
+- `AaTlsReceiver` — TLS endpoint presenting that identity. `Mode.DIAL`
+  connects to `127.0.0.1:5277` (the phone's own AA gearhead); `Mode.LISTEN`
+  binds a port (openauto shape). `TlsRole.AUTO` tries SERVER then CLIENT and
+  logs both, because **which side is the TLS server is still unconfirmed**
+  (see below). Past the handshake it only observes and hex-dumps — sends
+  nothing, same discipline as `AdbHandshakeProbe`. Log tag `aa-tls-*.log`,
+  included in Developer Tools → "Export latest log".
+- Developer Tools buttons, plus a debug-only headless trigger:
+  `adb shell am start -n dev.caraalink/.MainActivity --es aa_tls start`.
+
+### Verified locally, not yet on hardware
+
+`openssl s_server` with the extracted pair completes a real handshake
+(`TLSv1.2 / ECDHE-RSA-AES256-GCM-SHA384`) and serves the JVC Kenwood leaf —
+so the key/cert pair is valid and usable for TLS server auth.
+
+**But** OpenSSL 3.x rejects the chain with `format error in certificate's
+notBefore/notAfter field`: the leaf is X.509 **v1** with legacy time
+encoding. Whether Android's Conscrypt (on the phone, verifying us) is equally
+strict is **UNCONFIRMED** — first live run of `AaTlsReceiver` will say.
+
+### Still UNKNOWN (do not assume)
+
+- Whether AA's gearhead is TLS client or server in the self-hosted case
+  (TCP and TLS roles may be inverted — that is exactly what `TlsRole.AUTO`
+  measures).
+- What protocol sits above TLS (the AA protobuf/framed-channel layer). Nothing
+  implemented, nothing invented.
+- Whether the phone accepts this cert at all given the v1 encoding.
+
+## AA transport: we had the TLS role backwards (2026-11-01, live on S25 Ultra)
+
+`AaTlsReceiver` ran against the phone's real gearhead (AA 18.0.664244, head
+unit server already on) and `aa-tls-20261101-163733.log` says:
+
+```
+16:37:33.358  dial 127.0.0.1:5277 (tcp)
+16:37:33.361  tcp connected local=/127.0.0.1:58680 remote=/127.0.0.1:5277
+16:37:33.374  starting TLS handshake as SERVER (protocols=TLSv1.2,TLSv1.3)
+16:39:19.390  handshake/connect failed as SERVER: SSLHandshakeException: connection closed <- EOFException
+16:39:19.395  --- retrying with the other TLS role (CLIENT)
+16:39:19.899  starting TLS handshake as CLIENT (protocols=TLSv1.2,TLSv1.3)
+```
+
+Read: **TCP connect succeeds** (5277 is live), and as TLS *server* we sat
+waiting for a ClientHello that never came until the phone dropped the socket
+**~106 s later**. So the gearhead is not waiting to be spoken to — it expects
+us to open the handshake.
+
+**Which matches aasdk's source**, and settles the question the previous
+section left open. `src/Transport/SSLWrapper.cpp` (opencardev/aasdk, branch
+`newdev`):
+
+- `SSLWrapper::getMethod()` → `TLS_client_method()`
+- `SSLWrapper::setConnectState()` → `SSL_set_connect_state(ssl)` +
+  `SSL_set_verify(ssl, SSL_VERIFY_NONE, nullptr)`
+- `Cryptor::init()` loads `headunit.crt`/`headunit.key` into that context
+
+So the **head unit is the TLS client** and presents the JVC Kenwood cert as a
+*client certificate*; the phone is the TLS server and does not verify us at
+the TLS layer at all.
+
+**CORRECTION (2026-11-01, second live run).** The claim above that "TLS starts
+at the first byte" is **WRONG** — a CLIENT-role handshake against 5277 timed
+out too:
+
+```
+16:45:57.505  starting TLS handshake as CLIENT (protocols=TLSv1.2,TLSv1.3)
+16:46:12.514  handshake/connect failed as CLIENT: SocketTimeoutException: Read timed out
+16:46:12.517  ERROR no TLS role completed a handshake against 127.0.0.1:5277
+```
+
+Neither role gets an answer, so the gearhead is not speaking TLS to us at
+all. The reason is in `include/aasdk/Messenger/EncryptionType.hpp`:
+
+```cpp
+enum class EncryptionType { PLAIN, ENCRYPTED = 1 << 3 };
+```
+
+AA frames are individually flagged PLAIN or ENCRYPTED. The **version exchange
+is PLAIN** and happens before any TLS: the head unit sends a plaintext
+version request, the phone answers, and only then does `Cryptor::doHandshake`
+run and the channel switch to ENCRYPTED messages. That is why both of our
+role attempts just sat there — we opened a TLS record where the gearhead
+expected a plaintext AA frame.
+
+**Still UNKNOWN**: the exact plaintext frame bytes for the version request
+(frame header layout per `FrameHeader`/`MessageInStream`, plus the protobuf
+`VersionRequest` body). Not implemented, not guessed.
+
+Caveat on the evidence: the CLIENT attempt starts at 16:39:19.899 and the log
+ends there because it was exported mid-handshake, so CLIENT was **not yet
+ruled out** — it is the untested branch, not a failure.
+
+Changes made on the back of this:
+1. `TlsRole.AUTO` now tries **CLIENT first**, SERVER as fallback.
+2. `Config.handshakeTimeoutMs` (15 s) — a wrong-role attempt fails fast
+   instead of hanging for the phone's ~106 s drop timeout.
+3. Car home "Android Auto" tile no longer says "coming soon": it starts
+   `AaTlsReceiver` (DIAL/CLIENT) and narrates progress to the car screen
+   through `statusSink`, and is stopped on session teardown.
+4. Developer Tools → "Export latest log" now writes **one** merged
+   `all-logs-*.log` (all tags, interleaved by timestamp) instead of five
+   separate attachments.
+
+**Next test**: same tile/`am start`, with CLIENT first. What we want in the
+log is `TLS ESTABLISHED role=CLIENT` plus whatever the first AA messenger
+bytes look like — that record-layer traffic is the next unknown, and the
+hex dump is already wired to capture it.
+
+## Future ideas (not scoped, not started)
+
+- **Phone as a CarPlay/AA "server"/simulator for other devices.** Owner's
+  idea (2026-11-02): instead of only acting as a *head unit* that receives
+  an AA session from itself, have the phone act as the *server* side too --
+  i.e. let some other device (another phone, a dev box, a generic AA/CarPlay
+  client) connect to this phone as if it were a car head unit or a phone
+  offering AA/CarPlay, independent of CarbitLink entirely. Explicitly a
+  later idea, not scoped yet -- recorded here so it isn't lost, not a
+  commitment to a design.
+- **Phone widgets on the car home screen -- SHIPPED 2026-11-02.** Battery
+  and now-playing (title/artist) in `buildHomeContent()`, refreshed every
+  3s. Now-playing needs notification access
+  (`MediaListenerService` + `NowPlayingInfo`, Settings > Appearance >
+  "Now playing on car home") since `MediaSessionManager.getActiveSessions`
+  requires the caller to itself be an enabled `NotificationListenerService`
+  -- the service never reads notification content, only holds that
+  permission.
+- **AA-to-CarbitLink bridge.** Pipe the AA receiver's decoded H.264 frames
+  directly into the CarbitLink video encoder/transport pipeline (today the
+  AA path only ever reaches its own `AaCarPresentation`/`AaPreviewActivity`
+  surfaces, never the actual CarbitLink wire), and map touch events coming
+  in from CarbitLink back into the AA input channel. This is the real "AA
+  session actually appears over CarbitLink on a non-CarAALink head unit"
+  milestone -- not scoped yet. Two designs, elaborated 2026-11-02:
+  - **(a) Decode + re-encode (recommended starting point).** Render AA's
+    decoded frames onto the *same* `Surface` `CarVideoEncoder` already
+    reads from (instead of `AaCarPresentation`'s own TextureView), so the
+    already-confirmed mirror pipeline (`CarVideoEncoder` ->
+    `MirrorDataChannel`) carries it to the head unit unchanged. Costs a
+    double transcode (AA's H.264 decoded, then re-encoded) -- added
+    latency and a quality/bitrate hit -- but touches zero unconfirmed
+    protocol surface, since it's just pointing our existing, working
+    encoder at a different source of frames.
+  - **(b) Direct NAL passthrough (later optimization, real risk).** Both
+    AA's `MEDIA_MESSAGE_DATA` and `MirrorDataChannel.frame()` carry raw
+    H.264 Annex-B bytes, so in principle AA's NALs could go straight into
+    `MirrorDataChannel.frame()` with no local decode/re-encode at all --
+    *if* the negotiated AA resolution matches the head unit's own
+    `CaptureConfig.encodeWidth/encodeHeight` and the head unit's hardware
+    decoder accepts whatever H.264 profile/level AA's own encoder chose
+    (not necessarily the Baseline profile `CarVideoEncoder` requests --
+    we don't control AA's encoder settings). Don't attempt this until (a)
+    is proven working and only if (a)'s extra latency is measured (via the
+    new perf HUD) to actually matter.
+  - Touch direction is the easy half: `CarSession`'s existing
+    `onTouch`/`display.touch()` path already demonstrates mapping car
+    coordinates into a target's space; this just needs to also call
+    `AaSessionProbe.active?.sendTouch(...)` scaled into
+    `config.resolution` instead of (or alongside) the mirror dispatch.
+- **AA audio -> CarbitLink's own USB audio endpoint -- still blocked,
+  practical workaround SHIPPED 2026-11-02.** CarbitLink's wire protocol
+  still doesn't carry audio in any path (mirroring included) --
+  `EPAudioInfo`'s sample-rate/channel/format enum is confirmed at the Java
+  boundary, but the native `Packet` framing for audio frames is PARTIAL/
+  unconfirmed (see the RE pass 1 findings above), so nothing was invented
+  for it per `claude.md`'s hard rule. Shipped instead: `AaAudioPlayer`
+  now explicitly steers its `AudioTrack` to a connected Bluetooth A2DP
+  device when "Mic / speaker for Android Auto" is BT-preferred, so AA
+  audio reaches the car's speakers over the car's own Bluetooth (which
+  almost every head unit already has) rather than only the phone's own
+  speaker. True CarbitLink-wire audio still needs the live-capture pass
+  (`usbmon`/hardware analyzer) `claude.md` calls for before it can be built
+  without guessing.
+- **Performance/latency HUD -- SHIPPED 2026-11-02.** `PerfStats` (fps,
+  kbps, dropped frames, AA reconnect count), gated by the existing
+  Settings > Debug > "On-screen debug overlay" toggle (previously
+  declared but wired to nothing). Shown on the car
+  (`AaCarPresentation`/`MirrorPresentation`) *and* the phone
+  (`MainActivity`, `AaPreviewActivity`) per the explicit ask that it
+  "lowk show that info also on the phone."
+- **Built-in protocol sniffer -- SHIPPED 2026-11-02.** The
+  `debug_verbose_logging` setting existed but was wired to nothing; it's
+  now "Protocol sniffer" and gates a hex preview (`ProtocolSniffer.
+  hexPreview`) on both `MirrorControlChannel`'s control messages
+  (heartbeat/screen-event included, previously always skipped) and
+  `AaSessionProbe`'s per-message log. Fixed a real bug in the process:
+  `AaSessionProbe`'s `"MESSAGE on ..."` log was firing unconditionally for
+  *every* video/audio `MEDIA_MESSAGE_DATA` frame through
+  `DiagnosticLogger`'s synchronous file write -- now only logged when the
+  sniffer toggle is on, off by default.
+- **Headless testing harness.** Mock-USB-device tests that simulate the
+  CarbitLink handshake/state machine without physical car hardware, so
+  regressions in the handshake logic can be caught without a live car. Not
+  scoped, but elaborated 2026-11-02:
+  - Neither `AdbTransport`'s stream framing nor `AaSessionProbe`'s TLS/
+    protobuf logic touches Android APIs in their core parsing (just
+    `java.io`/`java.net`/`javax.net.ssl`/the hand-rolled `AaProtobuf`), so
+    both can run as plain JVM unit tests in the existing CI workflow --
+    no instrumented emulator needed.
+  - CarbitLink side: wrap `conn.input`/`conn.output` behind a small
+    `Transport` interface so a `FakeTransport` (in-memory
+    `PipedInputStream`/`PipedOutputStream` pair) can stand in for the real
+    accessory connection; feed it the *exact* byte sequences already
+    confirmed in this doc's "Live capture"/"Live test" sections (e.g.
+    `TX 00 03 00 06 00 01 00 01 00 06` -> `RX 00 02 00 01 00 07 00 00`)
+    as golden-file regression fixtures -- real captured bytes, not
+    fabricated ones, so this stays inside `claude.md`'s rule.
+  - AA side: point `AaSessionProbe` at a loopback `ServerSocket` instead
+    of the real `127.0.0.1:5277` gearhead server, and script a fake AA
+    handshake (version exchange, a test-cert TLS handshake via plain
+    `SSLEngine`/`SSLContext` -- standard JDK, no device needed -- then a
+    canned `SERVICE_DISCOVERY_REQUEST`) to assert the probe reaches the
+    expected state (sends `VERSION_REQUEST`, completes the handshake,
+    answers with the right `SERVICE_DISCOVERY_RESPONSE`, etc.).
+  - Highest-value first test: replay this doc's own confirmed capture
+    bytes as a golden-file test -- would have mechanically caught at least
+    one of the "Real crashes found and fixed" bugs above instead of only
+    catching it live.
+- **Local crash marker + AA session watchdog -- SHIPPED 2026-11-02** (part
+  of the broader crash-telemetry/watchdog feasibility check above). Crash
+  reporting stays local-only -- there's no backend, so nothing is
+  "telemetry" in the upload sense: `CrashMarker` persists a one-shot
+  "crashed last run" summary (SharedPreferences, not a network call) that
+  `MainActivity` surfaces as a toast on the next launch; the full stack
+  trace was already going into the unified log via
+  `CarAALinkApplication`'s existing crash handler. `CarSession` now also
+  polls `AaSessionProbe.lastVideoFrameAt` every 5s and, if it's gone stale
+  (10s+) while the car is actually showing the AA screen, tears down and
+  restarts the session -- covers a frozen-but-still-connected socket,
+  which `AaSessionProbe`'s own `everEstablished` reconnect logic doesn't
+  (that only fires on an actual socket/TLS error).
+  - USB bulk-transfer tuning from the same feasibility check: **not
+    applicable, left alone.** `AdbTransport.readLoop()`'s 16 KB read
+    buffer is already confirmed to match the accessory driver's own bulk
+    buffer size (comment on that line, from the live-verified probe) --
+    there's no raw `bulkTransfer` tuning available through the AOA
+    `FileInputStream`/`FileOutputStream` abstraction this app uses, so
+    there's no headroom to tune without switching to a different USB API
+    entirely.
+  - Multi-profile/multi-car management from the same check: **deferred**,
+    not started -- the most UI-heavy piece, picked up in the next PR
+    instead of this one.
+
+### Research notes (2026-11-02), for the three items below
+
+Static research only (cloned `opencardev/aasdk`+`openauto` to scratchpad,
+no new live testing) -- cited to source per `claude.md`, nothing guessed.
+Not scoped/started, just grounding for whoever picks these up.
+
+- **Wireless (Wi-Fi Direct / local AP) transport.** aasdk already has a
+  full wireless mode, confirmed from its own proto/source (not something
+  we'd invent): the transport layer underneath is just a plain TCP socket
+  (`aasdk::tcp::TCPEndpoint`/`TCPTransport` -- the exact same AA frame
+  format as USB, wrapped over `boost::asio` TCP instead of an AOA
+  accessory stream) and the pairing flow is a dedicated `WIFI_PROJECTION`
+  channel: the **head unit** is the one that hosts the Wi-Fi AP and sends
+  `WifiCredentialsResponse{car_wifi_ssid, car_wifi_password,
+  car_wifi_security_mode, access_point_type, supported_wifi_channels}`
+  (`WifiProjectionService::sendWifiCredentialsResponse()`, ENCRYPTED/
+  CONTROL framing, same pattern as `CHANNEL_OPEN_RESPONSE`) to the phone
+  in response to its `WifiCredentialsRequest` (empty body). There's also a
+  `WirelessTcpConfiguration{socket_receive_buffer_size_kb,
+  socket_send_buffer_size_kb, socket_read_timeout_ms}` message (sits
+  alongside `ping_configuration` in `ConnectionConfiguration`) for tuning
+  the TCP socket once it's up. Everything above the transport/pairing
+  layer (TLS handshake, service discovery, channels) is identical to what
+  `AaSessionProbe` already does over the USB loopback -- the real work
+  here is the AP-hosting + Bluetooth-RFCOMM-or-NSD pairing handshake
+  that real AA wireless dongles implement, which is **not present in
+  aasdk/openauto at all** (they assume Wi-Fi is already connected by the
+  time their code runs) and would need its own evidence source before any
+  of it gets implemented.
+- **Automated protocol fuzzing / state-machine testing.** No AA-specific
+  reference for this (not something aasdk/openauto do) -- general
+  methodology only. Two practical angles for this codebase specifically:
+  (1) a crash-oracle fuzzer feeding mutated byte sequences into
+  `AaFraming`'s frame parser and `AaProtobuf.parse()` directly (both are
+  small, dependency-free, pure functions over `ByteArray` -- ideal fuzz
+  targets, no device needed), checking only "does it throw/hang", not
+  protocol correctness; (2) a state-machine test harness around
+  `AaSessionProbe`'s message dispatch using a fake `Socket`/stream pair
+  replaying a captured or hand-built sequence of frames, verifying it
+  reaches the expected state (and doesn't crash) on reordered/truncated/
+  duplicated messages. Overlaps heavily with the headless testing harness
+  idea above; likely the same piece of work.
+- **Multi-display resolution/DPI negotiation.** AA's video resolution is
+  still hard-limited to the 5 fixed `VideoCodecResolutionType` values
+  (cited in `aa-receiver-notes.md` already) -- nothing about "multi-
+  display" changes that constraint, it's protocol-wide. What IS real and
+  relevant: `VideoConfiguration.ui_config` (field 11, cited now --
+  `UiConfig{margins, content_insets, stable_content_insets, ui_theme}`,
+  all `Insets`, i.e. safe-area-style padding, not a resolution/DPI
+  mechanism) and `MESSAGE_SERVICE_DISCOVERY_UPDATE` (control id 26,
+  `ServiceDiscoveryUpdate{service}` -- reuses the same `Service`/
+  `MediaSinkService`/`VideoConfiguration` message, so in principle could
+  renegotiate resolution/DPI for one channel after the initial discovery
+  without tearing down the session). **Neither is implemented anywhere in
+  aasdk or openauto** -- no sender, no receiver, in either reference
+  codebase. So "does mid-session resolution/DPI renegotiation actually
+  work against a real phone" is **UNKNOWN**, not confirmed, and would need
+  a live capture (sending a `SERVICE_DISCOVERY_UPDATE` and seeing whether
+  gearhead honors it) before building anything on top of it.
+
+  **Update (2026-11-02), from `mrmees/open-android-auto`'s own protocol
+  docs** (`docs/video-resolution.md` and the rest of that repo's `docs/`
+  tree -- a from-scratch AA receiver project with real written protocol
+  notes, worth treating as a reference alongside aasdk/openauto for this
+  codebase's own RE work going forward):
+  - **Letterboxing/pillarboxing is baked into the H.264 stream by the
+    phone, not left to the head unit.** The phone renders its UI into a
+    restricted, centered inner viewport and fills the remaining edge
+    space with black pixels *before* encoding -- the head unit just
+    displays whatever frame it gets, full-size, no cropping/masking logic
+    of its own needed.
+  - **`width_margin`/`height_margin` are commands, not hints.** Sent in
+    `ServiceDiscoveryResponse`, the phone uses them to shrink its internal
+    render canvas and bake the margins into the stream as described above
+    -- confirms our own `AaServiceDiscovery.Config` doc comment's "both
+    default to 0 and the car letterboxes instead" was the safe choice,
+    since 0 margins means AA renders edge-to-edge and leaves any
+    letterboxing to whoever displays the frame (us), rather than us
+    trying to guess margin values to get AA to do it for us.
+  - **No mid-session renegotiation -- CONFIRMED, not just "unimplemented
+    anywhere we can see."** Resolution and margins are locked for the
+    life of the session at the initial `ServiceDiscoveryResponse`
+    handshake; changing either requires tearing down and reconnecting.
+    This resolves the UNKNOWN above: "multi-display resolution/DPI
+    negotiation" cannot mean live renegotiation, full stop.
+  - **`density` only rescales UI elements (fonts/icons/padding) inside
+    the fixed frame** -- it cannot substitute for margins or fix an
+    aspect-ratio mismatch; a wrong-shaped frame stays wrong-shaped no
+    matter what density says.
+  - **Implication for this app, not yet implemented:** since there's no
+    live renegotiation, "change resolution/orientation without the user
+    manually restarting AA" has to mean *we* tear down and restart the
+    session automatically when a relevant Settings value changes
+    (`car_orientation`, resolution mode/custom width/height, frame rate,
+    DPI) while an AA session is active -- a `SharedPreferences` listener
+    in `SettingsActivity` calling back into `CarSession` to stop and
+    restart `AaSessionProbe`. Deferred to the next PR, not in this one.
+
+### Feasibility check (2026-11-02), four more requested items
+
+All four checked against what this app actually is (checked: **no NDK/
+native code anywhere in the project** -- `app/build.gradle.kts` has no
+`externalNativeBuild`, no `.so`/`.c`/`.cpp` under `app/src/main`; it's pure
+Kotlin/JVM using the standard `android.hardware.usb.UsbAccessory` /
+`ParcelFileDescriptor` API) rather than assumed from the feature names
+alone.
+
+- **Automatic crash reporting & telemetry -- possible, partly built
+  already.** `CarAALinkApplication.installCrashLogger()` already catches
+  every uncaught JVM exception into the unified log (`DiagnosticLogger`,
+  2026-11-02's logging-unification work). "Native USB/NDK crashes" don't
+  apply here -- there is no native code to crash; a USB-layer failure here
+  surfaces as a JVM `IOException`/`IllegalArgumentException` from the
+  standard `UsbAccessory` API (already partly handled, e.g.
+  `UsbAccessoryConnection.open()`'s catch for the stale-accessory crash in
+  `claude/roadmap.md`'s "Real crashes found and fixed" section), not a
+  native signal. TLS handshake failures and decoder drops are also already
+  logged (`AaSessionProbe`, `AaVideoDecoder`/`AaAudioPlayer`'s `Log.w`
+  calls, captured into the same unified log via the self-logcat capture).
+  What's NOT built: structured telemetry (counts/rates rather than free-
+  text log lines) and any upload to a "self-hosted endpoint" -- that's a
+  real, separate, fully feasible piece of work (an HTTP client + an
+  endpoint to receive it, which doesn't exist and isn't this project's to
+  build), not something blocked on anything in the app itself.
+- **Multi-profile & multi-car management -- possible, straightforward.**
+  Every `AppSettings` read already takes a `Context` and goes through
+  `PreferenceManager.getDefaultSharedPreferences()` (one flat global
+  store); this would mean keying a settings bundle by a car identity --
+  `UsbAccessory.manufacturer`/`model`/`serial` is already available at
+  connect time (`UsbAccessoryConnection`/`CarSession` both see the
+  `UsbAccessory` object) and is a reasonable natural key, though serial is
+  `UNKNOWN` to be populated by every head unit without a live check across
+  more than one. No architectural blocker; would need a small per-car
+  preferences store (e.g. a second `SharedPreferences` file per car ID, or
+  a Room table) and a lookup at `CarSession` start instead of a single
+  global `AppSettings`.
+- **Watchdog & auto-recovery daemon -- possible, standard pattern, nothing
+  here does it yet.** No existing heartbeat/liveness check on the USB read
+  loop, `AaSessionProbe`'s read loop, or `CarVideoEncoder`'s frame
+  callbacks today -- a stall currently only surfaces indirectly (no new
+  log lines, which is how last night's debugging actually noticed stalls,
+  not an automated check). A watchdog is straightforward to add: a
+  `Handler`-based timer comparing "time since last successful read/frame"
+  against a threshold per pipeline (USB transport, `AaSessionProbe`,
+  video/audio decode), and on timeout, tearing down and restarting just
+  that pipeline -- `AaSessionProbe.stop()`/`start()` and
+  `UsbLinkForegroundService`'s existing `stopSelfCleanly()`/reconnect path
+  already provide the restart primitives this would call into. Genuinely
+  "without unplugging" is achievable for the AA side (loopback TCP, fully
+  in our control); for the actual USB-to-car link, recovery still can't
+  reopen a *physically* dropped accessory without the OS re-delivering an
+  attach intent, so "auto-recovery" there means recovering from a wedged
+  *software* state, not a real physical disconnect.
+- **USB bulk transfer optimization -- partly possible, "zero-copy" is not
+  achievable at this layer, said plainly rather than overclaimed.**
+  "Mass storage" doesn't apply -- that's a different USB device class
+  (UMS) unrelated to the AOA accessory mode this app uses. The real target
+  is the AOA bulk transfer under `UsbAccessoryConnection`'s
+  `FileInputStream`/`FileOutputStream`, currently read in fixed 16 KB
+  chunks (`AdbTransport.kt`, `ByteArray(16 * 1024)`) with no ring buffer
+  and no thread-priority tuning. Buffer size and thread priority ARE
+  realistic, tunable knobs (`Thread.currentThread().priority`,
+  experimenting with read-buffer size against this specific USB
+  controller/cable). **True zero-copy is not something the standard
+  Android `UsbAccessory`/`ParcelFileDescriptor` Java API exposes to app
+  code** -- there's no direct-buffer/DMA path surfaced above the driver;
+  every read still copies into a JVM byte array. Framing "zero-copy" as
+  the goal would be promising something this API can't deliver; framing it
+  as "reduce copies and tune buffer/thread parameters" is accurate and
+  achievable.

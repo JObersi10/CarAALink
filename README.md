@@ -1,42 +1,85 @@
-# CarAALink
+<p align="center">
+  <img src="docs/readme/banner.svg" alt="CarAALink" width="100%" />
+</p>
 
-Native Android app that replaces a CarbitLink wireless-CarPlay/Android-Auto
-USB dongle. The phone plugs directly into a car's factory head unit
-(CarbitLink-protocol only, no native CarPlay/AA support) and:
+A native Android replacement for a CarbitLink wireless-CarPlay/Android-Auto
+USB dongle. The phone plugs straight into the car's factory head unit — which
+only ever speaks CarbitLink's own protocol, not CarPlay or AA natively — and
+the app does the rest.
 
-1. Starts Android Auto's own built-in head-unit-server developer mode on the
-   phone, making the phone itself the AA host/renderer.
-2. Captures that rendered AA session (video, audio, touch input).
-3. Re-encodes it into CarbitLink's actual wire protocol and serves it over
-   USB to the head unit.
+Two independent pieces live in this one app:
 
-This is a personal interoperability / reverse-engineering project — a
-from-scratch client for hardware the owner already owns, in the same space
-as hobbyist re-implementations of cheap USB CarPlay/AA dongles.
+- **Phone-screen mirroring to the car** — the phone mirrors its own screen
+  (via `MediaProjection`) onto the car's display through the CarbitLink wire
+  protocol, with touch replayed back onto the phone. **Working, tested live
+  on hardware.**
+- **An Android Auto receiver** — the phone puts itself into Android Auto's
+  own head-unit-server developer mode and this app *becomes* the head unit:
+  real TLS handshake, service discovery, channel negotiation, and a live
+  H.264 video decode of the actual AA session (Maps, Spotify, the lot).
+  **Working, verified live** — version exchange, TLS, discovery, channel
+  open, media setup, and continuous video streaming are all confirmed against
+  a real phone (`gearhead 18.0.664244`, Samsung Galaxy S25 Ultra). An
+  on-phone preview (Developer Tools → "Preview AA session") renders and lets
+  you interact with the live AA session without the car, for testing.
+
+This is personal interoperability / reverse-engineering work on hardware the
+owner already owns — the same category as hobbyist re-implementations of
+cheap USB CarPlay/AA dongles. The head unit itself never speaks CarPlay or AA;
+only CarbitLink's own protocol.
 
 ## Status
 
-Early scaffold. The CarbitLink wire protocol is being reverse-engineered
-from the official companion app before any of it is implemented — see
-[`claude/roadmap.md`](claude/roadmap.md) for current findings and
-[`claude/claude.md`](claude/claude.md) for the ground rules (most importantly:
-no fabricated protocol details — everything is cited to evidence or marked
-unknown).
+- **CarbitLink mirroring**: working end to end on real hardware — handshake,
+  video, touch, car home screen, GPS/network passthrough.
+- **Android Auto receiver**: working through live H.264 video. Not yet wired:
+  piping those decoded frames into the CarbitLink video path (currently a
+  separate on-phone preview), and the input/touch channel back to the car.
+
+See [`claude/handoff.md`](claude/handoff.md) for the current state in detail,
+[`claude/aa-receiver-notes.md`](claude/aa-receiver-notes.md) for the AA
+protocol findings (all cited to source or a live capture — see the ground
+rules below), and [`claude/roadmap.md`](claude/roadmap.md) for the CarbitLink
+wire protocol findings.
+
+## Screenshots
+
+_Coming soon — real screenshots of the car home screen, mirroring, and the
+Android Auto session to drop in here._
+
+## Ground rules
+
+No protocol detail — CarbitLink's wire format or Android Auto's — is ever
+guessed. Every claim traces to a decompiled source reference, a cited
+open-source implementation (`opencardev/aasdk`, `opencardev/openauto`), or a
+live capture. Anything unconfirmed is marked `UNKNOWN`, not filled in with a
+plausible guess. Full rules in [`claude/claude.md`](claude/claude.md).
 
 ## Project layout
 
-- `app/` — Android application module (USB attach handling, AA bring-up,
-  capture pipeline)
+- `app/` — the Android application: USB handling, the AA receiver
+  (`app/src/main/kotlin/dev/caraalink/aa/`), the CarbitLink capture/video
+  pipeline, settings, diagnostics
 - `protocol/` — isolated module for the reverse-engineered CarbitLink wire
-  protocol; empty until confirmed by evidence
-- `claude/` — working notes: ground rules, roadmap, handoff
-- `.github/workflows/` — CI (Gradle `assembleDebug` on a hosted runner)
+  protocol
+- `claude/` — working notes: ground rules, roadmap, handoff, AA findings
+- `.github/workflows/` — CI: builds `assembleDebug` on every push/PR, and
+  publishes a rolling **dev pre-release** APK on every push to `main` (see
+  below)
 
 ## Building
 
 ```bash
 ./gradlew assembleDebug
+./gradlew testDebugUnitTest
 ```
+
+## Getting a build
+
+Tagged releases are published manually by the owner. For a build that
+always matches the tip of `main` — unsigned, untested, may be broken —
+grab the **[`dev` pre-release](../../releases/tag/dev)**, rebuilt
+automatically on every push to `main`.
 
 ## License
 
