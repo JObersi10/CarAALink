@@ -251,6 +251,16 @@ class CarSession(
                 "autoCrop=${dev.caraalink.settings.AppSettings.aaAutoCrop(context)} fillMode=$fillMode " +
                 "carScreen=${dev.caraalink.link.CarScreenInfo.width}x${dev.caraalink.link.CarScreenInfo.height}",
         )
+        // Captured once per showAaSurface() call, not re-read live, because
+        // CarDisplay.showAa() overwrites its single shared onSurface field on
+        // every restart -- the OLD AaCarPresentation's dismiss() is async, so
+        // its surfaceDestroyed teardown can fire *after* a brand-new probe
+        // already took over AaSessionProbe.active, and would otherwise stop
+        // that new probe instead of the dead one it actually belongs to.
+        // Confirmed from a real log: a fresh probe died 3ms after connecting,
+        // blocked on the exact same "waiting for VERSION_RESPONSE" line the
+        // old one was stuck on -- the old presentation's teardown killed it.
+        val myProbe = dev.caraalink.aa.AaSessionProbe.active
         display.showAa(
             videoWidth = config.resolution.width,
             videoHeight = config.resolution.height,
@@ -259,14 +269,16 @@ class CarSession(
                     val dec = dev.caraalink.aa.AaVideoDecoder(config.resolution.width, config.resolution.height)
                     dec.start(surface)
                     aaDecoder = dec
-                    dev.caraalink.aa.AaSessionProbe.active?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
+                    myProbe?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
                 } else {
                     // Leaving the AA tile (Home/Mirror picked instead) used to
                     // just detach the video sink, leaving AaSessionProbe's TLS
                     // connection to the phone's own head-unit-server mode
                     // sitting open in the background indefinitely. Actually
-                    // end the session so the phone disconnects for real.
-                    dev.caraalink.aa.AaSessionProbe.active?.stop()
+                    // end the session so the phone disconnects for real --
+                    // but only if this presentation's own probe is still the
+                    // live one (see comment above).
+                    if (dev.caraalink.aa.AaSessionProbe.active === myProbe) myProbe?.stop()
                     aaDecoder?.stop()
                     aaDecoder = null
                 }
