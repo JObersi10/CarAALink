@@ -404,8 +404,28 @@ class AaSessionProbe(
             lastVideoFrameAt = System.currentTimeMillis() // grace period before the watchdog can call this stale
 
             var index = 0
+            // Confirmed from mrmees/open-android-auto's own protocol docs
+            // (docs/interactions/05-session-maintenance-teardown.md,
+            // GPL-3.0 -- paraphrased field layout only): "Either side may
+            // initiate a ping", with sample head-unit code sending periodic
+            // PingRequests proactively, not just replying to the phone's
+            // own. We previously only ever replied -- never initiated.
+            // Plausible, doc-supported explanation for the long-standing,
+            // never-fully-explained ~30s periodic AA disconnect: gearhead
+            // may expect to hear from the head unit periodically to confirm
+            // it's alive, same as the sample code's own timeout-detection
+            // pattern implies. Not confirmed to be the actual cause --
+            // worth specifically watching whether that disconnect cadence
+            // changes on the next live test.
+            var lastPingSentAt = System.currentTimeMillis()
             while (running.get() && index < config.maxMessages) {
                 index++
+                if (System.currentTimeMillis() - lastPingSentAt > 5_000) {
+                    lastPingSentAt = System.currentTimeMillis()
+                    val ping = AaProtobuf.Writer().varint(1, lastPingSentAt * 1000).int(2, 0).build()
+                    runCatching { channel.sendControlEncrypted(AaFraming.MSG_PING_REQUEST, ping) }
+                        .onFailure { logger.log("proactive PING_REQUEST send failed: $it") }
+                }
                 val message = channel.receiveMessage()
                 if (message.channelId != AaFraming.CHANNEL_CONTROL) {
                     val chId = AaFraming.controlMessageId(message.payload)
