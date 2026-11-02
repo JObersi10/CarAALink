@@ -57,6 +57,8 @@ class AaSessionProbe(
         val versionMinor: Int? = null,
         val maxAttempts: Int = 3,
         val retryDelayMs: Long = 2_000,
+        /** True only for the on-phone Car Preview session -- see AaServiceDiscovery.configFromSettings(). */
+        val preview: Boolean = false,
     )
 
     companion object {
@@ -537,7 +539,7 @@ class AaSessionProbe(
                         decodeDiscoveryRequest(body)
                         logger.log("rung 3 reached -- phone asked for service discovery")
                         everEstablished = true
-                        val discoveryConfig = AaServiceDiscovery.configFromSettings(context)
+                        val discoveryConfig = AaServiceDiscovery.configFromSettings(context, preview = config.preview)
                         val response = AaServiceDiscovery.build(discoveryConfig)
                         logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe(discoveryConfig)})")
                         logger.logBytes("TXBODY", response, response.size)

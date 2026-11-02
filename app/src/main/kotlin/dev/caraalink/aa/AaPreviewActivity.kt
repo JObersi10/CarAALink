@@ -70,7 +70,7 @@ class AaPreviewActivity : Activity() {
         // Must match what AaSessionProbe actually negotiates with the phone
         // (also configFromSettings) -- a decoder configured for a different
         // size than what's really arriving silently fails to produce frames.
-        val config = AaServiceDiscovery.configFromSettings(this)
+        val config = AaServiceDiscovery.configFromSettings(this, preview = true)
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val surfaceView = SurfaceView(this)
@@ -130,7 +130,8 @@ class AaPreviewActivity : Activity() {
                 dec.start(holder.surface)
                 decoder = dec
 
-                val target = AaSessionProbe.active ?: AaSessionProbe(this@AaPreviewActivity)
+                val target = AaSessionProbe.active
+                    ?: AaSessionProbe(this@AaPreviewActivity, AaSessionProbe.Config(preview = true))
                 target.attachVideoSink { ts, nal -> decoder?.feed(ts, nal) }
                 probe = target
                 if (AaSessionProbe.active == null) target.start()

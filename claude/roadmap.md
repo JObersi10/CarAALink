@@ -1298,3 +1298,11 @@ the actual root cause:
   all. Needs a fresh, deliberate retest on the build with this ack fix
   in it, since a session that was silently stalled on audio may behave
   differently now that it isn't.
+
+## Future idea (owner's, low priority, not started)
+
+Owner wants the car home screen to be more customizable than the current
+fixed three tiles -- something like phone-style widgets, user-arranged
+layout, and a car background image (untested so far). "Not really that
+needed, but it's just cool to have." No design/scope decided yet; revisit
+when there's bandwidth, not urgent.

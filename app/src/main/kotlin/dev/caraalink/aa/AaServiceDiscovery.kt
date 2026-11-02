@@ -133,7 +133,17 @@ object AaServiceDiscovery {
      * Frame rate only has two real values (30/60); anything else in the
      * setting falls back to 30.
      */
-    fun configFromSettings(context: Context): Config {
+    /**
+     * [preview] is true only for the on-phone Car Preview test screen, never
+     * for a real car. The auto-DPI formula below keeps AA's logical UI width
+     * constant (~541dp) regardless of which resolution is picked, which is
+     * the right calibration for a real car panel -- but Car Preview then
+     * scales that same buffer up to fill the *phone's* much bigger screen,
+     * so UI drawn for a small car panel's dp-width ends up looking tiny
+     * relative to the phone. Declaring the phone's own real density instead
+     * makes the preview look like a normal-sized app on it.
+     */
+    fun configFromSettings(context: Context, preview: Boolean = false): Config {
         val portrait = when (AppSettings.carOrientation(context)) {
             AppSettings.CarOrientation.PORTRAIT -> true
             AppSettings.CarOrientation.LANDSCAPE -> false
@@ -151,7 +161,11 @@ object AaServiceDiscovery {
             defaultRes
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
-        val density = AppSettings.videoDpi(context, resolution.width, resolution.height)
+        val density = if (preview) {
+            context.resources.displayMetrics.densityDpi
+        } else {
+            AppSettings.videoDpi(context, resolution.width, resolution.height)
+        }
         // Advertise the touchscreen at the same size as the video we're
         // actually sending -- AaCarPresentation/AaPreviewActivity map touch
         // events into resolution.width/height, so a mismatched advertised
