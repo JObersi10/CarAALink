@@ -1252,3 +1252,49 @@ guessing.
   `aa-post-v1`/PRs against it, so it had never once fired. Now runs on
   any push or PR build and labels the release by its real source
   (branch or PR number + commit) instead of a hardcoded "main".
+
+## Session findings (2026-11-02, round 3): the real audio root cause -- missing AV flow-control ACK
+
+Owner reported the audio fix from round 2 didn't help -- two fresh
+exported logs still showed the exact same `AudioTrack` underrun-restart
+loop, unchanged timing. Rather than re-guess, re-checked
+`mrmees/open-android-auto`'s docs further (`docs/channels/audio.md`,
+`docs/interactions/04-channel-lifecycle.md` -- GPL-3.0, facts
+paraphrased/field-numbers cited, nothing of theirs copied in) and found
+the actual root cause:
+
+- **`AaServiceDiscovery`'s `MEDIA_SETUP` response has always granted
+  `max_unacked=1`** on every AV channel (video and audio) -- this repo's
+  own existing code, not new.
+- **Nothing ever sent the corresponding ack
+  (`AVMediaAckIndication`, msg id 0x8004/32772) back.** Per the
+  documented flow-control contract, the phone tracks unacked AV frames
+  against that limit and simply stops sending more once it's hit --
+  no timeout-based recovery, it waits forever. That matches both logs
+  exactly: one audio `MEDIA_CODEC_CONFIG`, then zero data frames, ever.
+  Not an `AudioTrack`-timing bug (round 2's fix), not Bluetooth routing
+  (an even earlier guess) -- a missing protocol ack.
+- **SHIPPED:** `AaSessionProbe` now captures `session` from each AV
+  channel's own `MEDIA_START` (`AVChannelStartIndication`) and sends an
+  incrementing `AVMediaAckIndication` after every video/audio data (and
+  video codec-config) frame.
+- **Open question this surfaces, not resolved:** video has been
+  "working" despite the exact same missing-ack bug applying to it too
+  (same generic `MEDIA_SETUP` handler, same `max_unacked=1`). Plausible
+  explanation, **not confirmed**: this may be the real cause behind the
+  long-standing, never-fully-explained ~42s periodic AA disconnect
+  mentioned earlier in this doc -- video stalling after its own
+  unacked-frame limit, then the session dying and reconnecting before
+  anyone could tell video had actually stopped mid-session rather than
+  the link just dropping. Worth specifically watching whether that
+  reconnect cadence changes (or stops happening) on the next live test,
+  now that acks are being sent.
+- **AA exit-button investigation, still unresolved:** the round-2 log
+  covering an exit attempt in Car Preview never received a
+  `SHUTDOWN_REQUEST` either (same as round 1's real-car log) -- whatever
+  the owner tapped didn't produce that message this time either. Genuinely
+  don't know yet whether that's "wrong control tapped", "AA on this
+  version/path doesn't send it", or something still not reaching AA at
+  all. Needs a fresh, deliberate retest on the build with this ack fix
+  in it, since a session that was silently stalled on audio may behave
+  differently now that it isn't.
