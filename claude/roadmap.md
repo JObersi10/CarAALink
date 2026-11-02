@@ -1182,3 +1182,73 @@ alone.
   the goal would be promising something this API can't deliver; framing it
   as "reduce copies and tune buffer/thread parameters" is accurate and
   achievable.
+
+## Session findings (2026-11-02, round 2): AudioTrack underrun loop, exit-session cleanup, AA exit button
+
+Three separate owner reports in one session: Car Preview still laggy and
+silent (no music audio), and AA's own built-in exit/back UI control not
+doing anything. Investigated from two real exported logs rather than
+guessing.
+
+- **FOUND + FIXED: `AudioTrack` stuck in a continuous underrun-restart
+  loop.** `AaAudioPlayer.setCodecConfig()` called `track.play()`
+  immediately, before any real PCM existed. In the first real log, AA's
+  audio channel negotiated (one `MEDIA_CODEC_CONFIG`) but never actually
+  sent a data frame that session -- the started-but-empty track sat
+  there, and the system kept cycling it: logcat spammed
+  `AudioTrack: restartIfDisabled(...): ... disabled due to previous
+  underrun, restarting` every ~600ms for the entire session. That's a
+  continuous, pointless restart loop on its own dedicated thread for as
+  long as the session runs -- a real, confirmed CPU cost, and plausibly
+  a meaningful contributor to "laggy" on top of explaining "no audio"
+  (the track was never actually playing anything in that test). Fixed:
+  `play()` now happens lazily, on the first real decoded PCM in `feed()`.
+- **FOUND + FIXED: quitting AA never actually disconnected.** Both
+  `CarSession` (real car) and `AaPreviewActivity` (on-phone preview) only
+  ever detached the video sink when leaving the AA tile/screen --
+  `AaSessionProbe.active` (and its TLS connection to the phone's own
+  head-unit-server mode) stayed alive in the background indefinitely.
+  Both paths now call `AaSessionProbe.active?.stop()` there, so leaving
+  AA actually ends the session.
+- **AA's own "exit"/back UI control still not confirmed fixed -- genuinely
+  unresolved, not guessed at.** Checked `mrmees/open-android-auto`'s
+  `docs/channels/input.md` (GPL-3.0; facts below paraphrased from reading
+  it directly, nothing copied into this repo) to rule out an encoding
+  bug first: AA's `TouchEvent` schema is pixel coordinates in the
+  negotiated video resolution (no normalization, no DPI scaling), no
+  pressure (phone hardcodes 0.8f, ignores whatever's sent), and the same
+  action codes we already use (DOWN=0/UP=1/MOVE=2) -- `AaSessionProbe.
+  sendTouch()`'s encoding matches that exactly, so this isn't an
+  encoding mismatch. The same doc also documents a *separate* message
+  type we don't implement at all: `ButtonEvents` (hardware
+  keycodes -- BACK=4, HOME=3, etc.), distinct from touch. If AA's own
+  exit control is actually bound to a BACK keycode rather than being a
+  tappable region, touch alone would never trigger it -- genuinely
+  unconfirmed either way, not implemented, because inventing a keycode
+  sender without evidence it's needed would be exactly the kind of guess
+  `claude.md` rules out.
+  - **What actually blocks confirming this:** the second real log
+    (the one covering the exit-tap attempt) has **zero** `INPUT_REPORT`
+    sends for the entire session -- not just missing the exit tap,
+    missing *every* touch that session. Settings > Debug > "Protocol
+    sniffer" was off, so the car's own incoming `SCREEN_EVENT` messages
+    (which would show whether the car even sent that tap to us) aren't
+    logged either -- `MirrorControlChannel` only logs those when the
+    sniffer is on. Can't tell from this data whether the tap never
+    reached us, reached us but didn't relay, or needs a keycode we don't
+    send.
+  - **Next step, not done here:** retest with the Protocol sniffer ON,
+    specifically tapping AA's exit control, then check for `MIRROR ctrl
+    0x0020` (RX, the car's `SCREEN_EVENT`) and the touch-forward log line
+    on the AA side -- whichever is present or missing tells us which half
+    is broken, instead of guessing.
+- **Car Preview home screen only ever showed "Android Auto" --
+  SHIPPED.** `AaPreviewActivity.showHome()` hardcoded a single-tile list
+  instead of the real three (Android Auto / Phone screen / Settings) from
+  `CarSession`'s own tile set -- fixed to match.
+- **Rolling `dev` GitHub pre-release never actually published --
+  SHIPPED.** `.github/workflows/android-ci.yml`'s publish step was gated
+  to `push` events on `main` only; all real work happens on
+  `aa-post-v1`/PRs against it, so it had never once fired. Now runs on
+  any push or PR build and labels the release by its real source
+  (branch or PR number + commit) instead of a hardcoded "main".
