@@ -753,3 +753,16 @@ Changes made on the back of this:
 log is `TLS ESTABLISHED role=CLIENT` plus whatever the first AA messenger
 bytes look like — that record-layer traffic is the next unknown, and the
 hex dump is already wired to capture it.
+
+## Future ideas (not scoped, not started)
+
+- **Phone as a CarPlay/AA "server"/simulator for other devices.** Owner's
+  idea (2026-11-02): instead of only acting as a *head unit* that receives
+  an AA session from itself, have the phone act as the *server* side too --
+  i.e. let some other device (another phone, a dev box, a generic AA/CarPlay
+  client) connect to this phone as if it were a car head unit or a phone
+  offering AA/CarPlay, independent of CarbitLink entirely. Explicitly a
+  later idea, not scoped yet -- recorded here so it isn't lost, not a
+  commitment to a design.
+- **Phone widgets on the car home screen** (CarHomePresentation / the
+  shared `buildHomeContent()`). Requested 2026-11-02, not scoped.
