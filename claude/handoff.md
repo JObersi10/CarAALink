@@ -4,7 +4,43 @@ Last rewritten: 2026-11-02, continuing the 2026-11-01 session on branch
 `aa-receiver` (PR #17, not yet merged). See `roadmap.md` for full cited
 CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol
 
-## LATEST (2026-11-02) -- the AA tile is wired to the real car, unverified
+## LATEST (2026-11-02, late) -- real on-device verification pass
+
+Finally got a stable connection (USB debugging, owner gave the phone
+passcode so the session could unlock/test autonomously) and drove the
+actual Car Preview / real AA tile path end to end. Verified live:
+
+- **Real AA session confirmed working through the actual Car Preview /
+  AA tile path**: version -> TLS -> discovery -> channel-open ->
+  video+audio decode, with Google Maps and Spotify/Apple Music genuinely
+  rendering and updating. Touch confirmed landing correctly (found via
+  `uiautomator dump` that two earlier taps had simply missed the tile's
+  real bounds -- not an app bug, a testing-coordinate bug).
+- **AA music audio: strong live evidence it now works.** `dumpsys audio`
+  showed our `AudioTrack` active, unmuted, correctly formatted
+  (48kHz/stereo), continuously fed with zero decode errors, routed to a
+  real output device shared with another app's audio stream. Couldn't
+  literally hear it through adb -- owner should confirm by ear next time,
+  but every available signal says it's playing.
+- **Reopen-after-lock black screen: real bug, found and partially fixed.**
+  Root cause confirmed live: on reattach we were replaying cached SPS/PPS
+  only, but SPS/PPS alone can't produce a picture -- the new decoder needs
+  an actual IDR/keyframe, and the stream's own next one (H.264 GOP
+  interval) could be arbitrarily far off. Added a NAL scanner that caches
+  the last IDR alongside the codec config and replays both. Result: went
+  from "black forever" to "one frame renders, then freezes" -- real
+  improvement, not a full fix. Later P-frames apparently don't decode
+  cleanly against a keyframe replayed out of the live encoder sequence. A
+  full fix likely means accepting a brief (bounded) black gap until the
+  next real IDR arrives instead, or isn't fully fixable from the head
+  unit's side at all -- there's no "request a keyframe" message exposed
+  to a head unit in this protocol as far as confirmed.
+- Also found and fixed along the way: `CarAALinkApplication` continuously
+  mirrors this process's own logcat into the unified log file (pre-existing
+  design, not new this session) -- worth knowing when reading logs, lines
+  with a nested real logcat timestamp are that, not a second subsystem.
+
+### Earlier in this entry (2026-11-02, before the live pass above)
 
 The single biggest finding of this session: **the actual "Android Auto"
 tile on the car home screen (`CarSession.openAndroidAuto()`) was still
@@ -17,13 +53,11 @@ own screen, at whatever resolution `AaServiceDiscovery.configFromSettings()`
 negotiates. Also added: a quick 127.0.0.1:5277 liveness check before
 starting (triggers the accessibility-driven head-unit-server auto-start if
 nothing's listening, instead of just failing), a DPI setting
-(auto-detect/manual), and removed the redundant back-button overlay (AA has
-its own in-app back/exit UI; kept a long-press-only exit-to-home corner).
-
-**This has NOT been verified live** -- every attempt to install the build
-after this fix hit flaky wireless-debugging connections (port expired
-repeatedly, `adb` daemon issues) before a real test could run. Do that
-first.
+(auto-detect/manual, fixed later the same session to replicate
+`CarDisplay.attach()`'s own formula instead of the phone's screen
+density), and removed the redundant back-button overlay (AA has its own
+in-app back/exit UI; kept a long-press-only exit-to-home corner). This is
+the fix the live pass above actually verified.
 
 ### Owner's live-test feedback, same session (from actually running the
 ### *previous* build, i.e. before the real-car-tile fix above)

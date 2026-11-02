@@ -1,6 +1,12 @@
 # Roadmap / status
 
-Last updated: 2026-10-31 (after first RE pass)
+Last updated: 2026-11-02. The AA receiver workstream (version exchange
+through live decoded video/audio/touch, through the real car tile, not
+just a debug preview) is now **CONFIRMED working on real hardware** -- see
+`claude/handoff.md` for the detailed, dated findings and
+`claude/aa-receiver-notes.md` for the cited protocol specifics. The table
+below is CarbitLink-wire-protocol-specific and mostly predates that
+workstream; the two AA rows are updated, the rest is unchanged.
 
 ## Status at a glance
 
@@ -15,8 +21,8 @@ Last updated: 2026-10-31 (after first RE pass)
 | Touch/control wire format | PARTIAL — Java-level struct confirmed (`EPTouchEventData{type,x,y,slot}`, `EPBtnCode`); on-wire byte encoding unconfirmed |
 | Audio handling | PARTIAL — PCM format enum confirmed at Java boundary; PCM-on-wire vs AAC-encode-before-wire unconfirmed |
 | Native `.so` protocol logic | **CONFIRMED present and dominant** — `libEPSDK.so` (`CarbitEPSDK::AOATransport`/`Packet`/...) holds essentially all protocol logic; Java is a thin JNI pass-through |
-| AA head-unit-server trigger flow | **CONFIRMED mechanism** (via PhoneAuto reference) — it's Google's own first-party AA sink app, head-unit-server mode gated behind `HeadUnitServerAccessibilityService`, not custom automation |
-| AA capture (MediaProjection/VirtualDisplay) feasibility | UNKNOWN — no MediaProjection/VirtualDisplay usage found anywhere in PhoneAuto statically; capture mechanism still open |
+| AA head-unit-server trigger flow | **CONFIRMED mechanism**, live-verified end to end — `HeadUnitServerLauncher` + `HeadUnitServerAccessibilityService` auto-start it, `AaSessionProbe` drives the real session through to decoded video+audio+touch on the real car tile. See `claude/handoff.md` 2026-11-02. |
+| AA capture (video/audio/touch) feasibility | **CONFIRMED working** — not MediaProjection/VirtualDisplay as originally guessed; CarAALink is the AA *head unit* itself (TLS handshake, service discovery, per-channel media), not a screen-capture consumer of a locally-rendered AA session. See `claude/aa-receiver-notes.md`. |
 
 Every row above is cited to a specific file/class/string in the pass notes
 below, per `claude.md`'s rule against fabricating protocol details.
