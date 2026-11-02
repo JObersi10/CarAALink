@@ -37,6 +37,7 @@ class SettingsActivity : AppCompatActivity() {
         )
         private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key in videoSettingKeys) {
+                updateDpiSummary()
                 val reconnect = dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged
                 if (reconnect != null) {
                     Toast.makeText(requireContext(), "Reconnecting Android Auto with the new setting…", Toast.LENGTH_SHORT).show()
@@ -79,6 +80,7 @@ class SettingsActivity : AppCompatActivity() {
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(dev.caraalink.R.xml.root_preferences, rootKey)
+            updateDpiSummary()
 
             findPreference<Preference>("accessibility_service_shortcut")?.setOnPreferenceClickListener {
                 val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
@@ -170,6 +172,24 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>("car_background")?.summary =
                 if (set) "Custom photo set" else "Pick a photo for the car home screen"
             findPreference<Preference>("car_background_reset")?.isVisible = set
+        }
+
+        /**
+         * Shows the actual computed density value so the owner can see what's
+         * really being sent while calibrating manually -- empirically (not
+         * the simple dp=px*density/160 model originally assumed), a HIGHER
+         * declared density makes AA's UI look SMALLER on a real car screen,
+         * confirmed from live testing. No confirmed correct target value
+         * yet, so this doesn't change the formula, just makes the current
+         * number visible instead of hidden.
+         */
+        private fun updateDpiSummary() {
+            val context = requireContext()
+            val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
+            findPreference<androidx.preference.SwitchPreferenceCompat>("video_dpi_auto")?.summary =
+                "Scale density to the chosen resolution (currently sending density=${config.density})"
+            findPreference<Preference>("video_dpi_manual")?.summary =
+                "Only used when auto-detect is off (currently sending density=${config.density})"
         }
     }
 }
