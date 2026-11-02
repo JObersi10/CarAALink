@@ -37,10 +37,17 @@ object AppSettings {
     fun videoBitrateKbps(context: Context): Int =
         prefs(context).getString("video_bitrate_kbps", "6000")?.toIntOrNull() ?: 6000
 
-    /** Auto-detect uses this phone's own screen density; manual is a straight AA `density` value. */
-    fun videoDpi(context: Context): Int {
+    /**
+     * Auto-detect replicates the exact formula CarDisplay.attach() already
+     * uses for the car's own virtual display -- scaled off the video's own
+     * [width]x[height], not the phone's screen density (that sized the car
+     * home screen correctly; the phone's own density has nothing to do with
+     * how big things render on the car's panel). Manual is a straight AA
+     * `density` value.
+     */
+    fun videoDpi(context: Context, width: Int, height: Int): Int {
         if (prefs(context).getBoolean("video_dpi_auto", true)) {
-            return context.resources.displayMetrics.densityDpi
+            return (minOf(width, height) / 720f * 213).toInt().coerceIn(120, 320)
         }
         return prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
     }

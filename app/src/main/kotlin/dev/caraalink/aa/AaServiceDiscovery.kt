@@ -124,7 +124,8 @@ object AaServiceDiscovery {
             AaResolution.R1920X1080
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
-        return Config(resolution = resolution, frameRate = frameRate, density = AppSettings.videoDpi(context))
+        val density = AppSettings.videoDpi(context, resolution.width, resolution.height)
+        return Config(resolution = resolution, frameRate = frameRate, density = density)
     }
 
     /**
