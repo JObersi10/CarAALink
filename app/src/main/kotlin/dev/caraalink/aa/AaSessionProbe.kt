@@ -91,10 +91,42 @@ class AaSessionProbe(
     @Volatile
     private var cachedCodecConfig: ByteArray? = null
 
-    /** Like setting [videoSink] directly, but also replays cached SPS/PPS if we already have it. */
+    // SPS/PPS alone isn't enough to produce a picture: a brand-new decoder
+    // still needs an actual IDR (keyframe) frame to decode from, and the
+    // stream's own next keyframe can be many seconds away (H.264 GOP
+    // interval, not something we control). Confirmed live: codec config was
+    // being replayed correctly on reattach, a new MediaCodec did
+    // initialize, DATA frames kept arriving the whole time, and the
+    // preview still stayed black -- because every frame arriving in that
+    // window was a P-frame referencing a decoder state the new instance
+    // never had. Caching the last IDR and replaying it right after the
+    // codec config gives a fresh attach a self-contained starting point
+    // instead of waiting on the stream's own schedule.
+    @Volatile
+    private var cachedKeyframe: ByteArray? = null
+
+    /** Like setting [videoSink] directly, but also replays cached SPS/PPS + last keyframe if we have them. */
     fun attachVideoSink(sink: (timestampUs: Long, nal: ByteArray) -> Unit) {
         videoSink = sink
         cachedCodecConfig?.let { sink(0L, it) }
+        cachedKeyframe?.let { sink(0L, it) }
+    }
+
+    /** True if [nal] (one or more Annex-B NAL units) contains an IDR slice (type 5). */
+    private fun containsIdr(nal: ByteArray): Boolean {
+        var i = 0
+        while (i < nal.size - 4) {
+            if (nal[i] == 0.toByte() && nal[i + 1] == 0.toByte() &&
+                (nal[i + 2] == 1.toByte() || (nal[i + 2] == 0.toByte() && i + 3 < nal.size && nal[i + 3] == 1.toByte()))
+            ) {
+                val headerAt = if (nal[i + 2] == 1.toByte()) i + 3 else i + 4
+                if (headerAt < nal.size && (nal[headerAt].toInt() and 0x1F) == 5) return true
+                i = headerAt
+            } else {
+                i++
+            }
+        }
+        return false
     }
 
     @Volatile
@@ -333,7 +365,9 @@ class AaSessionProbe(
                         if (chBody.size > 8) {
                             var ts = 0L
                             for (i in 0 until 8) ts = (ts shl 8) or (chBody[i].toLong() and 0xFF)
-                            videoSink?.invoke(ts, chBody.copyOfRange(8, chBody.size))
+                            val frame = chBody.copyOfRange(8, chBody.size)
+                            if (containsIdr(frame)) cachedKeyframe = frame
+                            videoSink?.invoke(ts, frame)
                         }
                     } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
                         // SPS/PPS, no timestamp prefix (unlike MEDIA_MESSAGE_DATA) --
@@ -441,6 +475,7 @@ class AaSessionProbe(
         } finally {
             activeChannel = null
             cachedCodecConfig = null
+            cachedKeyframe = null
             micCapture?.stop()
             micCapture = null
             audioPlayer?.stop()
