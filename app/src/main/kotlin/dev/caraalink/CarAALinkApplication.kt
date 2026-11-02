@@ -50,6 +50,16 @@ class CarAALinkApplication : Application() {
                 logger.log("FATAL on ${thread.name}: ${Log.getStackTraceString(throwable)}")
             }
             runCatching { dev.caraalink.diagnostics.CrashMarker.recordCrash(this, thread.name, throwable) }
+            // Owner asked for this directly: a crash log saved automatically,
+            // not something to go dig out of Developer tools after the fact.
+            // Runs synchronously here, before the default handler terminates
+            // the process -- a single small file copy comfortably finishes
+            // in that window.
+            runCatching {
+                if (dev.caraalink.settings.AppSettings.autoSaveCrashLog(this)) {
+                    logger.saveToDownloads(logger.latestLogFile())
+                }
+            }
             previous?.uncaughtException(thread, throwable)
         }
     }

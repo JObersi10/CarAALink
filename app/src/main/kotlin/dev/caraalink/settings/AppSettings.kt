@@ -110,6 +110,9 @@ object AppSettings {
     fun debugOverlay(context: Context): Boolean =
         prefs(context).getBoolean("debug_overlay", false)
 
+    fun autoSaveCrashLog(context: Context): Boolean =
+        prefs(context).getBoolean("auto_save_crash_log", true)
+
     /**
      * When on (default), `AaServiceDiscovery.configFromSettings()` computes
      * `width_margin`/`height_margin` automatically from the car's real

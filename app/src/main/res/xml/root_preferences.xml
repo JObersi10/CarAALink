@@ -155,6 +155,11 @@
             android:title="On-screen debug overlay"
             android:summary="Show fps/bitrate/drops over the mirror, AA session, and this app's own screen"
             android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="auto_save_crash_log"
+            android:title="Auto-save crash log to Downloads"
+            android:summary="On a crash, save the current log straight to Downloads automatically -- no need to dig through Developer tools afterward"
+            android:defaultValue="true" />
         <Preference
             android:key="accessibility_service_shortcut"
             android:title="Accessibility service"
