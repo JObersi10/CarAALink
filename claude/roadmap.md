@@ -1529,13 +1529,24 @@ testing. Two distinct real crashes caught:
    setting off and on does.
 
 **This is a gearhead-side bug, not something directly patchable in our
-code** -- but it IS something to avoid *triggering*. Next step: figure out
-which of our own actions (settings-change reconnect? watchdog restart?
-the accessibility-driven toggle itself?) is the one hitting gearhead while
-it still thinks a session is connected, and stop doing that specific thing
-rather than just adding more delay and hoping. Also worth logcatting
+code** -- but it IS something to avoid *triggering*. Also worth logcatting
 gearhead directly (`adb logcat`, filter for `GH.` tags, no package-specific
 flag needed since gearhead's own tags are self-identifying) as a standard
 diagnostic step going forward -- this found two real, concrete gearhead
 crashes in one short test that our own app's log alone would never have
 shown, since from our side those just look like "the phone went silent."
+
+**First fix attempted (shipped, not yet live-verified):** `AaSessionProbe
+.stop()` now sends a graceful `ShutdownRequest` (reason=USER_SELECTION)
+before closing the raw socket, per the teardown doc's own guidance --
+previously we just abruptly closed the socket every time WE ended a
+session (settings change, watchdog restart, leaving AA), never telling the
+phone we meant to. Best-effort/non-blocking.
+
+**If that alone isn't enough, owner's own suggested next experiment:** do
+a full USB/accessory-level disconnect-and-reattach on settings change
+instead of just a TCP-level AA reconnect, in case gearhead's "connected"
+tracking lives above the AA session specifically (tied to the whole USB
+accessory session) and a graceful AA-level shutdown still isn't enough to
+reset it. Not implemented -- bigger, riskier change since it would affect
+the whole CarbitLink session (Mirror/Home too), not just AA.
