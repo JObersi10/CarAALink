@@ -55,7 +55,13 @@ class AaSessionProbe(
         /** Overrides the version we advertise; null uses AaFraming.PROTOCOL_MAJOR/MINOR. */
         val versionMajor: Int? = null,
         val versionMinor: Int? = null,
-        val maxAttempts: Int = 3,
+        // Confirmed from a real log: AA's head-unit-server can still be
+        // ECONNREFUSED almost 20s after the accessibility-driven toggle
+        // fires (it takes a while to actually bind), but 3 attempts * 2s
+        // gave up after ~6s -- well short of that, forcing the owner to
+        // keep manually re-tapping the AA tile until a later attempt
+        // happened to land after it was finally ready.
+        val maxAttempts: Int = 8,
         val retryDelayMs: Long = 2_000,
         /** True only for the on-phone Car Preview session -- see AaServiceDiscovery.configFromSettings(). */
         val preview: Boolean = false,
