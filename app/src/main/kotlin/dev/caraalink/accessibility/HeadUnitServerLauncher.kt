@@ -125,7 +125,7 @@ object HeadUnitServerLauncher {
      * notification (not just a Toast) since this fires from a background
      * check and the user may not be looking at the phone when it does.
      */
-    private fun notifyOpenAndroidAutoManually(context: Context) {
+    fun notifyOpenAndroidAutoManually(context: Context) {
         val manager = context.getSystemService(NotificationManager::class.java)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             manager.createNotificationChannel(

@@ -164,14 +164,27 @@ class CarSession(
                 true
             }.getOrDefault(false)
             if (!serverUp) {
-                logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start")
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    display.setStatus("AA: starting head unit server…")
-                    dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+                if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
+                    logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        display.setStatus("AA: starting head unit server…")
+                        dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+                    }
+                    // Give the accessibility-driven toggle a moment to actually bind the
+                    // listener before we try to connect to it.
+                    Thread.sleep(2500)
+                } else {
+                    // "Auto-start head unit server" is off (Settings > Connection) --
+                    // the owner wants to flip AA's developer-mode switch themselves,
+                    // not have this app drive the accessibility service for them.
+                    // Just tell them, same notification the "service not enabled"
+                    // path already uses, no accessibility automation triggered.
+                    logger.log("openAndroidAuto: server not listening, auto-start disabled -- notifying only")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        display.setStatus("AA: start the head unit server on your phone")
+                        dev.caraalink.accessibility.HeadUnitServerLauncher.notifyOpenAndroidAutoManually(context)
+                    }
                 }
-                // Give the accessibility-driven toggle a moment to actually bind the
-                // listener before we try to connect to it.
-                Thread.sleep(2500)
             }
             logger.log("openAndroidAuto: starting AA session probe")
             dev.caraalink.aa.AaSessionProbe(context).start()

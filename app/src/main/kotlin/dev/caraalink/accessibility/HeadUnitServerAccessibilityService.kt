@@ -1,14 +1,12 @@
 package dev.caraalink.accessibility
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
-import dev.caraalink.MainActivity
 
 /**
  * Automates the one step that's actually safe to automate: once Android
@@ -16,9 +14,12 @@ import dev.caraalink.MainActivity
  * whether the head unit server is currently running (menu shows "Stop...")
  * or not ("Start..."), and tap whichever is actually present -- a real
  * toggle instead of blindly tapping "Start" even when it's already on. Once
- * that tap lands, CarAALink is brought back to the front automatically. The
- * "tap Version 10x" developer-mode toggle is deliberately NOT automated
- * here.
+ * that tap lands, a single back press closes AA's Settings screen and
+ * leaves the phone on whatever was actually in front before (or home, if
+ * there wasn't anything) -- this used to force CarAALink's own activity to
+ * the front instead, which stole phone focus from whatever the owner was
+ * doing on it for a background car-screen automation. The "tap Version 10x"
+ * developer-mode toggle is deliberately NOT automated here.
  *
  * CONFIRMED by decompiling PhoneAuto-beta-2027-01-19.apk (jadx, this
  * session — see claude/roadmap.md): its own
@@ -122,8 +123,15 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
                     val label = if (startNode != null) "Start" else "Stop"
                     if (clickUpToAncestor(target)) {
                         Log.i(TAG, "Head unit server was ${if (startNode != null) "off" else "on"} -- tapped '$label head unit server'")
-                        deactivate(pressBack = false)
-                        returnToCarAALink()
+                        // Leave the phone wherever it actually was -- forcing
+                        // CarAALink itself back to the front here was stealing
+                        // phone focus from whatever the owner was doing on it
+                        // (this is a background automation for the car
+                        // screen, not something that should interrupt the
+                        // phone). A back press closes AA's Settings screen
+                        // and reveals whatever was underneath -- the last app,
+                        // or home if there wasn't one.
+                        deactivate(pressBack = true)
                         return
                     }
                 }
@@ -144,18 +152,6 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
         if (pressBack) {
             handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 600L)
         }
-    }
-
-    /** Hands focus back to CarAALink once the toggle tap has landed. */
-    private fun returnToCarAALink() {
-        handler.postDelayed({
-            runCatching {
-                startActivity(
-                    Intent(this, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                )
-            }
-        }, 700L)
     }
 
     private fun findExactText(root: AccessibilityNodeInfo, candidates: Array<String>): AccessibilityNodeInfo? {

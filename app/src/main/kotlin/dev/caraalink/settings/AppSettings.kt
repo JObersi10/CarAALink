@@ -75,6 +75,14 @@ object AppSettings {
     fun audioStereo(context: Context): Boolean =
         prefs(context).getBoolean("audio_stereo", true)
 
+    /**
+     * Read by `CarSession.openAndroidAuto()` when the AA tile is tapped and
+     * the head unit server isn't already up: true (default) drives AA's
+     * Settings via the accessibility service automatically; false just
+     * notifies the owner to start it themselves, no accessibility
+     * automation triggered. (This key existed before but was never
+     * actually wired to anything -- fixed 2026-11-02.)
+     */
     fun autoStartHeadUnitServer(context: Context): Boolean =
         prefs(context).getBoolean("auto_start_head_unit_server", true)
 
