@@ -1370,3 +1370,132 @@ when there's bandwidth, not urgent.
   reported broken in the same test; that's likely a *separate* issue
   (coarse 30ms move-throttling vs. whatever sample rate Maps' own gesture
   recognizer expects), not fixed by this change, still open.
+
+## Session findings (round 5) -- real-car marathon: audio, the real ~30s mystery, margin cropping, max_unacked
+
+A very long live real-car testing session. Confirmed fixes marked (confirmed);
+everything else is shipped but not yet live-verified at time of writing.
+
+- **Real crash, found and fixed (confirmed from a real crash log on the
+  current build):** `AaSessionProbe.run()`'s retry loop slept via a bare
+  `Thread.sleep(retryDelayMs)` between attempts. `stop()` interrupts this
+  same worker thread; if that interrupt landed mid-sleep, the resulting
+  `InterruptedException` was uncaught anywhere in `run()` and crashed the
+  **entire app**. Reproduced by the owner's own workflow: toggling "Start
+  Head Unit Server" while a probe was mid-retry. Now caught and treated as
+  the normal shutdown it is.
+- **The real ~30s periodic AA disconnect mystery (long-standing, mentioned
+  in earlier rounds) -- likely actually found this time, confirmed from a
+  real log:** a "--- reconnecting" fired with NO exception and NO
+  `SHUTDOWN_REQUEST` logged anywhere before it, meaning the message loop
+  was exiting *cleanly*, not failing. `maxMessages=2000` was sized for the
+  pre-streaming startup phase (discovery/channel-open chatter is ~10
+  messages -- see the comment on the original fix) and was never meant to
+  cap an ACTIVE streaming session. At 30fps video plus continuous audio
+  chunks, 2000 incoming messages passes in well under a minute -- the loop
+  was cleanly hitting this self-inflicted cap and reconnecting on a timer
+  nobody asked for. Fixed: uncapped once a session is `everEstablished`.
+  A separate, doc-supported proactive-PING_REQUEST heartbeat was also added
+  (mrmees/open-android-auto's session-maintenance doc explicitly shows a
+  head unit sending periodic pings, which we never did) -- kept since it's
+  harmless and doc-supported, but the `maxMessages` cap is almost
+  certainly the real cause.
+- **Margin cropping -- confirmed bug, found via mrmees/open-android-auto's
+  own `docs/video-resolution.md` (GPL-3.0, facts only), not guessed:** the
+  phone renders its UI into a CENTERED sub-region of the frame and fills
+  the margin itself with black; the head unit is expected to crop that
+  black out, not scale the whole (content+padding) frame to fit. We were
+  doing the latter, which shrinks the actual content more than necessary --
+  the "could be sized bigger" extra black space reported from a real
+  screenshot. Our margin VALUE formula was already confirmed correct
+  (matches the doc's own formula exactly); only the missing crop step was
+  the bug. `AaCarPresentation` now scales against the content region
+  (`videoWidth-widthMargin x videoHeight-heightMargin`) and relies on the
+  existing `area.clipChildren` to cut the margin portion off-screen.
+  **Not yet exercised live** -- the one later test session had
+  `autoCrop=false` (margin 0,0), so this fix was a no-op in that test.
+- **`max_unacked` for video was wrong -- confirmed from
+  `docs/interactions/04-channel-lifecycle.md`:** video's documented typical
+  value is 10 (pipelined sliding window), audio's is 1 (strict lockstep).
+  We hardcoded 1 for every channel, video included, forcing every single
+  video frame to wait a full ack round-trip before the phone would send
+  the next one -- a real, self-inflicted throughput cap on top of whatever
+  decode-speed/thermal factors were also in play. Fixed: video channel now
+  grants 10.
+- **Audio routing, two real regressions found and fixed from live logs:**
+  (1) the Car-Preview-only forced-speaker fix was gated on the
+  `aa_audio_route` setting, not on preview-vs-real-car, so a setting left
+  on Device-Only from Car Preview testing silently carried over and forced
+  the real car's audio to the phone speaker instead of Bluetooth. (2)
+  BT-preferred-but-no-A2DP-device-found was falling back to *unconstrained*
+  routing, which carries the same "silently lost to the always-active USB
+  accessory connection" risk already fixed for the device-only case --
+  confirmed live, happened even with the car actually paired over
+  Bluetooth. Both real-car fallback paths now always pick an explicit
+  device (A2DP if found, else the phone's own speaker) instead of ever
+  leaving routing unconstrained.
+- **Video and audio decode were sharing one thread** (`mediaExecutor`) --
+  confirmed live, "video struggling" (heavy frames/thermal throttling) and
+  choppy audio (reported as not audibly playing ~80% of the time, despite
+  a large lifetime frames-delivered count -- that count only proves total
+  writes over time, not smooth continuous playback) were reported
+  happening together. Audio now has its own dedicated executor so a
+  stalled video decode can't stall audio playback too. Owner's own later
+  report: audio lag "does catch up after a while" post-fix -- improved,
+  not fully resolved.
+- **Settings-change reconnect loop, confirmed from a real log:** changing
+  a video setting mid-session triggered an immediate reconnect that got a
+  healthy TCP connect but then silence (no `VERSION_RESPONSE`, ever), with
+  the watchdog restarting every ~10s for 7 consecutive cycles and never
+  recovering without a full head-unit-server restart. This is a *warm*
+  restart (gearhead had a live session we just yanked away), unlike the
+  cold-start "service not up yet" case the earlier retry-window widening
+  (3->8 attempts) covered. A brief grace period (1.5s) before reconnecting
+  was added, giving gearhead room to actually tear down the old session
+  first instead of racing it. Not yet confirmed live.
+- **Still genuinely open, no fix attempted (need more evidence before
+  touching code again -- several guesses this session already turned out
+  wrong or incomplete):**
+  - **AA exit button**: still zero `SHUTDOWN_REQUEST` ever observed from
+    tapping AA's own exit control, across every single test this entire
+    session. Ruled out as the cause of the (now-fixed) periodic reconnect
+    -- that was a separate, coincidentally-timed bug. Genuinely unresolved.
+  - **Touch misalignment on the real car** ("gotta press a bit higher"):
+    reported in a session where `autoCrop=false` (margin 0,0), so this is
+    NOT caused by the margin-crop fix above -- a separate, pre-existing
+    coordinate mapping issue. No root cause identified yet.
+  - **`AudioTrack: restoreTrack_l(...): dead IAudioTrack ... creating a
+    new one`** firing ~10 times in under a second at one point in a real
+    log, tied to output-device-change events -- a strong, concrete lead
+    for audio choppiness, more specific than the thread-separation fix,
+    but root cause (why the native track keeps dying) not yet found.
+  - **Video blockiness**: owner reports it "does catch up after a while" --
+    consistent with the phone's hardware encoder's own adaptive/phase-out
+    bitrate behavior for low-motion content (saw `vq-bitrate-phaseout`
+    tuning in a real CCodec log), which is vendor/chipset-level behavior,
+    not something controllable from our MediaCodec configuration. May not
+    be "fixable" in the traditional sense.
+  - **"AA recovery" feature request (owner's, explicit ask)**: owner wants
+    behavior like the PhoneAuto-beta reference app -- exit the app
+    completely (not just background it) and reopen it, and AA reconnects
+    on its own, without needing to manually restart the head-unit-server
+    toggle first. Not investigated yet. Likely more about OUR app's own
+    process/session-state restoration on relaunch (does `MainActivity`/
+    `CarSession` detect "head unit server is already up, try reconnecting"
+    on a fresh process start?) than an AA protocol-level feature -- worth
+    checking `UsbLinkForegroundService`'s own restart/sticky behavior and
+    whether a fresh process re-attaches to an already-attached USB
+    accessory automatically. No mrmees doc section found directly on this
+    (checked `01-transport-setup.md`, nothing relevant -- that doc covers
+    WiFi-based AA setup, not this project's USB path).
+  - **Black screen before AA "kicks in"**: still happens, "head unit
+    server issue" per the owner's own words -- likely overlaps with the
+    already-covered gearhead-readiness/retry-window topic, but not
+    re-confirmed with a fresh log on the latest build.
+  - **No accessibility permission -> silent generic app launch**: owner's
+    observation -- if the accessibility permission isn't granted, tapping
+    "Start Head Unit Server" just opens the AA app with no further
+    navigation (expected, since the accessibility service is what drives
+    the actual developer-mode-toggle navigation) and no explicit prompt
+    telling the owner that's why. Worth a clearer in-app message/permission
+    prompt in that case; not implemented yet, just noted.

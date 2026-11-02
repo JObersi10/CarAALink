@@ -5,6 +5,59 @@ release made -- owner publishes those manually). All work now continues on
 branch `aa-post-v1` (PR #18, open against `main`). See `roadmap.md` for full
 cited CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
 
+## LATEST (2026-11-02, later same day) -- marathon real-car session, round 5
+
+See `roadmap.md`'s "Session findings (round 5)" for the full list with
+evidence. Current HEAD on `aa-post-v1` at end of this round: `8225d8d`
+(plus a docs-only commit after it). Short version of what to pick up next:
+
+**Confirmed fixed, real crash/mystery finally explained:**
+- The app-crashing uncaught `InterruptedException` (stop() during retry sleep).
+- The long-standing ~30s periodic AA disconnect -- was a self-inflicted
+  `maxMessages=2000` cap hitting mid-stream, not a phone/protocol mystery.
+
+**Shipped, NOT yet live-verified (test these first):**
+- Margin-based video cropping (`AaCarPresentation`) -- the one test session
+  since had `autoCrop=false`, so this literally hasn't run yet.
+- `max_unacked=10` for video (was wrongly 1, audio's own value).
+- Audio routing fixes (explicit device always picked, never unconstrained).
+- Settings-change reconnect grace delay (1.5s before reconnecting).
+- Proactive PING_REQUEST heartbeat (kept, doc-supported, but probably not
+  the actual fix for the disconnect mystery -- the maxMessages fix is).
+
+**Next things to investigate, no fix attempted yet (owner explicitly asked
+to stop guessing without evidence after a few fixes turned out wrong or
+incomplete this session):**
+1. **AA exit button** -- zero `SHUTDOWN_REQUEST` ever observed, full
+   session, every test. Still completely open.
+2. **Touch misalignment on the real car** ("press a bit higher than where
+   you're tapping") -- confirmed NOT caused by the margin-crop fix (that
+   test had margin=0,0). Root cause unknown.
+3. **`AudioTrack: restoreTrack_l(...): dead IAudioTrack ... creating a new
+   one`** firing ~10x in under a second in one real log -- strong lead for
+   audio choppiness, but why the native track keeps dying isn't found yet.
+4. **"AA recovery" feature request** (owner's, explicit ask, references
+   the PhoneAuto-beta reference app's behavior): exiting the app entirely
+   and reopening it should reconnect to AA without needing to manually
+   restart head-unit-server first. Not investigated -- likely an app
+   process/lifecycle question (does a fresh process detect "head unit
+   server already up, try reconnecting"?), not an AA protocol feature.
+   Checked `01-transport-setup.md` for a lead -- nothing relevant, that
+   doc covers WiFi-based AA setup, not this project's USB path.
+5. Video blockiness clears up "after a while" per the owner -- plausible
+   vendor hardware-encoder adaptive-bitrate behavior
+   (`vq-bitrate-phaseout` seen in a real CCodec log), may not be ours to
+   fix from the MediaCodec config side.
+6. No-accessibility-permission case: tapping "Start Head Unit Server"
+   silently just opens the AA app generically with no explanation --
+   worth a clearer prompt, not implemented.
+
+**Research note:** `mrmees/open-android-auto`'s docs (GPL-3.0, cited
+throughout this round, never bulk-copied) were the source of two of this
+round's real, confirmed fixes (margin cropping, video `max_unacked`) --
+worth checking there FIRST before guessing on future AA protocol-shaped
+bugs, same pattern, before spending time on log-based speculation.
+
 ## LATEST (2026-11-02, PR #18 in progress) -- headless harness, margin autodetect, bridge roadmap correction
 
 Same PR #18 session, same day. Picked up headless-testing-harness work
