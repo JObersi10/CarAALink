@@ -226,7 +226,14 @@ class CarSession(
         this.config = config
         encoder?.release()
         val fps = if (config.wantFps > 0) config.wantFps else 30
-        val bitRate = if (config.bitRate > 0) config.bitRate else DEFAULT_BITRATE
+        // Settings > Video > bitrate used to be decorative -- nothing ever
+        // read it, the encoder always used either the car's own requested
+        // bitrate or DEFAULT_BITRATE. Now it's a floor: the car's request
+        // (it may know its own decode limits) is still respected if it's
+        // already asking for more than the setting.
+        val settingsBitrate = dev.caraalink.settings.AppSettings.videoBitrateKbps(context) * 1000
+        val carBitrate = if (config.bitRate > 0) config.bitRate else DEFAULT_BITRATE
+        val bitRate = maxOf(carBitrate, settingsBitrate)
         val enc = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
