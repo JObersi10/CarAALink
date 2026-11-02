@@ -280,6 +280,8 @@ class CarSession(
         display.showAa(
             videoWidth = config.resolution.width,
             videoHeight = config.resolution.height,
+            widthMargin = config.widthMargin,
+            heightMargin = config.heightMargin,
             onSurface = { surface ->
                 if (surface != null) {
                     val dec = dev.caraalink.aa.AaVideoDecoder(config.resolution.width, config.resolution.height)

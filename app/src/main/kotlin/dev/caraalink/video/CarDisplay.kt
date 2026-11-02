@@ -160,10 +160,13 @@ class CarDisplay(
     fun showAa(
         videoWidth: Int,
         videoHeight: Int,
+        widthMargin: Int = 0,
+        heightMargin: Int = 0,
         onSurface: (Surface?) -> Unit,
         onTouch: (pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit,
     ) = main.post {
         aaVideoSize = videoWidth to videoHeight
+        aaMargin = widthMargin to heightMargin
         aaOnSurface = onSurface
         aaOnTouch = onTouch
         mode = Mode.AA
@@ -171,6 +174,7 @@ class CarDisplay(
     }
 
     private var aaVideoSize: Pair<Int, Int>? = null
+    private var aaMargin: Pair<Int, Int> = 0 to 0
     private var aaOnSurface: ((Surface?) -> Unit)? = null
     private var aaOnTouch: ((pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit)? = null
 
@@ -199,8 +203,9 @@ class CarDisplay(
 
     private fun aaPresentation(display: Display): Presentation {
         val (w, h) = aaVideoSize!!
+        val (wm, hm) = aaMargin
         return AaCarPresentation(
-            context, display, w, h,
+            context, display, w, h, wm, hm,
             onExit = onExit,
             onSurface = { s -> aaOnSurface?.invoke(s) },
             onTouch = { pointers, actionIndex, action -> aaOnTouch?.invoke(pointers, actionIndex, action) },

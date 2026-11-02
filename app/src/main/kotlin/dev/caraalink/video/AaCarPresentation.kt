@@ -27,6 +27,20 @@ class AaCarPresentation(
     display: Display,
     private val videoWidth: Int,
     private val videoHeight: Int,
+    /**
+     * What we told AA to pad the frame with (see AaServiceDiscovery's
+     * autoMargin()) -- confirmed from mrmees/open-android-auto's own docs
+     * (docs/video-resolution.md, GPL-3.0, facts only): the phone renders
+     * its UI into a CENTERED sub-region of the frame and fills the margin
+     * itself with black, and the head unit is expected to crop that black
+     * out, not just scale the whole (content+black) frame to fit. We were
+     * doing the latter -- scaling the full frame shrinks the actual
+     * content more than necessary, which is the "could be sized bigger"
+     * extra black space reported live. Zero when autoCrop/margins aren't
+     * in use (e.g. FILL mode, which sends no margin at all).
+     */
+    private val widthMargin: Int = 0,
+    private val heightMargin: Int = 0,
     private val onExit: () -> Unit,
     private val onSurface: (Surface?) -> Unit,
     private val onTouch: (pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit,
@@ -91,10 +105,18 @@ class AaCarPresentation(
             // of these two tradeoffs is unavoidable. FIT (min) letterboxes/
             // pillarboxes with nothing cropped; FILL (max) covers the whole
             // panel and relies on `area.clipChildren` to cut off the overflow.
+            // With a margin in use, the real content region is smaller than
+            // the full frame -- scale against THAT so the content (not the
+            // content-plus-AA's-own-black-padding) fills the available
+            // space; the margin portion then extends past the screen edge
+            // and gets clipped by area.clipChildren, cropping the black out
+            // exactly as the protocol doc describes.
+            val contentWidth = (videoWidth - widthMargin).coerceAtLeast(1)
+            val contentHeight = (videoHeight - heightMargin).coerceAtLeast(1)
             val scale = if (dev.caraalink.settings.AppSettings.aaFillMode(context) == dev.caraalink.settings.AppSettings.AaFillMode.FILL) {
-                maxOf(aw.toFloat() / videoWidth, ah.toFloat() / videoHeight)
+                maxOf(aw.toFloat() / contentWidth, ah.toFloat() / contentHeight)
             } else {
-                minOf(aw.toFloat() / videoWidth, ah.toFloat() / videoHeight)
+                minOf(aw.toFloat() / contentWidth, ah.toFloat() / contentHeight)
             }
             val w = (videoWidth * scale).toInt()
             val h = (videoHeight * scale).toInt()
