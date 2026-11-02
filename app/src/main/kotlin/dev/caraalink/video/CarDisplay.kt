@@ -49,13 +49,22 @@ class CarDisplay(
     // portrait canvas instead of the canvas itself expanding. Watching the
     // phone's own (default) display for rotation and rebuilding on change is
     // what picks up the new aspect ratio.
+    // onDisplayChanged fires for ANY property change on the default display
+    // (brightness, refresh rate, etc.), not just rotation -- rebuilding the
+    // presentation on every one of those caused a brief visible flash even
+    // when the phone never actually rotated. Only rebuild when the phone's
+    // own orientation genuinely flipped since the last time we checked.
+    private var lastMirrorPortrait: Boolean? = null
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) {}
         override fun onDisplayRemoved(displayId: Int) {}
         override fun onDisplayChanged(displayId: Int) {
-            if (displayId == Display.DEFAULT_DISPLAY && mode == Mode.MIRROR) {
-                main.post { showCurrent() }
-            }
+            if (displayId != Display.DEFAULT_DISPLAY || mode != Mode.MIRROR) return
+            val phone = phoneSize()
+            val portrait = phone.y >= phone.x
+            if (lastMirrorPortrait != null && lastMirrorPortrait == portrait) return
+            lastMirrorPortrait = portrait
+            main.post { showCurrent() }
         }
     }
 
@@ -188,6 +197,7 @@ class CarDisplay(
 
     private fun mirrorPresentation(display: Display): Presentation {
         val phone = phoneSize()
+        lastMirrorPortrait = phone.y >= phone.x
         // Half resolution is plenty for a 720p-tall car screen and halves encoder load.
         val mw = phone.x / 2
         val mh = phone.y / 2
