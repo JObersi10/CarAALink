@@ -14,7 +14,7 @@ object AppSettings {
     enum class ResolutionMode { AUTO, CUSTOM }
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
     enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
-    enum class CarOrientation { LANDSCAPE, PORTRAIT }
+    enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -32,11 +32,19 @@ object AppSettings {
         return if (w != null && h != null) w to h else null
     }
 
-    /** Shape of the actual head unit panel -- picks which AA resolution set is valid. */
+    /**
+     * Shape of the actual head unit panel -- picks which AA resolution set
+     * is valid. Defaults to AUTO, which goes by what the car itself reported
+     * in its `CONFIG_CAPTURE` ([dev.caraalink.link.CarScreenInfo]); the
+     * manual landscape/portrait options stay for when that hasn't happened
+     * yet (e.g. the on-phone preview before ever connecting to a car) or the
+     * car is wrong/unavailable.
+     */
     fun carOrientation(context: Context): CarOrientation =
-        when (prefs(context).getString("car_orientation", "landscape")) {
+        when (prefs(context).getString("car_orientation", "auto")) {
+            "landscape" -> CarOrientation.LANDSCAPE
             "portrait" -> CarOrientation.PORTRAIT
-            else -> CarOrientation.LANDSCAPE
+            else -> CarOrientation.AUTO
         }
 
     fun frameRate(context: Context): Int =

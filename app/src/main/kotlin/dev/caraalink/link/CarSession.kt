@@ -224,6 +224,7 @@ class CarSession(
 
     override fun onCaptureConfig(config: CaptureConfig) {
         this.config = config
+        CarScreenInfo.update(config.width, config.height)
         encoder?.release()
         val fps = if (config.wantFps > 0) config.wantFps else 30
         // Settings > Video > bitrate used to be decorative -- nothing ever

@@ -5,10 +5,10 @@
         <ListPreference
             android:key="car_orientation"
             android:title="Car screen shape"
-            android:summary="Landscape (most cars) or portrait (e.g. Tesla-style tall screens)"
+            android:summary="Detected from your head unit automatically; override only if it's wrong"
             android:entries="@array/car_orientation_entries"
             android:entryValues="@array/car_orientation_values"
-            android:defaultValue="landscape" />
+            android:defaultValue="auto" />
         <ListPreference
             android:key="video_resolution_mode"
             android:title="Resolution"

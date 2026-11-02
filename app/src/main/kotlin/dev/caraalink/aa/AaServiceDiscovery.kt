@@ -134,7 +134,14 @@ object AaServiceDiscovery {
      * setting falls back to 30.
      */
     fun configFromSettings(context: Context): Config {
-        val portrait = AppSettings.carOrientation(context) == AppSettings.CarOrientation.PORTRAIT
+        val portrait = when (AppSettings.carOrientation(context)) {
+            AppSettings.CarOrientation.PORTRAIT -> true
+            AppSettings.CarOrientation.LANDSCAPE -> false
+            // AUTO: go by what the car itself reported; unknown (no car
+            // connected yet, e.g. the on-phone preview) falls back to
+            // landscape, the overwhelmingly common case.
+            AppSettings.CarOrientation.AUTO -> dev.caraalink.link.CarScreenInfo.isPortrait ?: false
+        }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
         val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
         val resolution = if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
