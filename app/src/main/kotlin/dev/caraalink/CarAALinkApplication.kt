@@ -33,7 +33,12 @@ class CarAALinkApplication : Application() {
         dev.caraalink.diagnostics.CrashMarker.peekLastCrashTrace(this)?.let { trace ->
             logger.log("Previous run crashed -- carried forward from the crash marker:\n$trace")
         }
-        logger.log("CarAALinkApplication.onCreate")
+        // Confirmed necessary live: a log once showed behavior that didn't
+        // match the current source at all, with no way to tell from the log
+        // itself whether that was a real regression or just an install that
+        // silently didn't take (older APK still running). Stamping the
+        // exact build identity at startup removes that ambiguity for good.
+        logger.log("CarAALinkApplication.onCreate build=${dev.caraalink.BuildConfig.GIT_SHA} versionName=${dev.caraalink.BuildConfig.VERSION_NAME}")
     }
 
     /**
