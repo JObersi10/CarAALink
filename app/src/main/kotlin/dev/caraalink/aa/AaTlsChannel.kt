@@ -61,6 +61,7 @@ class AaTlsChannel(
     fun sendChannelSpecific(channelId: Int, messageId: Int, body: ByteArray) =
         sendEncrypted(channelId, AaFraming.MESSAGE_SPECIFIC, messageId, body)
 
+    @Synchronized
     private fun sendEncrypted(channelId: Int, messageType: Int, messageId: Int, body: ByteArray) {
         val plain = ByteArray(2 + body.size)
         AaFraming.putU16(plain, 0, messageId)
@@ -107,12 +108,22 @@ class AaTlsChannel(
             }
             acc.write(plain)
 
-            logger.log(
-                "RX frame ch=${AaFraming.channelName(frame.channelId)} " +
-                    "type=${AaFraming.frameTypeName(frame.frameType)} " +
-                    "${if (frame.isPlain) "PLAIN" else "ENCRYPTED"} " +
-                    "size=${frame.frameSize} encrypted->${plain.size}"
-            )
+            // DiagnosticLogger.log() does a synchronous file open+append per
+            // call. Video (and once active, mic) frames arrive dozens of
+            // times a second; logging every one of them was the actual cause
+            // of the throttled framerate/laggy touch, not phone performance
+            // -- the receive loop couldn't keep up with disk I/O. Keep this
+            // logging for every other (low-volume) channel.
+            if (frame.channelId != AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO &&
+                frame.channelId != AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE
+            ) {
+                logger.log(
+                    "RX frame ch=${AaFraming.channelName(frame.channelId)} " +
+                        "type=${AaFraming.frameTypeName(frame.frameType)} " +
+                        "${if (frame.isPlain) "PLAIN" else "ENCRYPTED"} " +
+                        "size=${frame.frameSize} encrypted->${plain.size}"
+                )
+            }
 
             // A message ends at its LAST frame. Do NOT compare accumulated
             // plaintext length against totalSize on encrypted frames: totalSize
@@ -126,7 +137,14 @@ class AaTlsChannel(
         return Message(channelId, messageType, acc.toByteArray(), frames)
     }
 
-    /** Runs one SSLEngine wrap and returns the TLS record bytes. */
+    /**
+     * `SSLEngine` is not safe for concurrent `wrap`/`unwrap` from different
+     * threads. [receiveMessage] (the session's own worker thread) calls
+     * [unwrap] continuously; [sendTouch]-style sends can come from any
+     * thread (e.g. [AaPreviewActivity]'s UI thread), so both [wrap] and
+     * [unwrap] are synchronized on the same monitor to serialize them.
+     */
+    @Synchronized
     private fun wrap(plain: ByteArray): ByteArray {
         netOut.clear()
         val result = engine.wrap(ByteBuffer.wrap(plain), netOut)
@@ -142,6 +160,7 @@ class AaTlsChannel(
      * Unconsumed input is retained in [pending] across calls — dropping it
      * deadlocks the stream (that bug cost us a live session, see roadmap).
      */
+    @Synchronized
     private fun unwrap(record: ByteArray): ByteArray {
         pending += record
         val out = ByteArrayOutputStream()

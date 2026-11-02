@@ -60,12 +60,22 @@ object AaFraming {
 
     // MediaMessageId.proto (media sink/source channels)
     const val MSG_MEDIA_DATA = 0
+    // Collides numerically with MSG_VERSION_REQUEST (both 1) -- only valid on
+    // a media sink/source channel, never on CONTROL. aasdk's messageHandler()
+    // routes this straight to onMediaIndication(payload) with NO timestamp
+    // prefix (unlike MEDIA_MESSAGE_DATA) -- it's the SPS/PPS codec config,
+    // sent once before the first MEDIA_MESSAGE_DATA frame.
+    const val MSG_MEDIA_CODEC_CONFIG = 1
     const val MSG_MEDIA_SETUP = 32768
     const val MSG_MEDIA_START = 32769
     const val MSG_MEDIA_STOP = 32770
     const val MSG_MEDIA_CONFIG = 32771
     const val MSG_MEDIA_VIDEO_FOCUS_REQUEST = 32775
     const val MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION = 32776
+    const val MSG_MEDIA_MICROPHONE_REQUEST = 32773
+    // Quirk, cited from aasdk's MediaSourceService::sendMicrophoneOpenResponse():
+    // the response re-sends the REQUEST id, there is no separate response id in
+    // practice even though MediaMessageId.proto defines 32774.
 
     // SensorMessageId.proto (sensor channel)
     const val MSG_SENSOR_REQUEST = 32769

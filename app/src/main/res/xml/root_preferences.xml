@@ -43,6 +43,31 @@
             android:defaultValue="true" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Android Auto">
+        <SwitchPreferenceCompat
+            android:key="aa_auto_launch"
+            android:title="Jump straight to Android Auto"
+            android:summary="Skip the CarAALink home screen and start the AA session as soon as the head unit server is up"
+            android:defaultValue="false" />
+        <ListPreference
+            android:key="aa_audio_route"
+            android:title="Mic / speaker for Android Auto"
+            android:summary="Which device handles AA voice audio"
+            android:entries="@array/aa_audio_route_entries"
+            android:entryValues="@array/aa_audio_route_values"
+            android:defaultValue="bt_preferred" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="Appearance">
+        <Preference
+            android:key="car_background"
+            android:title="Car home background"
+            android:summary="Pick a photo for the car home screen" />
+        <Preference
+            android:key="car_background_reset"
+            android:title="Reset car background" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Connection">
         <SwitchPreferenceCompat
             android:key="auto_start_head_unit_server"

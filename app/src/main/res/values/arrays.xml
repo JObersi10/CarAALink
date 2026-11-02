@@ -29,6 +29,15 @@
         <item>48000</item>
     </string-array>
 
+    <string-array name="aa_audio_route_entries">
+        <item>Bluetooth if connected, else phone</item>
+        <item>Always phone mic/speaker</item>
+    </string-array>
+    <string-array name="aa_audio_route_values">
+        <item>bt_preferred</item>
+        <item>device_only</item>
+    </string-array>
+
     <!--
       USB role is CONFIRMED (see claude/roadmap.md): phone is the accessory,
       head unit is the host. This override exists for debugging only — do

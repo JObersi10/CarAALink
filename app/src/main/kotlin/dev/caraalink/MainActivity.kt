@@ -2,11 +2,8 @@ package dev.caraalink
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.widget.Toast
-import dev.caraalink.video.CarHomePresentation
 import android.hardware.usb.UsbAccessory
 import android.hardware.usb.UsbManager
 import android.os.Bundle
@@ -38,7 +35,6 @@ class MainActivity : Activity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val PREF_ONBOARDING_SHOWN = "onboarding_shown"
-        private const val REQUEST_BACKGROUND = 7
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -152,30 +148,6 @@ class MainActivity : Activity() {
         startForegroundService(serviceIntent)
     }
 
-    @Deprecated("Plain Activity; result API not used")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        val uri = data?.data
-        if (requestCode != REQUEST_BACKGROUND || resultCode != RESULT_OK || uri == null) return
-        Thread {
-            // Downscale so a 50 MP photo doesn't blow up memory on every car connect.
-            val ok = runCatching {
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
-                var sample = 1
-                while (bounds.outWidth / sample > 2560 || bounds.outHeight / sample > 2560) sample *= 2
-                val bmp = contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
-                } ?: error("decode failed")
-                CarHomePresentation.backgroundFile(this).outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }
-            }.isSuccess
-            runOnUiThread {
-                Toast.makeText(this, if (ok) "Car background set (shows on next connect)" else "Couldn't read that image", Toast.LENGTH_SHORT).show()
-                render()
-            }
-        }.start()
-    }
-
     // When the app is already running, picking it in the USB chooser delivers
     // the attach intent here instead of onCreate.
     override fun onNewIntent(intent: Intent) {
@@ -227,30 +199,19 @@ class MainActivity : Activity() {
         outlineButton("Developer tools") { open(DeveloperToolsActivity::class.java) }.also { root.addView(it) }
         spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
-        spacer(root)
-        val bgSet = CarHomePresentation.backgroundFile(this).exists()
-        outlineButton(if (bgSet) "Car background: custom (hold to reset)" else "Car background: pick a photo") {
-            startActivityForResult(
-                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
-                REQUEST_BACKGROUND,
-            )
-        }.also { button ->
-            button.setOnLongClickListener {
-                CarHomePresentation.backgroundFile(this).delete()
-                render()
-                true
-            }
-            root.addView(button)
-        }
 
         setContentView(root)
     }
 
     private fun primaryButton(label: String, onClick: () -> Unit) = MaterialButton(this).apply {
         text = label
+        isAllCaps = false // ALL CAPS buttons are what makes flat Material look dated/Holo-era
+        textSize = 16f
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        cornerRadius = dp(12)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+        cornerRadius = dp(18)
+        setPadding(dp(20), 0, dp(20), 0)
+        elevation = dp(2).toFloat()
         setBackgroundColor(Color.parseColor("#36C9C6"))
         setTextColor(Color.parseColor("#0A0F12"))
     }
@@ -261,16 +222,21 @@ class MainActivity : Activity() {
         com.google.android.material.R.attr.materialButtonOutlinedStyle,
     ).apply {
         text = label
+        isAllCaps = false
+        textSize = 16f
         setOnClickListener { onClick() }
-        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        cornerRadius = dp(12)
+        layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+        cornerRadius = dp(18)
+        setPadding(dp(20), 0, dp(20), 0)
         setTextColor(Color.parseColor("#F2F5F7"))
-        strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#36C9C6"))
+        strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#2C3640"))
+        strokeWidth = dp(1)
+        rippleColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#4036C9C6"))
     }
 
     private fun spacer(parent: LinearLayout) {
         parent.addView(android.view.View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14))
         })
     }
 

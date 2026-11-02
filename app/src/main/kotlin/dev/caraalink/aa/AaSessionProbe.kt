@@ -8,6 +8,7 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.security.cert.X509Certificate
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
@@ -84,6 +85,16 @@ class AaSessionProbe(
     @Volatile
     private var activeChannel: AaTlsChannel? = null
 
+    @Volatile
+    private var micCapture: AaMicCapture? = null
+
+    // sendTouch() is called from whatever thread owns the preview UI (not
+    // this session's own worker thread) -- a raw socket write there would
+    // throw NetworkOnMainThreadException on the UI thread. One background
+    // thread serializes all touch sends; AaTlsChannel's send/wrap/unwrap are
+    // themselves @Synchronized so this doesn't race the worker thread's reads.
+    private val touchExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "AaSessionProbe-touch").apply { isDaemon = true } }
+
     /**
      * Sends one touch event on the INPUT_SOURCE channel: `InputReport{
      * timestamp=1, touch_event=3 {pointer_data=1 [{x,y,pointer_id}],
@@ -95,19 +106,21 @@ class AaSessionProbe(
      */
     fun sendTouch(x: Int, y: Int, action: Int, pointerId: Int = 0) {
         val channel = activeChannel ?: return
-        val pointer = AaProtobuf.Writer().int(1, x).int(2, y).int(3, pointerId).build()
-        val touchEvent = AaProtobuf.Writer()
-            .message(1, pointer)
-            .int(2, 0) // action_index
-            .int(3, action)
-            .build()
-        val report = AaProtobuf.Writer()
-            .varint(1, System.nanoTime() / 1000) // timestamp (us)
-            .message(3, touchEvent)
-            .build()
-        runCatching {
-            channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_INPUT_SOURCE, AaFraming.MSG_INPUT_REPORT, report)
-        }.onFailure { Log.w(TAG, "sendTouch failed", it) }
+        touchExecutor.execute {
+            val pointer = AaProtobuf.Writer().int(1, x).int(2, y).int(3, pointerId).build()
+            val touchEvent = AaProtobuf.Writer()
+                .message(1, pointer)
+                .int(2, 0) // action_index
+                .int(3, action)
+                .build()
+            val report = AaProtobuf.Writer()
+                .varint(1, System.nanoTime() / 1000) // timestamp (us)
+                .message(3, touchEvent)
+                .build()
+            runCatching {
+                channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_INPUT_SOURCE, AaFraming.MSG_INPUT_REPORT, report)
+            }.onFailure { Log.w(TAG, "sendTouch failed", it) }
+        }
     }
 
     fun start() {
@@ -132,6 +145,17 @@ class AaSessionProbe(
         if (active === this) active = null
     }
 
+    /**
+     * Set once a real session establishes (service discovery accepted). After
+     * that point `run()` keeps reconnecting indefinitely rather than giving
+     * up after [Config.maxAttempts] -- a dropped link (car power cycle, phone
+     * screen lock, etc.) should auto-recover, not need a manual retrigger.
+     * Bounded retries still apply before the *first* successful session, so a
+     * genuinely absent/dead head-unit-server doesn't get hammered forever.
+     */
+    @Volatile
+    private var everEstablished = false
+
     private fun run() {
         // The gearhead's head unit server appears to service one connection at
         // a time and goes deaf to the next one after a session dies uncleanly
@@ -140,11 +164,16 @@ class AaSessionProbe(
         // reporting a protocol failure that is really a stale-session artefact.
         var attempt = 0
         try {
-            while (running.get() && attempt < config.maxAttempts) {
+            while (running.get() && (everEstablished || attempt < config.maxAttempts)) {
                 attempt++
-                logger.log("--- attempt $attempt/${config.maxAttempts}")
-                if (attemptOnce()) return
-                if (attempt < config.maxAttempts) Thread.sleep(config.retryDelayMs)
+                logger.log(
+                    if (everEstablished) "--- reconnecting (auto-reconnect, session was live before)"
+                    else "--- attempt $attempt/${config.maxAttempts}",
+                )
+                attemptOnce()
+                if (!running.get()) return
+                if (everEstablished) attempt = 0
+                Thread.sleep(config.retryDelayMs)
             }
             logger.log("gave up after $attempt attempt(s)")
         } finally {
@@ -288,6 +317,37 @@ class AaSessionProbe(
                             for (i in 0 until 8) ts = (ts shl 8) or (chBody[i].toLong() and 0xFF)
                             videoSink?.invoke(ts, chBody.copyOfRange(8, chBody.size))
                         }
+                    } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
+                        // SPS/PPS, no timestamp prefix (unlike MEDIA_MESSAGE_DATA) --
+                        // feed as-is, timestamp 0, ahead of the IDR frame that follows it.
+                        logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_VIDEO (${chBody.size}B)")
+                        if (chBody.isNotEmpty()) videoSink?.invoke(0L, chBody)
+                    } else if (chId == AaFraming.MSG_MEDIA_MICROPHONE_REQUEST &&
+                        message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE
+                    ) {
+                        // MicrophoneRequest{open=1 bool}. Reply MicrophoneResponse{status=1,
+                        // session_id=2} on the SAME id (aasdk quirk, see AaFraming), then
+                        // start/stop capture -- openauto's onMediaSourceOpenRequest()/
+                        // onMediaSourceOpenSuccess() flow.
+                        val open = AaProtobuf.parse(chBody).firstOrNull { it.number == 1 }?.varint == 1L
+                        logger.log("RX MICROPHONE_REQUEST open=$open")
+                        val response = AaProtobuf.Writer().int(1, 0).int(2, 0).build() // status=SUCCESS, session_id=0
+                        channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_MICROPHONE_REQUEST, response)
+                        if (open) {
+                            micCapture?.stop()
+                            micCapture = AaMicCapture(context) { pcm ->
+                                val payload = ByteArray(8 + pcm.size)
+                                var ts = System.nanoTime() / 1000
+                                for (i in 7 downTo 0) { payload[i] = (ts and 0xFF).toByte(); ts = ts shr 8 }
+                                pcm.copyInto(payload, 8)
+                                runCatching {
+                                    channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_DATA, payload)
+                                }
+                            }.also { it.start() }
+                        } else {
+                            micCapture?.stop()
+                            micCapture = null
+                        }
                     } else if (chId == AaFraming.MSG_SENSOR_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_SENSOR) {
                         // SensorRequest{type=1, min_update_period=2}. Reply
                         // SensorStartResponseMessage{status=0} on
@@ -308,6 +368,7 @@ class AaSessionProbe(
                     AaFraming.MSG_SERVICE_DISCOVERY_REQUEST -> {
                         decodeDiscoveryRequest(body)
                         logger.log("rung 3 reached -- phone asked for service discovery")
+                        everEstablished = true
                         val response = AaServiceDiscovery.build()
                         logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe()})")
                         logger.logBytes("TXBODY", response, response.size)
@@ -333,6 +394,8 @@ class AaSessionProbe(
             false
         } finally {
             activeChannel = null
+            micCapture?.stop()
+            micCapture = null
             runCatching { socket?.close() }
             socket = null
         }

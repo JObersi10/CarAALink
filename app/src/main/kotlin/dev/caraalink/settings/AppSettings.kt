@@ -13,6 +13,7 @@ object AppSettings {
 
     enum class ResolutionMode { AUTO, CUSTOM }
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
+    enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -61,4 +62,13 @@ object AppSettings {
 
     fun debugOverlay(context: Context): Boolean =
         prefs(context).getBoolean("debug_overlay", false)
+
+    fun aaAutoLaunch(context: Context): Boolean =
+        prefs(context).getBoolean("aa_auto_launch", false)
+
+    fun aaAudioRoute(context: Context): AaAudioRoute =
+        when (prefs(context).getString("aa_audio_route", "bt_preferred")) {
+            "device_only" -> AaAudioRoute.DEVICE_ONLY
+            else -> AaAudioRoute.BT_PREFERRED
+        }
 }
