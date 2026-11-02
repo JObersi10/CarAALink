@@ -9,6 +9,15 @@
         <item>custom</item>
     </string-array>
 
+    <string-array name="car_orientation_entries">
+        <item>Landscape (wide screen)</item>
+        <item>Portrait (tall screen)</item>
+    </string-array>
+    <string-array name="car_orientation_values">
+        <item>landscape</item>
+        <item>portrait</item>
+    </string-array>
+
     <string-array name="frame_rate_entries">
         <item>24 fps</item>
         <item>30 fps</item>

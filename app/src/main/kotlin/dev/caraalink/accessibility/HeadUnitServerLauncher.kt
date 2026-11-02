@@ -1,11 +1,15 @@
 package dev.caraalink.accessibility
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import android.provider.Settings
+import androidx.core.app.NotificationCompat
 import androidx.preference.PreferenceManager
 import android.widget.Toast
 
@@ -27,9 +31,19 @@ object HeadUnitServerLauncher {
     private const val ANDROID_AUTO_PACKAGE = "com.google.android.projection.gearhead"
     private const val PREF_VERSION_TAP_GUIDED = "head_unit_server_version_guided"
 
+    /**
+     * Tries to auto-start AA's head unit server via the accessibility
+     * service. If the service isn't enabled, this used to open Accessibility
+     * Settings for the user every time the "Android Auto" tile was tapped --
+     * which is disruptive when tapping that tile from the car (and wrong:
+     * the user may simply not want the accessibility auto-start and would
+     * rather just be told to open Android Auto themselves). Now it only
+     * attempts the accessibility path when that service is already enabled;
+     * otherwise it just notifies, with no settings screen forced open.
+     */
     fun start(context: Context) {
         if (!isAccessibilityServiceEnabled(context)) {
-            promptEnableAccessibilityService(context)
+            notifyOpenAndroidAutoManually(context)
             return
         }
 
@@ -104,14 +118,36 @@ object HeadUnitServerLauncher {
         return enabled.split(':').any { ComponentName.unflattenFromString(it) == expected }
     }
 
-    private fun promptEnableAccessibilityService(context: Context) {
-        Toast.makeText(
-            context,
-            "Enable the CarAALink accessibility service, then tap Start head unit server again",
-            Toast.LENGTH_LONG
-        ).show()
-        context.startActivity(
-            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        )
+    /**
+     * No accessibility service means we can't flip AA's developer-mode
+     * switch ourselves -- so just tell the user to open Android Auto, rather
+     * than forcing Accessibility Settings open on their behalf. Posts a
+     * notification (not just a Toast) since this fires from a background
+     * check and the user may not be looking at the phone when it does.
+     */
+    private fun notifyOpenAndroidAutoManually(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_ID, "Android Auto", NotificationManager.IMPORTANCE_HIGH)
+            )
+        }
+        val openAa = context.packageManager.getLaunchIntentForPackage(ANDROID_AUTO_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val contentIntent = openAa?.let {
+            PendingIntent.getActivity(context, 0, it, PendingIntent.FLAG_IMMUTABLE)
+        }
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(dev.caraalink.R.drawable.ic_tile_android_auto)
+            .setContentTitle("Open Android Auto to connect")
+            .setContentText("Tap to open Android Auto on your phone, then tap the car tile again")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .apply { if (contentIntent != null) setContentIntent(contentIntent) }
+            .build()
+        manager.notify(NOTIFICATION_ID, notification)
     }
+
+    private const val CHANNEL_ID = "aa_manual_open"
+    private const val NOTIFICATION_ID = 3
 }

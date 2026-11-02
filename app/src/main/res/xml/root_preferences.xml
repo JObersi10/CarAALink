@@ -3,6 +3,13 @@
 
     <PreferenceCategory android:title="Video">
         <ListPreference
+            android:key="car_orientation"
+            android:title="Car screen shape"
+            android:summary="Landscape (most cars) or portrait (e.g. Tesla-style tall screens)"
+            android:entries="@array/car_orientation_entries"
+            android:entryValues="@array/car_orientation_values"
+            android:defaultValue="landscape" />
+        <ListPreference
             android:key="video_resolution_mode"
             android:title="Resolution"
             android:summary="Match the head unit's reported display, or force a size"

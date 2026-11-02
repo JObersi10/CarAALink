@@ -14,6 +14,7 @@ object AppSettings {
     enum class ResolutionMode { AUTO, CUSTOM }
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
     enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
+    enum class CarOrientation { LANDSCAPE, PORTRAIT }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -30,6 +31,13 @@ object AppSettings {
         val h = prefs(context).getString("video_resolution_custom_height", null)?.toIntOrNull()
         return if (w != null && h != null) w to h else null
     }
+
+    /** Shape of the actual head unit panel -- picks which AA resolution set is valid. */
+    fun carOrientation(context: Context): CarOrientation =
+        when (prefs(context).getString("car_orientation", "landscape")) {
+            "portrait" -> CarOrientation.PORTRAIT
+            else -> CarOrientation.LANDSCAPE
+        }
 
     fun frameRate(context: Context): Int =
         prefs(context).getString("video_frame_rate", "30")?.toIntOrNull() ?: 30

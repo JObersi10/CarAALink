@@ -45,13 +45,24 @@ import dev.caraalink.settings.AppSettings
  */
 object AaServiceDiscovery {
 
-    /** `VideoCodecResolutionType` — only the values AA actually defines. */
+    /**
+     * `VideoCodecResolutionType` — only the values AA actually defines
+     * (`VideoCodecResolutionType.proto`, confirmed in aasdk). The portrait
+     * variants (6-9) exist for head units whose panel is taller than it is
+     * wide (e.g. a Tesla-style portrait screen) -- these were previously
+     * documented above but never actually implemented, so `configFromSettings`
+     * could only ever pick a landscape resolution even for a portrait car.
+     */
     enum class AaResolution(val protocolValue: Int, val width: Int, val height: Int) {
         R800X480(1, 800, 480),
         R1280X720(2, 1280, 720),
         R1920X1080(3, 1920, 1080),
         R2560X1440(4, 2560, 1440),
         R3840X2160(5, 3840, 2160),
+        R720X1280(6, 720, 1280),
+        R1080X1920(7, 1080, 1920),
+        R1440X2560(8, 1440, 2560),
+        R2160X3840(9, 2160, 3840),
     }
 
     /** `VideoFrameRateType` */
@@ -109,23 +120,40 @@ object AaServiceDiscovery {
     )
 
     /**
-     * Builds [Config] from Settings > Video. AA only ever offers the 5 fixed
+     * Builds [Config] from Settings > Video. AA only ever offers the 9 fixed
      * [AaResolution] values (see the class doc) -- there is no way to
      * request an arbitrary custom size from the phone, so "Custom
-     * width/height" picks whichever of the 5 is closest by pixel count
-     * rather than being sent verbatim. Frame rate only has two real values
-     * (30/60); anything else in the setting falls back to 30.
+     * width/height" picks whichever is closest by pixel count *among
+     * resolutions matching the car's orientation setting*, rather than being
+     * sent verbatim. A portrait car asking for a landscape resolution (or
+     * vice versa) is what made the old "native res" option look wrong/huge
+     * on a portrait head unit -- AA has separate portrait codec-resolution
+     * values (6-9) and picking from the landscape set regardless of the
+     * car's actual shape sent the phone a sideways frame every time.
+     * Frame rate only has two real values (30/60); anything else in the
+     * setting falls back to 30.
      */
     fun configFromSettings(context: Context): Config {
+        val portrait = AppSettings.carOrientation(context) == AppSettings.CarOrientation.PORTRAIT
+        val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
+        val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
         val resolution = if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
-            val (w, h) = AppSettings.customResolution(context) ?: (1920 to 1080)
-            AaResolution.values().minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: AaResolution.R1920X1080
+            val (w, h) = AppSettings.customResolution(context) ?: (defaultRes.width to defaultRes.height)
+            candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
         } else {
-            AaResolution.R1920X1080
+            defaultRes
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
         val density = AppSettings.videoDpi(context, resolution.width, resolution.height)
-        return Config(resolution = resolution, frameRate = frameRate, density = density)
+        // Advertise the touchscreen at the same size as the video we're
+        // actually sending -- AaCarPresentation/AaPreviewActivity map touch
+        // events into resolution.width/height, so a mismatched advertised
+        // touch size (the old hardcoded 1920x720 default) would have the
+        // phone interpreting touch in the wrong coordinate space.
+        return Config(
+            resolution = resolution, frameRate = frameRate, density = density,
+            touchWidth = resolution.width, touchHeight = resolution.height,
+        )
     }
 
     /**
