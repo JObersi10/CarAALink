@@ -157,15 +157,50 @@ object AaServiceDiscovery {
         // events into resolution.width/height, so a mismatched advertised
         // touch size (the old hardcoded 1920x720 default) would have the
         // phone interpreting touch in the wrong coordinate space.
+        val (widthMargin, heightMargin) = if (AppSettings.aaAutoCrop(context)) {
+            autoMargin(resolution, dev.caraalink.link.CarScreenInfo.width, dev.caraalink.link.CarScreenInfo.height)
+        } else 0 to 0
         return Config(
             resolution = resolution, frameRate = frameRate, density = density,
             touchWidth = resolution.width, touchHeight = resolution.height,
-            // Debug-only probe (Settings > Debug > "Test height_margin") for
-            // the open per-side-vs-total question in claude/roadmap.md --
-            // normally 0.
-            heightMargin = AppSettings.aaTestMarginHeight(context),
+            widthMargin = widthMargin, heightMargin = heightMargin,
         )
     }
+
+    /**
+     * Crops [resolution]'s content area down to the car's real aspect ratio,
+     * so AA letterboxes/pillarboxes to the *exact* shape the car wants
+     * instead of a generic 16:9. Which axis gets cropped follows directly
+     * from comparing aspect ratios -- that part is just geometry. What's
+     * NOT confirmed (claude/roadmap.md) is whether AA's `width_margin`/
+     * `height_margin` wire fields mean "total pixels to remove" (this
+     * function's assumption) or "pixels to remove per side" (which would
+     * make the real crop twice as deep as computed here). Wrong in the
+     * worst case means an imperfect crop, never a crash -- this replaces
+     * the old manual "Test height_margin" debug probe now that the
+     * direction/magnitude is at least derived from real numbers instead of
+     * a hand-typed guess, but the per-side-vs-total question is still open.
+     */
+    fun autoMargin(resolution: AaResolution, carWidth: Int, carHeight: Int): Pair<Int, Int> {
+        if (carWidth <= 0 || carHeight <= 0) return 0 to 0
+        val carAspect = carWidth.toFloat() / carHeight
+        val resAspect = resolution.width.toFloat() / resolution.height
+        return when {
+            resAspect > carAspect + ASPECT_EPSILON -> {
+                // Video is wider than the car's panel -- crop width.
+                val desiredWidth = (resolution.height * carAspect).toInt()
+                (resolution.width - desiredWidth).coerceAtLeast(0) to 0
+            }
+            resAspect < carAspect - ASPECT_EPSILON -> {
+                // Video is taller/narrower than the car's panel -- crop height.
+                val desiredHeight = (resolution.width / carAspect).toInt()
+                0 to (resolution.height - desiredHeight).coerceAtLeast(0)
+            }
+            else -> 0 to 0 // already a near-exact aspect match, nothing to crop
+        }
+    }
+
+    private const val ASPECT_EPSILON = 0.01f
 
     /**
      * Serialized `ServiceDiscoveryResponse`. Deliberately minimal: a video

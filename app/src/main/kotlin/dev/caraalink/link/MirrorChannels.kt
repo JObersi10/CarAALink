@@ -44,15 +44,30 @@ data class CaptureConfig(
     }
 }
 
+/**
+ * What a mirror channel needs from an ADB stream -- just enough to be
+ * implemented by a fake in a pure-JVM test, instead of requiring a real
+ * [AdbTransport] (and the USB accessory under it). [AdbTransport.Stream] is
+ * the real, production implementation; `FakeStream` in the test sources is
+ * the headless one (see MirrorChannelsTest.kt).
+ */
+interface MirrorStream {
+    val localId: Int
+    val closed: Boolean
+    fun write(data: ByteArray)
+    fun backlogBytes(): Int
+    fun clearBacklog()
+}
+
 /** Callbacks from the mirror channels into [CarSession]. */
 interface MirrorHost {
     fun onCaptureConfig(config: CaptureConfig)
     fun onStartVideo(): Boolean
     fun onTouch(action: Int, x: Int, y: Int)
     fun onKey(key: Int)
-    fun onDataStreamOpen(stream: AdbTransport.Stream)
-    fun onDataStreamClosed(stream: AdbTransport.Stream)
-    fun onFrameRequested(stream: AdbTransport.Stream)
+    fun onDataStreamOpen(stream: MirrorStream)
+    fun onDataStreamClosed(stream: MirrorStream)
+    fun onFrameRequested(stream: MirrorStream)
 }
 
 private fun req(type: Int, body: ByteArray?): ByteArray {
@@ -88,20 +103,20 @@ class MirrorControlChannel(
 
     private val framers = HashMap<Int, ReqFramer>()
 
-    override fun onOpen(stream: AdbTransport.Stream) {
+    override fun onOpen(stream: MirrorStream) {
         framers[stream.localId] = ReqFramer()
     }
 
-    override fun onClose(stream: AdbTransport.Stream) {
+    override fun onClose(stream: MirrorStream) {
         framers.remove(stream.localId)
     }
 
-    override fun onData(stream: AdbTransport.Stream, data: ByteArray) {
+    override fun onData(stream: MirrorStream, data: ByteArray) {
         val framer = framers.getOrPut(stream.localId) { ReqFramer() }
         framer.feed(data) { type, body -> handle(stream, type, body) }
     }
 
-    private fun handle(stream: AdbTransport.Stream, type: Int, body: ByteArray) {
+    private fun handle(stream: MirrorStream, type: Int, body: ByteArray) {
         // Protocol sniffer (Settings > Debug > "Verbose protocol logging"):
         // normally heartbeat/screen-event are too frequent to log, but when
         // the sniffer is on, log every message with a hex preview.
@@ -165,18 +180,18 @@ class MirrorDataChannel(
 
     private val framers = HashMap<Int, ReqFramer>()
 
-    override fun onOpen(stream: AdbTransport.Stream) {
+    override fun onOpen(stream: MirrorStream) {
         framers[stream.localId] = ReqFramer()
         logger.log("MIRROR data stream open (local ${stream.localId})")
         host.onDataStreamOpen(stream)
     }
 
-    override fun onClose(stream: AdbTransport.Stream) {
+    override fun onClose(stream: MirrorStream) {
         framers.remove(stream.localId)
         host.onDataStreamClosed(stream)
     }
 
-    override fun onData(stream: AdbTransport.Stream, data: ByteArray) {
+    override fun onData(stream: MirrorStream, data: ByteArray) {
         framers.getOrPut(stream.localId) { ReqFramer() }.feed(data) { type, _ ->
             if (type == REQ_DATA_NEXT) host.onFrameRequested(stream) else stream.write(req(0x7F02, null))
         }

@@ -778,38 +778,41 @@ hex dump is already wired to capture it.
   requires the caller to itself be an enabled `NotificationListenerService`
   -- the service never reads notification content, only holds that
   permission.
-- **AA-to-CarbitLink bridge.** Pipe the AA receiver's decoded H.264 frames
-  directly into the CarbitLink video encoder/transport pipeline (today the
+- **AA-to-CarbitLink bridge -- CORRECTION 2026-11-02: already shipped,
+  since the day AA support landed. This bullet previously said "today the
   AA path only ever reaches its own `AaCarPresentation`/`AaPreviewActivity`
-  surfaces, never the actual CarbitLink wire), and map touch events coming
-  in from CarbitLink back into the AA input channel. This is the real "AA
-  session actually appears over CarbitLink on a non-CarAALink head unit"
-  milestone -- not scoped yet. Two designs, elaborated 2026-11-02:
-  - **(a) Decode + re-encode (recommended starting point).** Render AA's
-    decoded frames onto the *same* `Surface` `CarVideoEncoder` already
-    reads from (instead of `AaCarPresentation`'s own TextureView), so the
-    already-confirmed mirror pipeline (`CarVideoEncoder` ->
-    `MirrorDataChannel`) carries it to the head unit unchanged. Costs a
-    double transcode (AA's H.264 decoded, then re-encoded) -- added
-    latency and a quality/bitrate hit -- but touches zero unconfirmed
-    protocol surface, since it's just pointing our existing, working
-    encoder at a different source of frames.
-  - **(b) Direct NAL passthrough (later optimization, real risk).** Both
-    AA's `MEDIA_MESSAGE_DATA` and `MirrorDataChannel.frame()` carry raw
-    H.264 Annex-B bytes, so in principle AA's NALs could go straight into
-    `MirrorDataChannel.frame()` with no local decode/re-encode at all --
-    *if* the negotiated AA resolution matches the head unit's own
-    `CaptureConfig.encodeWidth/encodeHeight` and the head unit's hardware
-    decoder accepts whatever H.264 profile/level AA's own encoder chose
-    (not necessarily the Baseline profile `CarVideoEncoder` requests --
-    we don't control AA's encoder settings). Don't attempt this until (a)
-    is proven working and only if (a)'s extra latency is measured (via the
-    new perf HUD) to actually matter.
-  - Touch direction is the easy half: `CarSession`'s existing
-    `onTouch`/`display.touch()` path already demonstrates mapping car
-    coordinates into a target's space; this just needs to also call
-    `AaSessionProbe.active?.sendTouch(...)` scaled into
-    `config.resolution` instead of (or alongside) the mirror dispatch.
+  surfaces, never the actual CarbitLink wire" -- that's wrong, caught by
+  actually re-reading `CarDisplay`/`CarSession` end to end rather than
+  reasoning from the class names.** Design (a) below isn't a "starting
+  point" to build -- it's exactly the architecture that's already running:
+  - `CarSession.onCaptureConfig()` creates ONE `CarVideoEncoder` per car
+    connection and calls `display.attach(enc.inputSurface, ...)`, which
+    `CarDisplay` uses as the backing `Surface` of its one private
+    `VirtualDisplay` (`carDisplay`).
+  - `CarDisplay.showCurrent()` puts the Home, Mirror, *or* AA
+    `Presentation` on that *same* `carDisplay.display` depending on mode
+    -- there's only ever one virtual display, one encoder, one
+    `MirrorDataChannel` (tcp:10920) feeding the real head unit, no matter
+    which of the three is showing.
+  - So when AA is active, `AaCarPresentation`'s `TextureView` (fed by
+    `AaVideoDecoder` decoding the phone's real AA session) is rendered
+    *inside* that same virtual display, which the same `CarVideoEncoder`
+    captures and sends to the head unit over CarbitLink exactly like the
+    phone-mirror and home-screen content do. The "bridge" is just this
+    app's normal one-encoder-per-car design, not a separate thing to wire
+    up -- there was never a second, AA-only rendering path that bypassed
+    the car.
+  - Touch already flows the other way too: `CarSession.onTouch()`
+    (CarbitLink -> us) and `AaCarPresentation`'s own touch listener ->
+    `AaSessionProbe.active?.sendTouch(...)` (us -> AA) are both live
+    already; AA mode just uses the latter instead of `display.touch()`.
+  - What design (b) (direct NAL passthrough, skipping the decode+re-encode
+    double transcode) would still be a real, unscoped optimization for --
+    only worth it if the perf HUD shows the existing decode-then-reencode
+    latency actually matters in practice. Not attempted: needs the AA
+    resolution to exactly match `CaptureConfig.encodeWidth/encodeHeight`
+    and the head unit's decoder to accept whatever profile/level AA's own
+    encoder picked, neither confirmed.
 - **AA audio -> CarbitLink's own USB audio endpoint -- still blocked,
   practical workaround SHIPPED 2026-11-02.** CarbitLink's wire protocol
   still doesn't carry audio in any path (mirroring included) --
@@ -841,10 +844,35 @@ hex dump is already wired to capture it.
   *every* video/audio `MEDIA_MESSAGE_DATA` frame through
   `DiagnosticLogger`'s synchronous file write -- now only logged when the
   sniffer toggle is on, off by default.
-- **Headless testing harness.** Mock-USB-device tests that simulate the
-  CarbitLink handshake/state machine without physical car hardware, so
-  regressions in the handshake logic can be caught without a live car. Not
-  scoped, but elaborated 2026-11-02:
+- **Headless testing harness -- `MirrorStream` extraction + channel tests
+  SHIPPED 2026-11-02.** Mock-USB-device tests that simulate the CarbitLink
+  handshake/state machine without physical car hardware, so regressions in
+  the handshake logic can be caught without a live car.
+  - **Done:** `MirrorStream` is now a top-level interface (`localId`,
+    `closed`, `write`/`backlogBytes`/`clearBacklog`) in `MirrorChannels.kt`;
+    `AdbTransport.Stream` implements it, and `MirrorHost`/
+    `AdbTransport.StreamHandler`/`MirrorControlChannel`/`MirrorDataChannel`/
+    `PxcChannel`/`CarSession` all take `MirrorStream` instead of the
+    concrete `AdbTransport.Stream` -- no behavior change, just the seam
+    this section asked for. `app/src/test/kotlin/dev/caraalink/link/
+    FakeStream.kt` + `FakeMirrorHost.kt` are the headless doubles;
+    `MirrorControlChannelTest.kt`/`MirrorDataChannelTest.kt` drive real
+    wire bytes through the real `MirrorControlChannel`/`MirrorDataChannel`
+    classes (CONFIG_CAPTURE parsing + reply bytes, SCREEN_EVENT ->
+    touch/key dispatch, DATA_NEXT -> frame-request, unknown-type refusal)
+    with no `AdbTransport`/USB/device needed. `AaServiceDiscoveryTest.kt`
+    covers the new margin-autodetect geometry the same way. Added
+    `testImplementation("org.mockito:mockito-core:5.11.0")` just to stub
+    `Context.getExternalFilesDir()` for `DiagnosticLogger` in these tests
+    -- JVM-only mocking, no Robolectric/instrumentation needed.
+  - **Not done (same reasoning as before, still correct):** `CarSession`
+    itself still isn't unit-testable -- it directly owns `CarVideoEncoder`
+    (`MediaCodec`), `CarDisplay` (`Presentation`/`VirtualDisplay`), and
+    other real Android framework classes with no interface seam, so its
+    touch-scaling/frame-queue/starvation-watchdog logic is still only
+    exercised live. Pulling that apart would be a real refactor of
+    confirmed-working code, not done here.
+  - Original plan, not yet started, elaborated 2026-11-02:
   - Neither `AdbTransport`'s stream framing nor `AaSessionProbe`'s TLS/
     protobuf logic touches Android APIs in their core parsing (just
     `java.io`/`java.net`/`javax.net.ssl`/the hand-rolled `AaProtobuf`), so
@@ -1060,6 +1088,27 @@ could do better than the app's own Fit/Fill scaling:
   (request a deliberately large, easily visually distinguishable margin
   value and see exactly where AA puts the real content in the decoded
   frame) before it's implemented, not a guess either way.
+
+#### SHIPPED (2026-11-02): auto-crop, with the semantics question still open
+
+Replaced the old manual "Test height_margin" debug probe with
+`AaServiceDiscovery.autoMargin()` (pure function, headless-tested in
+`AaServiceDiscoveryTest.kt`): it computes `width_margin`/`height_margin`
+automatically from this car's real reported screen size
+(`CarScreenInfo.width`/`height`, from its own `CONFIG_CAPTURE`) vs. the
+chosen AA resolution's aspect ratio, so the inner content rect's aspect
+ratio matches the car's panel exactly (no more manual guessing of a pixel
+value). Gated by `Settings > Android Auto > "Auto-crop to car screen
+shape"` (`AppSettings.aaAutoCrop`, default on).
+
+**Still UNKNOWN, per the per-side-vs-total question above:** this
+function assumes margin is a *total* inset (content size = resolution −
+margin), not confirmed. If the next live test shows the real content
+rect is off by roughly 2x in the cropped dimension, that's the per-side
+interpretation instead — the fix is multiplying the margin sent on the
+wire by 2 in `configFromSettings()`, not touching `autoMargin()`'s own
+geometry. Worst case either way is a wrong-looking crop, not a crash, and
+the setting can be turned off to fall back to plain Fit/Fill.
 
 ### Feasibility check (2026-11-02), four more requested items
 

@@ -5,6 +5,57 @@ release made -- owner publishes those manually). All work now continues on
 branch `aa-post-v1` (PR #18, open against `main`). See `roadmap.md` for full
 cited CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
 
+## LATEST (2026-11-02, PR #18 in progress) -- headless harness, margin autodetect, bridge roadmap correction
+
+Same PR #18 session, same day. Picked up headless-testing-harness work
+(the owner wanted it so margin-autodetect and the decode-thread fix could
+be checked without a live car) plus a real finding while re-checking the
+"AA-to-CarbitLink bridge" roadmap item.
+
+- **`MirrorStream` interface extracted** (`MirrorChannels.kt`):
+  `AdbTransport.Stream` now implements it; `MirrorHost`/
+  `AdbTransport.StreamHandler`/`MirrorControlChannel`/`MirrorDataChannel`/
+  `PxcChannel`/`CarSession` all take the interface instead of the concrete
+  class. No behavior change -- purely the testability seam
+  `roadmap.md`'s headless-harness section called for.
+- **Headless tests added**, no device/USB needed: `FakeStream`/
+  `FakeMirrorHost` + `MirrorControlChannelTest`/`MirrorDataChannelTest`
+  (CONFIG_CAPTURE, SCREEN_EVENT touch/key, DATA_NEXT frame pull, unknown-
+  type refusal, all real wire bytes through the real channel classes) and
+  `AaServiceDiscoveryTest` for the new margin math below. Added
+  `mockito-core` as a test-only dep (JVM mocking of `Context` for
+  `DiagnosticLogger`, no Robolectric).
+- **Margin autodetect shipped**, replacing the old manual "Test
+  height_margin" debug slider: `AaServiceDiscovery.autoMargin()` computes
+  `width_margin`/`height_margin` from the car's real screen size
+  (`CarScreenInfo` now also stores width/height, not just
+  portrait/landscape) vs. the chosen AA resolution's aspect ratio.
+  Gated by Settings > Android Auto > "Auto-crop to car screen shape"
+  (default on). **Still open:** whether AA's margin field is a per-side or
+  total inset -- unchanged from before, still needs a live test; see the
+  new "SHIPPED" note in `roadmap.md`'s aspect-ratio section for exactly
+  what to look for and how to fix it if the direction's wrong.
+- **Roadmap correction on the "AA-to-CarbitLink bridge" item**: it was
+  filed as "not scoped, not started," which is wrong -- re-reading
+  `CarDisplay`/`CarSession` end to end (not just the class names) shows
+  AA content already renders onto the *same* virtual display/encoder that
+  feeds the real CarbitLink wire to the head unit, same as Home/Mirror
+  mode. There's one encoder per car connection, not three. This was true
+  since AA support first landed; the roadmap entry was simply never
+  updated to say so. See `roadmap.md`'s "Future ideas" section, same
+  bullet, for the full correction and what (if anything) is still a real
+  unscoped optimization (NAL passthrough, skipping the decode+re-encode
+  step -- only worth it if the perf HUD shows it matters).
+- Didn't touch the AA bitrate idea from the live-log complaint ("maybe cut
+  down video bitrate on AA?") -- checked `AaServiceDiscovery.build()`'s
+  `VideoConfiguration` fields and there's no bitrate field AA exposes to
+  the head unit at all (only resolution/frame_rate/margins/density), so
+  there's no protocol-level knob to add; the existing resolution/frame-rate
+  settings are the only real levers, and the decode-thread fix from the
+  previous entry is still the main lag fix in flight.
+- Pushed to `aa-post-v1`; CI run started (background watch), not confirmed
+  green at write-time -- check before telling the owner it's ready to test.
+
 ## LATEST (2026-11-02, PR #18 in progress) -- live-log diagnosis, decode-thread fix, aspect-ratio research
 
 PR #17 merged. Picked up PR #18 (`aa-post-v1` branch) with a real WhatsApp-

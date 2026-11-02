@@ -49,7 +49,7 @@ class CarSession(
 
 
     private val frameLock = Any()
-    @Volatile private var dataStream: AdbTransport.Stream? = null
+    @Volatile private var dataStream: MirrorStream? = null
     private var codecConfig: ByteArray? = null
     private var configSent = false
     private val pullQueue = ArrayDeque<ByteArray>()
@@ -313,7 +313,7 @@ class CarSession(
         }
     }
 
-    override fun onDataStreamOpen(stream: AdbTransport.Stream) {
+    override fun onDataStreamOpen(stream: MirrorStream) {
         synchronized(frameLock) {
             dataStream = stream
             configSent = false
@@ -326,12 +326,12 @@ class CarSession(
         encoder?.requestKeyFrame()
     }
 
-    override fun onDataStreamClosed(stream: AdbTransport.Stream) {
+    override fun onDataStreamClosed(stream: MirrorStream) {
         synchronized(frameLock) { if (dataStream === stream) dataStream = null }
         logger.log("data stream closed; requests=$frameRequests sent=$framesSent encoded=$framesEncoded")
     }
 
-    override fun onFrameRequested(stream: AdbTransport.Stream) {
+    override fun onFrameRequested(stream: MirrorStream) {
         frameRequests++
         if (frameRequests <= 3 || frameRequests % 100 == 0L) logger.log("frame request #$frameRequests (queued=${pullQueue.size})")
         synchronized(frameLock) {
@@ -351,7 +351,7 @@ class CarSession(
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
-    private fun scheduleStarvationCheck(stream: AdbTransport.Stream) {
+    private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
             synchronized(frameLock) {
                 val key = lastKeyFrame
@@ -364,7 +364,7 @@ class CarSession(
     }
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
-    private fun sendFrameLocked(stream: AdbTransport.Stream, frame: ByteArray) {
+    private fun sendFrameLocked(stream: MirrorStream, frame: ByteArray) {
         val cfg = codecConfig
         if (!configSent && cfg != null) {
             stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))

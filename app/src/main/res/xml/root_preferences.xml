@@ -85,6 +85,11 @@
             android:entries="@array/aa_audio_route_entries"
             android:entryValues="@array/aa_audio_route_values"
             android:defaultValue="bt_preferred" />
+        <SwitchPreferenceCompat
+            android:key="aa_auto_crop"
+            android:title="Auto-crop to car screen shape"
+            android:summary="Computes the AA video crop automatically from this car's real screen size, instead of a plain letterbox. Turn off if the picture looks worse than Fit/Fill alone."
+            android:defaultValue="true" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Appearance">
@@ -122,12 +127,6 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Debug">
-        <EditTextPreference
-            android:key="aa_test_margin_height"
-            android:title="Test height_margin (px)"
-            android:summary="Probe for roadmap.md's open per-side-vs-total question -- set something big and obvious (e.g. 300), then look at where AA's real content lands in Car Preview. Leave at 0 normally."
-            android:inputType="number"
-            android:defaultValue="0" />
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"
             android:title="Protocol sniffer"

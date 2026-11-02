@@ -96,13 +96,16 @@ object AppSettings {
         prefs(context).getBoolean("debug_overlay", false)
 
     /**
-     * Debug-only probe for the open question in claude/roadmap.md: is AA's
-     * `height_margin` a per-side or total inset? Deliberately oversized and
-     * easy to spot visually -- not meant to be left on, just to answer that
-     * question from what the owner sees on the next live test.
+     * When on (default), `AaServiceDiscovery.configFromSettings()` computes
+     * `width_margin`/`height_margin` automatically from the car's real
+     * reported screen size (CarScreenInfo) vs. the chosen AA resolution's
+     * aspect ratio, instead of leaving it at 0 (plain letterbox/pillarbox)
+     * or requiring a manually-typed debug value. The per-side-vs-total
+     * semantics of the wire field are still unconfirmed (claude/roadmap.md)
+     * -- turn this off if a live test shows the crop going the wrong way.
      */
-    fun aaTestMarginHeight(context: Context): Int =
-        prefs(context).getString("aa_test_margin_height", "0")?.toIntOrNull() ?: 0
+    fun aaAutoCrop(context: Context): Boolean =
+        prefs(context).getBoolean("aa_auto_crop", true)
 
     fun aaAutoLaunch(context: Context): Boolean =
         prefs(context).getBoolean("aa_auto_launch", false)

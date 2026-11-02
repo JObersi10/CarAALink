@@ -24,17 +24,17 @@ class PxcChannel(
     private val buffers = HashMap<Int, ByteArray>()
     private val channelOf = HashMap<Int, Int>()
 
-    override fun onOpen(stream: AdbTransport.Stream) {
+    override fun onOpen(stream: MirrorStream) {
         buffers[stream.localId] = ByteArray(0)
     }
 
-    override fun onClose(stream: AdbTransport.Stream) {
+    override fun onClose(stream: MirrorStream) {
         buffers.remove(stream.localId)
         if (channelOf.remove(stream.localId) == P2C_CHANNEL) stopHeartbeat(stream)
     }
 
     private var heartbeat: Thread? = null
-    @Volatile private var p2cStream: AdbTransport.Stream? = null
+    @Volatile private var p2cStream: MirrorStream? = null
 
     /** Sends a phone-to-car request on the P2C channel; false if it isn't open. */
     fun sendP2C(cmd: Int, body: ByteArray): Boolean {
@@ -49,7 +49,7 @@ class PxcChannel(
      * sends requests there, including the 0x70000000 keep-alive the car also
      * sends us. Without it the car drops the session ~5 s in.
      */
-    private fun startHeartbeat(stream: AdbTransport.Stream) {
+    private fun startHeartbeat(stream: MirrorStream) {
         heartbeat?.interrupt()
         heartbeat = Thread({
             try {
@@ -62,12 +62,12 @@ class PxcChannel(
         }, "PxcHeartbeat").also { it.isDaemon = true; it.start() }
     }
 
-    private fun stopHeartbeat(stream: AdbTransport.Stream) {
+    private fun stopHeartbeat(stream: MirrorStream) {
         heartbeat?.interrupt()
         heartbeat = null
     }
 
-    override fun onData(stream: AdbTransport.Stream, data: ByteArray) {
+    override fun onData(stream: MirrorStream, data: ByteArray) {
         var buf = (buffers[stream.localId] ?: ByteArray(0)) + data
         while (buf.size >= 16) {
             val bb = ByteBuffer.wrap(buf, 0, 16).order(ByteOrder.LITTLE_ENDIAN)
@@ -86,7 +86,7 @@ class PxcChannel(
         buffers[stream.localId] = buf
     }
 
-    private fun handle(stream: AdbTransport.Stream, cmd: Int, extra: Int, body: ByteArray) {
+    private fun handle(stream: MirrorStream, cmd: Int, extra: Int, body: ByteArray) {
         if (channelOf[stream.localId] == null) {
             channelOf[stream.localId] = cmd
             logger.log("PXC channel open 0x${hex(cmd)} on stream ${stream.localId}")

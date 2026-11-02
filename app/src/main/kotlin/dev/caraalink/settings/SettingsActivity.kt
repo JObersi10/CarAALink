@@ -33,6 +33,7 @@ class SettingsActivity : AppCompatActivity() {
         private val videoSettingKeys = setOf(
             "car_orientation", "video_resolution_mode", "video_resolution_custom_width",
             "video_resolution_custom_height", "video_frame_rate", "video_dpi_auto", "video_dpi_manual",
+            "aa_auto_crop",
         )
         private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             if (key in videoSettingKeys) {
