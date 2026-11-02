@@ -70,6 +70,10 @@ class SettingsActivity : AppCompatActivity() {
                 startActivity(Intent(requireContext(), dev.caraalink.diagnostics.DeveloperToolsActivity::class.java))
                 true
             }
+            findPreference<Preference>("notification_access")?.setOnPreferenceClickListener {
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                true
+            }
             updateBackgroundSummary()
         }
 

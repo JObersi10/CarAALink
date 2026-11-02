@@ -102,6 +102,7 @@ class MirrorPresentation(
         }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START).apply {
             setMargins(dp(12), dp(12), 0, 0)
         })
+        dev.caraalink.diagnostics.PerfStats.attachHud(context, root)
         setContentView(root)
     }
 

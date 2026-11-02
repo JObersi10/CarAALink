@@ -96,6 +96,7 @@ class AaCarPresentation(
             isClickable = true
             setOnLongClickListener { onExit(); true }
         }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START))
+        dev.caraalink.diagnostics.PerfStats.attachHud(context, root)
         setContentView(root)
     }
 

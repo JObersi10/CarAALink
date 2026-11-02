@@ -1,11 +1,15 @@
 package dev.caraalink.aa
 
+import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.util.Log
+import dev.caraalink.settings.AppSettings
 import java.nio.ByteBuffer
 
 /**
@@ -20,7 +24,7 @@ import java.nio.ByteBuffer
  * the plain LC case) as `csd-0` before the first real frame -- standard
  * MediaCodec usage, not part of the AA protocol itself.
  */
-class AaAudioPlayer(private val sampleRate: Int, private val channelCount: Int) {
+class AaAudioPlayer(private val context: Context, private val sampleRate: Int, private val channelCount: Int) {
 
     companion object {
         private const val TAG = "AaAudioPlayer"
@@ -73,6 +77,21 @@ class AaAudioPlayer(private val sampleRate: Int, private val channelCount: Int) 
             .setBufferSizeInBytes(minBuf.coerceAtLeast(4096) * 2)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
+        // CarbitLink's own wire protocol doesn't carry audio to the car at
+        // all (its Packet framing for audio is still unconfirmed -- see
+        // claude/roadmap.md item 6 -- so nothing here invents bytes for it).
+        // The practical way AA audio actually reaches the car's speakers
+        // today is the car's own Bluetooth, which almost every head unit
+        // already has paired for calls/music. Explicitly steering output to
+        // a connected A2DP device (instead of hoping default routing picks
+        // it over the earpiece/speaker) is what "Mic / speaker for Android
+        // Auto" = BT preferred now also controls for playback, not just mic.
+        if (AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.BT_PREFERRED) {
+            val am = context.getSystemService(AudioManager::class.java)
+            val a2dp = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+            if (a2dp != null) runCatching { t.preferredDevice = a2dp }
+        }
         t.play()
 
         codec = c

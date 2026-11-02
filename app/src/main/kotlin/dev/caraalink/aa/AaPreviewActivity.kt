@@ -123,6 +123,7 @@ class AaPreviewActivity : Activity() {
             },
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START),
         )
+        dev.caraalink.diagnostics.PerfStats.attachHud(this, root)
 
         setContentView(root)
     }

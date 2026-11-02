@@ -39,6 +39,9 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate: launch intent action=${intent?.action} extras=${intent?.extras}")
+        dev.caraalink.diagnostics.CrashMarker.consumeLastCrash(this)?.let { summary ->
+            Toast.makeText(this, "Restarted after a crash: $summary", Toast.LENGTH_LONG).show()
+        }
         render()
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
@@ -197,7 +200,10 @@ class MainActivity : Activity() {
         spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
 
-        setContentView(root)
+        val frame = android.widget.FrameLayout(this)
+        frame.addView(root, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        dev.caraalink.diagnostics.PerfStats.attachHud(this, frame)
+        setContentView(frame)
     }
 
     private fun primaryButton(label: String, onClick: () -> Unit) = MaterialButton(this).apply {

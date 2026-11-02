@@ -7,16 +7,21 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.GradientDrawable
+import android.os.BatteryManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.Display
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
+import dev.caraalink.widgets.NowPlayingInfo
 import java.io.File
 
 /**
@@ -129,6 +134,32 @@ fun buildHomeContent(context: Context, tiles: List<CarHomePresentation.Tile>): C
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
     }
     root.addView(statusView)
+
+    // Phone widgets: battery (always available) and now-playing (needs
+    // notification access -- see MediaListenerService -- so it just shows
+    // nothing when that permission isn't granted, rather than an error).
+    val widgetsView = TextView(context).apply {
+        setTextColor(Color.parseColor("#9AA7AE"))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+        setPadding(0, dp(4), 0, 0)
+    }
+    root.addView(widgetsView)
+    val widgetHandler = Handler(Looper.getMainLooper())
+    val widgetTick = object : Runnable {
+        override fun run() {
+            val battery = context.getSystemService(BatteryManager::class.java)
+                ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)?.takeIf { it in 0..100 }
+            val parts = mutableListOf<String>()
+            if (battery != null) parts += "Phone battery $battery%"
+            NowPlayingInfo.summary()?.let { parts += if (NowPlayingInfo.isPlaying) "Playing: $it" else "Paused: $it" }
+            widgetsView.text = parts.joinToString("   •   ")
+            widgetHandler.postDelayed(this, 3000)
+        }
+    }
+    widgetsView.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+        override fun onViewAttachedToWindow(v: View) { widgetTick.run() }
+        override fun onViewDetachedFromWindow(v: View) { widgetHandler.removeCallbacks(widgetTick) }
+    })
 
     val center = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL

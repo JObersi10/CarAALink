@@ -28,12 +28,20 @@ class CarAALinkApplication : Application() {
         logger.log("CarAALinkApplication.onCreate")
     }
 
+    /**
+     * Beyond logging the crash (which was already happening), this now also
+     * leaves a one-shot marker so the *next* launch can tell the user it
+     * crashed last time instead of that only being visible by digging
+     * through an exported log (see [dev.caraalink.diagnostics.CrashMarker]).
+     * Purely local -- no network upload, there's no backend to send it to.
+     */
     private fun installCrashLogger() {
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             runCatching {
                 logger.log("FATAL on ${thread.name}: ${Log.getStackTraceString(throwable)}")
             }
+            runCatching { dev.caraalink.diagnostics.CrashMarker.recordCrash(this, thread.name, throwable) }
             previous?.uncaughtException(thread, throwable)
         }
     }

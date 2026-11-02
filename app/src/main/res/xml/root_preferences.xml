@@ -70,7 +70,7 @@
         <ListPreference
             android:key="aa_audio_route"
             android:title="Mic / speaker for Android Auto"
-            android:summary="Which device handles AA voice audio"
+            android:summary="Which device handles AA voice/media audio in and out"
             android:entries="@array/aa_audio_route_entries"
             android:entryValues="@array/aa_audio_route_values"
             android:defaultValue="bt_preferred" />
@@ -84,6 +84,10 @@
         <Preference
             android:key="car_background_reset"
             android:title="Reset car background" />
+        <Preference
+            android:key="notification_access"
+            android:title="Now playing on car home"
+            android:summary="Grant notification access so the car home screen can show what's playing" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Connection">
@@ -109,12 +113,13 @@
     <PreferenceCategory android:title="Debug">
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"
-            android:title="Verbose logging"
+            android:title="Protocol sniffer"
+            android:summary="Log every CarbitLink/Android Auto control message with a hex preview, including video/audio frames (noisy -- exported from Developer tools)"
             android:defaultValue="false" />
         <SwitchPreferenceCompat
             android:key="debug_overlay"
             android:title="On-screen debug overlay"
-            android:summary="Show capture/transport stats over the mirrored output"
+            android:summary="Show fps/bitrate/drops over the mirror, AA session, and this app's own screen"
             android:defaultValue="false" />
         <Preference
             android:key="accessibility_service_shortcut"

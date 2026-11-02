@@ -105,6 +105,11 @@ class AaSessionProbe(
     @Volatile
     private var cachedKeyframe: ByteArray? = null
 
+    /** Wall-clock time of the last video DATA frame actually received -- the watchdog's stall signal. */
+    @Volatile
+    var lastVideoFrameAt: Long = 0L
+        private set
+
     /** Like setting [videoSink] directly, but also replays cached SPS/PPS + last keyframe if we have them. */
     fun attachVideoSink(sink: (timestampUs: Long, nal: ByteArray) -> Unit) {
         videoSink = sink
@@ -304,6 +309,7 @@ class AaSessionProbe(
                 .build()
             logger.log("TX AUTH_COMPLETE status=0")
             channel.sendControlPlain(AaFraming.MSG_AUTH_COMPLETE, authResponse)
+            lastVideoFrameAt = System.currentTimeMillis() // grace period before the watchdog can call this stale
 
             var index = 0
             while (running.get() && index < config.maxMessages) {
@@ -312,10 +318,19 @@ class AaSessionProbe(
                 if (message.channelId != AaFraming.CHANNEL_CONTROL) {
                     val chId = AaFraming.controlMessageId(message.payload)
                     val chBody = if (message.payload.size >= 2) message.payload.copyOfRange(2, message.payload.size) else ByteArray(0)
-                    logger.log(
-                        "MESSAGE on ${AaFraming.channelName(message.channelId)} " +
-                            "${AaFraming.controlMessageName(chId ?: -1)} (${chBody.size}B)",
-                    )
+                    // MEDIA_DATA fires once per video/audio frame -- DiagnosticLogger
+                    // does a synchronous file write per call, so logging every one of
+                    // those unconditionally was quietly throttling the decode loop.
+                    // Only log those when the sniffer toggle is on; everything else
+                    // (open/setup/focus messages) is rare enough to always log.
+                    val sniffing = dev.caraalink.settings.AppSettings.verboseLogging(context)
+                    if (chId != AaFraming.MSG_MEDIA_DATA || sniffing) {
+                        val hex = if (sniffing) " " + dev.caraalink.diagnostics.ProtocolSniffer.hexPreview(chBody) else ""
+                        logger.log(
+                            "MESSAGE on ${AaFraming.channelName(message.channelId)} " +
+                                "${AaFraming.controlMessageName(chId ?: -1)} (${chBody.size}B)$hex",
+                        )
+                    }
                     if (chId == AaFraming.MSG_CHANNEL_OPEN_REQUEST) {
                         // ChannelOpenRequest{priority=1 sint32, service_id=2 int32}. We
                         // accept every channel the phone asks for -- aasdk's per-service
@@ -367,6 +382,7 @@ class AaSessionProbe(
                             for (i in 0 until 8) ts = (ts shl 8) or (chBody[i].toLong() and 0xFF)
                             val frame = chBody.copyOfRange(8, chBody.size)
                             if (containsIdr(frame)) cachedKeyframe = frame
+                            lastVideoFrameAt = System.currentTimeMillis()
                             videoSink?.invoke(ts, frame)
                         }
                     } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
@@ -395,7 +411,7 @@ class AaSessionProbe(
                                 // while music was already playing) was silently killing
                                 // whatever was already playing and never resuming it,
                                 // since music doesn't resend its own config afterward.
-                                val player = audioPlayer ?: AaAudioPlayer(sampleRate = 48_000, channelCount = 2).also { audioPlayer = it }
+                                val player = audioPlayer ?: AaAudioPlayer(context, sampleRate = 48_000, channelCount = 2).also { audioPlayer = it }
                                 player.setCodecConfig(chBody)
                             }
                         } else if (chBody.size > 8) {

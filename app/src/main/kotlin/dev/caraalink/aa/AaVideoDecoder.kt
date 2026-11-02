@@ -32,6 +32,7 @@ class AaVideoDecoder(private val width: Int, private val height: Int) {
     @Synchronized
     fun feed(timestampUs: Long, nal: ByteArray) {
         val c = codec ?: return
+        dev.caraalink.diagnostics.PerfStats.recordAaFrame(nal.size)
         try {
             val inIndex = c.dequeueInputBuffer(10_000)
             if (inIndex >= 0) {
