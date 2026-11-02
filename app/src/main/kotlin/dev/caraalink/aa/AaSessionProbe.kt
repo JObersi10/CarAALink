@@ -82,11 +82,29 @@ class AaSessionProbe(
     @Volatile
     var videoSink: ((timestampUs: Long, nal: ByteArray) -> Unit)? = null
 
+    // The phone sends SPS/PPS exactly once per session (MEDIA_MESSAGE_CODEC_CONFIG,
+    // right after setup), not on every attach. A fresh MediaCodec decoder needs
+    // it to initialize -- without this, closing and reopening AaPreviewActivity
+    // while the same session is still running attaches a brand-new decoder that
+    // never gets parameter sets and just stays black. Cache it and replay it to
+    // every new sink.
+    @Volatile
+    private var cachedCodecConfig: ByteArray? = null
+
+    /** Like setting [videoSink] directly, but also replays cached SPS/PPS if we already have it. */
+    fun attachVideoSink(sink: (timestampUs: Long, nal: ByteArray) -> Unit) {
+        videoSink = sink
+        cachedCodecConfig?.let { sink(0L, it) }
+    }
+
     @Volatile
     private var activeChannel: AaTlsChannel? = null
 
     @Volatile
     private var micCapture: AaMicCapture? = null
+
+    @Volatile
+    private var audioPlayer: AaAudioPlayer? = null
 
     // sendTouch() is called from whatever thread owns the preview UI (not
     // this session's own worker thread) -- a raw socket write there would
@@ -321,7 +339,29 @@ class AaSessionProbe(
                         // SPS/PPS, no timestamp prefix (unlike MEDIA_MESSAGE_DATA) --
                         // feed as-is, timestamp 0, ahead of the IDR frame that follows it.
                         logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_VIDEO (${chBody.size}B)")
-                        if (chBody.isNotEmpty()) videoSink?.invoke(0L, chBody)
+                        if (chBody.isNotEmpty()) {
+                            cachedCodecConfig = chBody
+                            videoSink?.invoke(0L, chBody)
+                        }
+                    } else if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO &&
+                        (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG || chId == AaFraming.MSG_MEDIA_DATA)
+                    ) {
+                        // Symmetric to video: AAC-LC codec config (csd-0) once,
+                        // then timestamped frames. Without this the audio channel
+                        // negotiates and streams fine but is silently discarded --
+                        // which is the actual reason AA audio wasn't playing, not
+                        // Bluetooth routing.
+                        if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
+                            logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_MEDIA_AUDIO (${chBody.size}B)")
+                            if (chBody.isNotEmpty()) {
+                                val player = AaAudioPlayer(sampleRate = 48_000, channelCount = 2)
+                                player.setCodecConfig(chBody)
+                                audioPlayer?.stop()
+                                audioPlayer = player
+                            }
+                        } else if (chBody.size > 8) {
+                            audioPlayer?.feed(chBody.copyOfRange(8, chBody.size))
+                        }
                     } else if (chId == AaFraming.MSG_MEDIA_MICROPHONE_REQUEST &&
                         message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE
                     ) {
@@ -369,8 +409,9 @@ class AaSessionProbe(
                         decodeDiscoveryRequest(body)
                         logger.log("rung 3 reached -- phone asked for service discovery")
                         everEstablished = true
-                        val response = AaServiceDiscovery.build()
-                        logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe()})")
+                        val discoveryConfig = AaServiceDiscovery.configFromSettings(context)
+                        val response = AaServiceDiscovery.build(discoveryConfig)
+                        logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe(discoveryConfig)})")
                         logger.logBytes("TXBODY", response, response.size)
                         channel.sendControlEncrypted(AaFraming.MSG_SERVICE_DISCOVERY_RESPONSE, response)
                     }
@@ -394,8 +435,11 @@ class AaSessionProbe(
             false
         } finally {
             activeChannel = null
+            cachedCodecConfig = null
             micCapture?.stop()
             micCapture = null
+            audioPlayer?.stop()
+            audioPlayer = null
             runCatching { socket?.close() }
             socket = null
         }

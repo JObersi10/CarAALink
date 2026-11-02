@@ -19,7 +19,6 @@ import dev.caraalink.aa.AaVersionProbe
 import dev.caraalink.accessibility.HeadUnitServerLauncher
 import dev.caraalink.connection.ConnectionStateHolder
 import dev.caraalink.diagnostics.ConnectionDiagnosticsActivity
-import dev.caraalink.diagnostics.DeveloperToolsActivity
 import dev.caraalink.onboarding.OnboardingActivity
 import dev.caraalink.service.UsbLinkForegroundService
 import dev.caraalink.settings.SettingsActivity
@@ -195,8 +194,6 @@ class MainActivity : Activity() {
         outlineButton("Setup checklist") { open(OnboardingActivity::class.java) }.also { root.addView(it) }
         spacer(root)
         outlineButton("Connection diagnostics") { open(ConnectionDiagnosticsActivity::class.java) }.also { root.addView(it) }
-        spacer(root)
-        outlineButton("Developer tools") { open(DeveloperToolsActivity::class.java) }.also { root.addView(it) }
         spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
 

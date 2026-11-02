@@ -102,6 +102,10 @@
             android:key="accessibility_service_shortcut"
             android:title="Accessibility service"
             android:summary="Required for one-click head-unit-server start — tap to open system settings" />
+        <Preference
+            android:key="developer_tools"
+            android:title="Developer tools"
+            android:summary="Log export, Car Preview" />
     </PreferenceCategory>
 
 </androidx.preference.PreferenceScreen>

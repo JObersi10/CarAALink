@@ -1,5 +1,8 @@
 package dev.caraalink.aa
 
+import android.content.Context
+import dev.caraalink.settings.AppSettings
+
 /**
  * Builds the head unit's `SERVICE_DISCOVERY_RESPONSE` — the message that tells
  * the phone what this head unit can do. This is where the video resolution is
@@ -104,6 +107,25 @@ object AaServiceDiscovery {
         val displayName: String = "CarAALink",
         val driverPosition: Int = DRIVER_POSITION_LEFT,
     )
+
+    /**
+     * Builds [Config] from Settings > Video. AA only ever offers the 5 fixed
+     * [AaResolution] values (see the class doc) -- there is no way to
+     * request an arbitrary custom size from the phone, so "Custom
+     * width/height" picks whichever of the 5 is closest by pixel count
+     * rather than being sent verbatim. Frame rate only has two real values
+     * (30/60); anything else in the setting falls back to 30.
+     */
+    fun configFromSettings(context: Context): Config {
+        val resolution = if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
+            val (w, h) = AppSettings.customResolution(context) ?: (1920 to 1080)
+            AaResolution.values().minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: AaResolution.R1920X1080
+        } else {
+            AaResolution.R1920X1080
+        }
+        val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
+        return Config(resolution = resolution, frameRate = frameRate)
+    }
 
     /**
      * Serialized `ServiceDiscoveryResponse`. Deliberately minimal: a video

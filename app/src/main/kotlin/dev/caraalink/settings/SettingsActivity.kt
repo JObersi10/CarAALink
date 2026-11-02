@@ -66,6 +66,10 @@ class SettingsActivity : AppCompatActivity() {
                 updateBackgroundSummary()
                 true
             }
+            findPreference<Preference>("developer_tools")?.setOnPreferenceClickListener {
+                startActivity(Intent(requireContext(), dev.caraalink.diagnostics.DeveloperToolsActivity::class.java))
+                true
+            }
             updateBackgroundSummary()
         }
 

@@ -8,31 +8,44 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import dev.caraalink.R
+import dev.caraalink.video.CarHomePresentation
+import dev.caraalink.video.buildHomeContent
 
 /**
- * On-phone preview of the AA receiver's video channel -- shows exactly what
- * the (not-yet-wired) CarbitLink video path would receive, without needing
- * the car. Starts [AaSessionProbe] if one isn't already running and renders
- * its `videoSink` frames to a [SurfaceView] via [AaVideoDecoder].
- *
- * The video is a fixed 16:9-family resolution ([AaServiceDiscovery]) that
- * never matches a phone's own (much taller) aspect ratio, so the
- * [SurfaceView] is explicitly letterboxed to 16:9 and centered rather than
- * stretched to fill the screen.
+ * On-phone stand-in for the car screen, for testing without the car: opens
+ * on CarAALink's own home screen (same view-building code the real car
+ * Presentation uses, via [buildHomeContent]) and only starts the actual AA
+ * session -- [AaSessionProbe] plus a decoded, interactive video view -- once
+ * the "Android Auto" tile is tapped, same as it works on the car.
  */
 class AaPreviewActivity : Activity() {
 
     private var decoder: AaVideoDecoder? = null
     private var probe: AaSessionProbe? = null
 
-    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val config = AaServiceDiscovery.Config()
+        showHome()
+    }
+
+    private fun showHome() {
+        val home = buildHomeContent(
+            this,
+            listOf(CarHomePresentation.Tile("Android Auto", R.drawable.ic_tile_android_auto, Color.parseColor("#1E8E3E")) { showAaSession() }),
+        )
+        setContentView(home.root)
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showAaSession() {
+        // Must match what AaSessionProbe actually negotiates with the phone
+        // (also configFromSettings) -- a decoder configured for a different
+        // size than what's really arriving silently fails to produce frames.
+        val config = AaServiceDiscovery.configFromSettings(this)
 
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val surfaceView = SurfaceView(this)
@@ -89,7 +102,7 @@ class AaPreviewActivity : Activity() {
                 decoder = dec
 
                 val target = AaSessionProbe.active ?: AaSessionProbe(this@AaPreviewActivity)
-                target.videoSink = { ts, nal -> decoder?.feed(ts, nal) }
+                target.attachVideoSink { ts, nal -> decoder?.feed(ts, nal) }
                 probe = target
                 if (AaSessionProbe.active == null) target.start()
             }
@@ -105,8 +118,8 @@ class AaPreviewActivity : Activity() {
 
         root.addView(
             Button(this).apply {
-                text = "Exit preview"
-                setOnClickListener { finish() }
+                text = "Back to car home"
+                setOnClickListener { showHome() }
             },
             FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.TOP or Gravity.START),
         )

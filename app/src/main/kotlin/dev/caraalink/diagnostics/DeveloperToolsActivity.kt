@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.hardware.usb.UsbManager
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -14,24 +13,21 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import com.google.android.material.button.MaterialButton
-import dev.caraalink.aa.AaIdentity
-import dev.caraalink.aa.AaTlsReceiver
-import dev.caraalink.aa.AaVersionProbe
-import dev.caraalink.service.UsbLinkForegroundService
 
 /**
- * Dev menu: start/stop the USB sniffer diagnostic and export whatever it's
- * captured so far. Everything here is for feeding evidence back into the
- * protocol RE work (claude/roadmap.md Phase 1) — none of it is part of the
- * real app flow.
+ * What's actually still useful day to day: export logs, and the interactive
+ * on-phone AA preview. The early RE-phase probes (USB sniffer, ADB
+ * handshake probe, raw AA TLS receiver, AA version-only probe) are
+ * superseded by the real session path (AaSessionProbe) and were removed
+ * from here -- their code is untouched (AaTlsReceiver.kt, AaVersionProbe.kt,
+ * UsbLinkForegroundService's sniffer/ADB-probe actions) in case protocol
+ * work ever needs to isolate a single rung again.
  */
 class DeveloperToolsActivity : Activity() {
 
     companion object {
         private const val TAG = "DeveloperToolsActivity"
     }
-
-    private var aaReceiver: AaTlsReceiver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,42 +39,20 @@ class DeveloperToolsActivity : Activity() {
             setBackgroundColor(Color.parseColor("#0E1116"))
         }
 
-        root.addView(section("USB sniffer logs raw bytes from the head unit to a file — " +
-            "no protocol logic, just capture. Needs a USB accessory already attached."))
-
-        root.addView(button("Start USB sniffer") { startSniffer() })
-
-        root.addView(section("ADB handshake probe: completes the CNXN handshake the head unit " +
-            "opens with (confirmed real ADB, see claude/roadmap.md), then logs " +
-            "whatever it asks for next. Doesn't act on anything it receives."))
-
-        root.addView(button("Start ADB handshake probe") { startAdbProbe() })
-
-        root.addView(section("AA TLS receiver: presents the head-unit identity in assets/aa — " +
-            "the JVC Kenwood leaf issued by Google Automotive Link (see " +
-            "assets/aa/PROVENANCE.md) — and dials the phone's own AA gearhead on " +
-            "127.0.0.1:5277, trying the TLS role both ways until one handshakes. " +
-            "Logs the handshake and whatever bytes follow; sends nothing above TLS."))
-
-        root.addView(button("Start AA TLS receiver") { startAaReceiver() })
-        root.addView(button("Stop AA TLS receiver") { stopAaReceiver() })
-
-        root.addView(section("AA version probe (rung 1): sends the plaintext AA VERSION_REQUEST " +
-            "to the phone's gearhead on 127.0.0.1:5277 and decodes whatever frames " +
-            "come back. No TLS, no channel opens — this is the step before any of that."))
-
-        root.addView(button("Start AA version probe") { startAaVersionProbe() })
-        root.addView(button("Stop") {
-            startService(Intent(this@DeveloperToolsActivity, UsbLinkForegroundService::class.java)
-                .setAction(UsbLinkForegroundService.ACTION_STOP))
+        root.addView(TextView(this).apply {
+            text = "Developer tools"
+            setTextColor(Color.parseColor("#F2F5F7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            setPadding(0, 0, 0, dp(20))
         })
+
         root.addView(button("Export latest log") { exportLatestLog() })
 
-        root.addView(section("AA on-phone preview: starts (or attaches to) the AA session and " +
-            "renders its video on this phone's screen, with touch forwarded to the " +
-            "input channel -- for testing without the car."))
+        root.addView(section("Car Preview: shows CarAALink's own car home screen on this phone, " +
+            "same as the car sees it -- tap its Android Auto tile to start (or attach to) a " +
+            "real AA session with decoded video and touch, for testing without the car."))
 
-        root.addView(button("Preview AA session (interactive)") {
+        root.addView(button("Car Preview") {
             startActivity(Intent(this@DeveloperToolsActivity, dev.caraalink.aa.AaPreviewActivity::class.java))
         })
 
@@ -117,80 +91,6 @@ class DeveloperToolsActivity : Activity() {
 
     private fun dp(value: Int): Int =
         TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics).toInt()
-
-    private fun startSniffer() {
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val list = usbManager.accessoryList
-        Log.i(TAG, "startSniffer: accessoryList size=${list?.size ?: 0}")
-        val accessory = list?.firstOrNull()
-        if (accessory == null) {
-            Log.w(TAG, "startSniffer: no accessory in UsbManager.accessoryList -- nothing to sniff")
-            Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
-            return
-        }
-        Log.i(TAG, "startSniffer: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model} version=${accessory.version}")
-        val intent = Intent(this, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_SNIFFER)
-            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
-        startForegroundService(intent)
-        Log.i(TAG, "startSniffer: sent ACTION_START_SNIFFER to UsbLinkForegroundService")
-    }
-
-    private fun startAdbProbe() {
-        val usbManager = getSystemService(USB_SERVICE) as UsbManager
-        val list = usbManager.accessoryList
-        Log.i(TAG, "startAdbProbe: accessoryList size=${list?.size ?: 0}")
-        val accessory = list?.firstOrNull()
-        if (accessory == null) {
-            Log.w(TAG, "startAdbProbe: no accessory in UsbManager.accessoryList")
-            Toast.makeText(this, "No USB accessory currently attached", Toast.LENGTH_LONG).show()
-            return
-        }
-        Log.i(TAG, "startAdbProbe: found accessory manufacturer=${accessory.manufacturer} model=${accessory.model}")
-        val intent = Intent(this, UsbLinkForegroundService::class.java)
-            .setAction(UsbLinkForegroundService.ACTION_START_ADB_PROBE)
-            .putExtra(UsbManager.EXTRA_ACCESSORY, accessory)
-        startForegroundService(intent)
-        Log.i(TAG, "startAdbProbe: sent ACTION_START_ADB_PROBE to UsbLinkForegroundService")
-    }
-
-    private fun startAaReceiver() {
-        if (!AaIdentity.isAvailable(this)) {
-            Log.w(TAG, "startAaReceiver: no AA identity loadable")
-            Toast.makeText(this, "AA identity missing — see assets/aa/PROVENANCE.md", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (AaTlsReceiver.active != null) {
-            Toast.makeText(this, "AA TLS receiver already running", Toast.LENGTH_SHORT).show()
-            return
-        }
-        Log.i(TAG, "startAaReceiver: starting receiver")
-        val receiver = AaTlsReceiver(this)
-        aaReceiver = receiver
-        receiver.start()
-        Toast.makeText(this, "AA TLS receiver started — check the aa-tls log", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun startAaVersionProbe() {
-        if (AaVersionProbe.active != null) {
-            Toast.makeText(this, "Version probe already running", Toast.LENGTH_SHORT).show()
-            return
-        }
-        Log.i(TAG, "startAaVersionProbe")
-        AaVersionProbe(this).start()
-        Toast.makeText(this, "AA version probe started — check the aa-version log", Toast.LENGTH_SHORT).show()
-    }
-
-    private fun stopAaReceiver() {
-        Log.i(TAG, "stopAaReceiver")
-        (aaReceiver ?: AaTlsReceiver.active)?.stop()
-        aaReceiver = null
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        stopAaReceiver()
-    }
 
     private fun exportLatestLog() {
         // One file, everything already interleaved chronologically -- no more
