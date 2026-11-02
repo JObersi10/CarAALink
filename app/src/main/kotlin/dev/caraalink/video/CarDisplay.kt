@@ -42,6 +42,27 @@ class CarDisplay(
     private var info = ""
     private var touchDownAt = 0L
 
+    // phoneSize() is only read when (re)building the mirror presentation, so a
+    // rotation mid-session otherwise stayed locked to whatever orientation the
+    // phone was in when "Phone screen" was tapped -- the mirrored app's own
+    // landscape content just got letterboxed smaller inside that fixed
+    // portrait canvas instead of the canvas itself expanding. Watching the
+    // phone's own (default) display for rotation and rebuilding on change is
+    // what picks up the new aspect ratio.
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == Display.DEFAULT_DISPLAY && mode == Mode.MIRROR) {
+                main.post { showCurrent() }
+            }
+        }
+    }
+
+    init {
+        context.getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
+    }
+
     /** Point the car display at a (new) encoder surface of [w]x[h]. */
     fun attach(surface: Surface, w: Int, h: Int) = main.post {
         val dpi = (minOf(w, h) / 720f * 213).toInt().coerceIn(120, 320)
@@ -176,13 +197,17 @@ class CarDisplay(
 
     private fun attachMirror(surface: Surface?, w: Int, h: Int) {
         val p = projection ?: return
+        val dpi = context.resources.displayMetrics.densityDpi / 2
         val existing = mirrorDisplay
         if (existing != null) {
+            // Rotation rebuilds MirrorPresentation with the new w/h (see
+            // displayListener above) -- resize the still-live VirtualDisplay to
+            // match instead of just swapping its surface at the old size.
+            existing.resize(w, h, dpi)
             existing.surface = surface
             return
         }
         if (surface == null) return
-        val dpi = context.resources.displayMetrics.densityDpi / 2
         // One createVirtualDisplay per projection on Android 14+, so keep it and swap surfaces.
         // AUTO_MIRROR = a copy of the phone screen, not a second display (no DeX).
         mirrorDisplay = p.createVirtualDisplay(
@@ -217,6 +242,7 @@ class CarDisplay(
     }
 
     fun release() = main.post {
+        context.getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         presentation?.dismiss()
         presentation = null
         carDisplay?.release()

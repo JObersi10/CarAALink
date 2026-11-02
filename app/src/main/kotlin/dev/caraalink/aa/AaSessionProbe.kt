@@ -216,6 +216,16 @@ class AaSessionProbe(
         }
         logger.log("=== AA session probe ${config.host}:${config.port}")
         Log.i(TAG, "start")
+        // CarSession's watchdog starts polling this within milliseconds of
+        // start() returning, but lastVideoFrameAt otherwise stays at its 0L
+        // default until deep into attemptOnce() (after the TLS handshake).
+        // Its first tick then reads `now - 0` -- the current epoch time,
+        // always "stale" -- and force-restarts a session that was simply
+        // still negotiating. Confirmed from a real log: a restart fired
+        // exactly on the watchdog's first 5s tick, logging a "stale" value
+        // in the trillions of ms. Seeding this at start() closes that gap;
+        // the later resets (post-handshake, per real frame) still apply.
+        lastVideoFrameAt = System.currentTimeMillis()
         worker = Thread({ run() }, "AaSessionProbe").apply { isDaemon = true }
         active = this
         worker!!.start()

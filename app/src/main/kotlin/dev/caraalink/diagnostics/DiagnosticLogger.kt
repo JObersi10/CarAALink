@@ -76,6 +76,13 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
             val timestamped = "${TIMESTAMP_FORMAT.format(Date())}  $line\n"
             currentFile(context).appendText(timestamped)
         }
+
+        /** Deletes every rolled-over log file and starts fresh on the next write. */
+        @Synchronized
+        fun clearAll(context: Context) {
+            logDir(context).listFiles()?.forEach { it.delete() }
+            currentFileRef = null
+        }
     }
 
     private fun write(line: String) = write(context, line)
