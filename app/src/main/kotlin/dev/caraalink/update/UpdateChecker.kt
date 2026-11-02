@@ -17,20 +17,19 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * Checks GitHub for something newer than this install, either a tagged
- * Release (Stable channel) or the latest commit on a branch (Dev channel --
- * "updates from dev or from one of my PRs"). Never downloads or installs
- * anything itself: GitHub Actions artifacts need the owner's own
- * authenticated browser session to download regardless (that's a GitHub
- * API constraint, not a choice made here -- even public-repo workflow
- * artifacts require being logged in), so both channels just open the right
- * GitHub page and let the owner take it from there. Same
- * no-embedded-credentials reasoning as the rest of this app.
+ * Checks GitHub for something newer than this install: a tagged Release
+ * (Stable channel) or the rolling `dev` pre-release
+ * (`.github/workflows/android-ci.yml`'s "Publish rolling dev pre-release"
+ * step -- overwritten on every push to `main` with the latest debug APK).
+ * Never downloads or installs anything itself -- it just opens the
+ * release page, where the APK asset is a normal public download (release
+ * assets, unlike Actions artifacts, don't need an authenticated session).
  */
 object UpdateChecker {
 
     private const val OWNER = "JObersi10"
     private const val REPO = "CarAALink"
+    private const val DEV_RELEASE_TAG = "dev"
     private const val CHANNEL_ID = "app_updates"
     private const val NOTIFICATION_ID = 4
 
@@ -48,7 +47,7 @@ object UpdateChecker {
             val result = runCatching {
                 when (AppSettings.updateChannel(context)) {
                     AppSettings.UpdateChannel.STABLE -> checkStable()
-                    AppSettings.UpdateChannel.DEV -> checkDev(context)
+                    AppSettings.UpdateChannel.DEV -> checkDev()
                 }
             }
             val outcome = result.getOrNull()
@@ -57,7 +56,7 @@ object UpdateChecker {
                 when {
                     result.isFailure -> if (manual) toast(context, "Update check failed: ${result.exceptionOrNull()?.message}")
                     outcome != null -> notify(context, outcome.first, outcome.second)
-                    manual -> toast(context, "Already on the latest ${if (AppSettings.updateChannel(context) == AppSettings.UpdateChannel.DEV) "dev commit" else "release"}")
+                    manual -> toast(context, "Already on the latest ${if (AppSettings.updateChannel(context) == AppSettings.UpdateChannel.DEV) "dev build" else "release"}")
                 }
             }
         }, "UpdateChecker").start()
@@ -79,15 +78,22 @@ object UpdateChecker {
         return "Update available: v$tag" to json.getString("html_url")
     }
 
-    /** Returns (title, url) if the watched branch has moved past this build's commit, else null. */
-    private fun checkDev(context: Context): Pair<String, String>? {
-        val branch = AppSettings.updateDevBranch(context).ifBlank { BuildConfig.GIT_BRANCH }
-        val body = get("https://api.github.com/repos/$OWNER/$REPO/commits/$branch") ?: return null
-        val json = JSONObject(body)
-        val sha = json.getString("sha").take(BuildConfig.GIT_SHA.length)
+    /**
+     * Returns (title, url) if the rolling `dev` pre-release's build is
+     * newer than this install, else null. Two calls: the Release itself
+     * (for its page URL to show/open) and the git ref the `dev` tag
+     * actually points at (to resolve it to a commit, since the Release
+     * API's own JSON doesn't include that). No Release published under
+     * that tag yet -> nothing to compare against, same as Stable's
+     * no-releases-yet case.
+     */
+    private fun checkDev(): Pair<String, String>? {
+        val releaseBody = get("https://api.github.com/repos/$OWNER/$REPO/releases/tags/$DEV_RELEASE_TAG") ?: return null
+        val release = JSONObject(releaseBody)
+        val refBody = get("https://api.github.com/repos/$OWNER/$REPO/git/ref/tags/$DEV_RELEASE_TAG") ?: return null
+        val sha = JSONObject(refBody).getJSONObject("object").getString("sha").take(BuildConfig.GIT_SHA.length)
         if (sha == BuildConfig.GIT_SHA || BuildConfig.GIT_SHA == "unknown") return null
-        val actionsUrl = "https://github.com/$OWNER/$REPO/actions?query=branch%3A$branch"
-        return "Dev build updated on $branch ($sha)" to actionsUrl
+        return "Dev build updated ($sha)" to release.getString("html_url")
     }
 
     /** null on a 404 (nothing there to compare against); throws on any other non-2xx. */

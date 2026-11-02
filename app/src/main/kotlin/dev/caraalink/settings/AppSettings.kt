@@ -145,10 +145,6 @@ object AppSettings {
             else -> UpdateChannel.STABLE
         }
 
-    /** Blank (default) means "whatever branch this build was made from" -- see `BuildConfig.GIT_BRANCH`. */
-    fun updateDevBranch(context: Context): String =
-        prefs(context).getString("update_dev_branch", "")?.trim().orEmpty()
-
     fun updateAutoCheck(context: Context): Boolean =
         prefs(context).getBoolean("update_auto_check", true)
 }

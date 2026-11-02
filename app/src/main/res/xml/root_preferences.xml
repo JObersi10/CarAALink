@@ -130,15 +130,10 @@
         <ListPreference
             android:key="update_channel"
             android:title="Update channel"
-            android:summary="Stable checks GitHub Releases; Dev checks the latest commit on a branch (your own PRs included) -- opens GitHub to grab the build either way, nothing installs itself"
+            android:summary="Stable checks GitHub's tagged Releases; Dev checks the rolling 'dev' pre-release CI rebuilds on every push to main -- opens the release page either way, nothing installs itself"
             android:entries="@array/update_channel_entries"
             android:entryValues="@array/update_channel_values"
             android:defaultValue="stable" />
-        <EditTextPreference
-            android:key="update_dev_branch"
-            android:title="Dev branch to watch"
-            android:summary="Only used when channel is Dev. Defaults to whatever branch this build was made from."
-            android:defaultValue="" />
         <SwitchPreferenceCompat
             android:key="update_auto_check"
             android:title="Check automatically"

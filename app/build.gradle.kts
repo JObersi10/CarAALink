@@ -8,18 +8,6 @@ fun gitSha(): String = runCatching {
     providers.exec { commandLine("git", "rev-parse", "--short=10", "HEAD") }.standardOutput.asText.get().trim()
 }.getOrDefault("unknown")
 
-/**
- * Branch this build was made from, so the "dev build" update channel has a
- * sensible default without the owner having to type it in Settings.
- * `GITHUB_HEAD_REF` is what Actions sets for a `pull_request` build (where
- * `git rev-parse --abbrev-ref HEAD` would otherwise say the unhelpful
- * "HEAD", since PR checkouts land on a detached commit); plain pushes
- * (including to `aa-post-v1` itself) don't set it, so fall back to git.
- */
-fun gitBranch(): String = System.getenv("GITHUB_HEAD_REF")?.takeIf { it.isNotBlank() } ?: runCatching {
-    providers.exec { commandLine("git", "rev-parse", "--abbrev-ref", "HEAD") }.standardOutput.asText.get().trim()
-}.getOrDefault("aa-post-v1")
-
 android {
     namespace = "dev.caraalink"
     compileSdk = 34
@@ -31,7 +19,6 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
-        buildConfigField("String", "GIT_BRANCH", "\"${gitBranch()}\"")
     }
 
     buildFeatures {
