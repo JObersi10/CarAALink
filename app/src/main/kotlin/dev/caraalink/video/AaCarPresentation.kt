@@ -5,8 +5,6 @@ import android.app.Presentation
 import android.content.Context
 import android.graphics.Color
 import android.graphics.SurfaceTexture
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.util.TypedValue
 import android.view.Display
@@ -16,7 +14,6 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.TextView
 
 /**
  * Car-side view for a live Android Auto session: the decoded video,
@@ -29,7 +26,6 @@ class AaCarPresentation(
     display: Display,
     private val videoWidth: Int,
     private val videoHeight: Int,
-    private val onBack: () -> Unit,
     private val onExit: () -> Unit,
     private val onSurface: (Surface?) -> Unit,
     private val onTouch: (x: Int, y: Int, action: Int) -> Unit,
@@ -92,22 +88,14 @@ class AaCarPresentation(
         }
         root.addView(area, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         // Small back button: tap = Back, hold = exit AA session to CarAALink home.
-        root.addView(TextView(context).apply {
-            text = "‹"
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
-            typeface = Typeface.DEFAULT_BOLD
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.argb(200, 31, 42, 48))
-            }
+        // No visible back button here -- Android Auto has its own in-app
+        // back/exit chrome, a second one of ours was redundant and could
+        // overlap it. Just a long-press-only corner to get back to the
+        // CarAALink home screen, since there needs to be *some* way out.
+        root.addView(FrameLayout(context).apply {
             isClickable = true
-            setOnClickListener { onBack() }
             setOnLongClickListener { onExit(); true }
-        }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START).apply {
-            setMargins(dp(12), dp(12), 0, 0)
-        })
+        }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START))
         setContentView(root)
     }
 

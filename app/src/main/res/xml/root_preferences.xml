@@ -28,6 +28,17 @@
             android:title="Video bitrate (kbps)"
             android:inputType="number"
             android:defaultValue="6000" />
+        <SwitchPreferenceCompat
+            android:key="video_dpi_auto"
+            android:title="Auto-detect DPI"
+            android:summary="Use this phone's own screen density for the AA session"
+            android:defaultValue="true" />
+        <EditTextPreference
+            android:key="video_dpi_manual"
+            android:title="Manual DPI"
+            android:summary="Only used when auto-detect is off"
+            android:inputType="number"
+            android:defaultValue="160" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Audio">

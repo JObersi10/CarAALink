@@ -154,7 +154,6 @@ class CarDisplay(
         val (w, h) = aaVideoSize!!
         return AaCarPresentation(
             context, display, w, h,
-            onBack = onBack,
             onExit = onExit,
             onSurface = { s -> aaOnSurface?.invoke(s) },
             onTouch = { x, y, action -> aaOnTouch?.invoke(x, y, action) },

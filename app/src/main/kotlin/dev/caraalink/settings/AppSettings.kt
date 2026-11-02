@@ -37,6 +37,14 @@ object AppSettings {
     fun videoBitrateKbps(context: Context): Int =
         prefs(context).getString("video_bitrate_kbps", "6000")?.toIntOrNull() ?: 6000
 
+    /** Auto-detect uses this phone's own screen density; manual is a straight AA `density` value. */
+    fun videoDpi(context: Context): Int {
+        if (prefs(context).getBoolean("video_dpi_auto", true)) {
+            return context.resources.displayMetrics.densityDpi
+        }
+        return prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
+    }
+
     fun audioSampleRateHz(context: Context): Int =
         prefs(context).getString("audio_sample_rate", "48000")?.toIntOrNull() ?: 48000
 

@@ -151,11 +151,33 @@ class CarSession(
     private fun openAndroidAuto() {
         if (dev.caraalink.aa.AaSessionProbe.active != null) {
             display.setStatus("AA: already running")
-        } else {
-            display.setStatus("AA: connecting to the phone's gearhead…")
+            showAaSurface()
+            return
+        }
+        display.setStatus("AA: checking head unit server…")
+        logger.log("openAndroidAuto: checking 127.0.0.1:5277 before starting")
+        Thread({
+            val serverUp = runCatching {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5277), 400) }
+                true
+            }.getOrDefault(false)
+            if (!serverUp) {
+                logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start")
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    display.setStatus("AA: starting head unit server…")
+                    dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+                }
+                // Give the accessibility-driven toggle a moment to actually bind the
+                // listener before we try to connect to it.
+                Thread.sleep(2500)
+            }
             logger.log("openAndroidAuto: starting AA session probe")
             dev.caraalink.aa.AaSessionProbe(context).start()
-        }
+            android.os.Handler(android.os.Looper.getMainLooper()).post { showAaSurface() }
+        }, "AA-server-check").start()
+    }
+
+    private fun showAaSurface() {
         val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
         display.showAa(
             videoWidth = config.resolution.width,
