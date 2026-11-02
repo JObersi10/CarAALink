@@ -102,7 +102,62 @@ class SettingsActivity : AppCompatActivity() {
                 startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
                 true
             }
+            findPreference<Preference>("car_profiles")?.setOnPreferenceClickListener {
+                showCarProfilesDialog()
+                true
+            }
             updateBackgroundSummary()
+        }
+
+        private fun showCarProfilesDialog() {
+            val context = requireContext()
+            val profiles = CarProfiles.listProfiles(context)
+            val items = (profiles + "+ Save current settings as...").toTypedArray()
+            android.app.AlertDialog.Builder(context)
+                .setTitle("Car profiles")
+                .setItems(items) { _, index ->
+                    if (index == profiles.size) {
+                        promptSaveProfile()
+                    } else {
+                        showProfileActionsDialog(profiles[index])
+                    }
+                }
+                .setNegativeButton("Close", null)
+                .show()
+        }
+
+        private fun promptSaveProfile() {
+            val context = requireContext()
+            val input = android.widget.EditText(context).apply { hint = "e.g. My Car" }
+            android.app.AlertDialog.Builder(context)
+                .setTitle("Save current settings as")
+                .setView(input)
+                .setPositiveButton("Save") { _, _ ->
+                    val name = input.text.toString().trim()
+                    if (name.isNotEmpty()) {
+                        CarProfiles.saveProfile(context, name)
+                        Toast.makeText(context, "Saved \"$name\"", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
+        private fun showProfileActionsDialog(name: String) {
+            val context = requireContext()
+            android.app.AlertDialog.Builder(context)
+                .setTitle(name)
+                .setItems(arrayOf("Load", "Delete")) { _, which ->
+                    if (which == 0) {
+                        CarProfiles.loadProfile(context, name)
+                        Toast.makeText(context, "Loaded \"$name\" -- reconnecting if AA is active", Toast.LENGTH_SHORT).show()
+                    } else {
+                        CarProfiles.deleteProfile(context, name)
+                        Toast.makeText(context, "Deleted \"$name\"", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         }
 
         private fun updateBackgroundSummary() {

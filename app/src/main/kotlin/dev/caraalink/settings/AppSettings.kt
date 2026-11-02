@@ -95,6 +95,15 @@ object AppSettings {
     fun debugOverlay(context: Context): Boolean =
         prefs(context).getBoolean("debug_overlay", false)
 
+    /**
+     * Debug-only probe for the open question in claude/roadmap.md: is AA's
+     * `height_margin` a per-side or total inset? Deliberately oversized and
+     * easy to spot visually -- not meant to be left on, just to answer that
+     * question from what the owner sees on the next live test.
+     */
+    fun aaTestMarginHeight(context: Context): Int =
+        prefs(context).getString("aa_test_margin_height", "0")?.toIntOrNull() ?: 0
+
     fun aaAutoLaunch(context: Context): Boolean =
         prefs(context).getBoolean("aa_auto_launch", false)
 

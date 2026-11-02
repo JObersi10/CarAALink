@@ -160,6 +160,10 @@ object AaServiceDiscovery {
         return Config(
             resolution = resolution, frameRate = frameRate, density = density,
             touchWidth = resolution.width, touchHeight = resolution.height,
+            // Debug-only probe (Settings > Debug > "Test height_margin") for
+            // the open per-side-vs-total question in claude/roadmap.md --
+            // normally 0.
+            heightMargin = AppSettings.aaTestMarginHeight(context),
         )
     }
 

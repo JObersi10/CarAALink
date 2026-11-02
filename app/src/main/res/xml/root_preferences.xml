@@ -62,6 +62,10 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Android Auto">
+        <Preference
+            android:key="car_profiles"
+            android:title="Car profiles"
+            android:summary="Save/load video and AA settings per car (screen shape, resolution, fill mode, etc.)" />
         <SwitchPreferenceCompat
             android:key="aa_auto_launch"
             android:title="Jump straight to Android Auto"
@@ -118,6 +122,12 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Debug">
+        <EditTextPreference
+            android:key="aa_test_margin_height"
+            android:title="Test height_margin (px)"
+            android:summary="Probe for roadmap.md's open per-side-vs-total question -- set something big and obvious (e.g. 300), then look at where AA's real content lands in Car Preview. Leave at 0 normally."
+            android:inputType="number"
+            android:defaultValue="0" />
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"
             android:title="Protocol sniffer"
