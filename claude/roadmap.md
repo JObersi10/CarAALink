@@ -861,3 +861,76 @@ Not scoped/started, just grounding for whoever picks these up.
   work against a real phone" is **UNKNOWN**, not confirmed, and would need
   a live capture (sending a `SERVICE_DISCOVERY_UPDATE` and seeing whether
   gearhead honors it) before building anything on top of it.
+
+### Feasibility check (2026-11-02), four more requested items
+
+All four checked against what this app actually is (checked: **no NDK/
+native code anywhere in the project** -- `app/build.gradle.kts` has no
+`externalNativeBuild`, no `.so`/`.c`/`.cpp` under `app/src/main`; it's pure
+Kotlin/JVM using the standard `android.hardware.usb.UsbAccessory` /
+`ParcelFileDescriptor` API) rather than assumed from the feature names
+alone.
+
+- **Automatic crash reporting & telemetry -- possible, partly built
+  already.** `CarAALinkApplication.installCrashLogger()` already catches
+  every uncaught JVM exception into the unified log (`DiagnosticLogger`,
+  2026-11-02's logging-unification work). "Native USB/NDK crashes" don't
+  apply here -- there is no native code to crash; a USB-layer failure here
+  surfaces as a JVM `IOException`/`IllegalArgumentException` from the
+  standard `UsbAccessory` API (already partly handled, e.g.
+  `UsbAccessoryConnection.open()`'s catch for the stale-accessory crash in
+  `claude/roadmap.md`'s "Real crashes found and fixed" section), not a
+  native signal. TLS handshake failures and decoder drops are also already
+  logged (`AaSessionProbe`, `AaVideoDecoder`/`AaAudioPlayer`'s `Log.w`
+  calls, captured into the same unified log via the self-logcat capture).
+  What's NOT built: structured telemetry (counts/rates rather than free-
+  text log lines) and any upload to a "self-hosted endpoint" -- that's a
+  real, separate, fully feasible piece of work (an HTTP client + an
+  endpoint to receive it, which doesn't exist and isn't this project's to
+  build), not something blocked on anything in the app itself.
+- **Multi-profile & multi-car management -- possible, straightforward.**
+  Every `AppSettings` read already takes a `Context` and goes through
+  `PreferenceManager.getDefaultSharedPreferences()` (one flat global
+  store); this would mean keying a settings bundle by a car identity --
+  `UsbAccessory.manufacturer`/`model`/`serial` is already available at
+  connect time (`UsbAccessoryConnection`/`CarSession` both see the
+  `UsbAccessory` object) and is a reasonable natural key, though serial is
+  `UNKNOWN` to be populated by every head unit without a live check across
+  more than one. No architectural blocker; would need a small per-car
+  preferences store (e.g. a second `SharedPreferences` file per car ID, or
+  a Room table) and a lookup at `CarSession` start instead of a single
+  global `AppSettings`.
+- **Watchdog & auto-recovery daemon -- possible, standard pattern, nothing
+  here does it yet.** No existing heartbeat/liveness check on the USB read
+  loop, `AaSessionProbe`'s read loop, or `CarVideoEncoder`'s frame
+  callbacks today -- a stall currently only surfaces indirectly (no new
+  log lines, which is how last night's debugging actually noticed stalls,
+  not an automated check). A watchdog is straightforward to add: a
+  `Handler`-based timer comparing "time since last successful read/frame"
+  against a threshold per pipeline (USB transport, `AaSessionProbe`,
+  video/audio decode), and on timeout, tearing down and restarting just
+  that pipeline -- `AaSessionProbe.stop()`/`start()` and
+  `UsbLinkForegroundService`'s existing `stopSelfCleanly()`/reconnect path
+  already provide the restart primitives this would call into. Genuinely
+  "without unplugging" is achievable for the AA side (loopback TCP, fully
+  in our control); for the actual USB-to-car link, recovery still can't
+  reopen a *physically* dropped accessory without the OS re-delivering an
+  attach intent, so "auto-recovery" there means recovering from a wedged
+  *software* state, not a real physical disconnect.
+- **USB bulk transfer optimization -- partly possible, "zero-copy" is not
+  achievable at this layer, said plainly rather than overclaimed.**
+  "Mass storage" doesn't apply -- that's a different USB device class
+  (UMS) unrelated to the AOA accessory mode this app uses. The real target
+  is the AOA bulk transfer under `UsbAccessoryConnection`'s
+  `FileInputStream`/`FileOutputStream`, currently read in fixed 16 KB
+  chunks (`AdbTransport.kt`, `ByteArray(16 * 1024)`) with no ring buffer
+  and no thread-priority tuning. Buffer size and thread priority ARE
+  realistic, tunable knobs (`Thread.currentThread().priority`,
+  experimenting with read-buffer size against this specific USB
+  controller/cable). **True zero-copy is not something the standard
+  Android `UsbAccessory`/`ParcelFileDescriptor` Java API exposes to app
+  code** -- there's no direct-buffer/DMA path surfaced above the driver;
+  every read still copies into a JVM byte array. Framing "zero-copy" as
+  the goal would be promising something this API can't deliver; framing it
+  as "reduce copies and tune buffer/thread parameters" is accurate and
+  achievable.
