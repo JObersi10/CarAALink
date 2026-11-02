@@ -1,4 +1,6 @@
-# CarAALink
+<p align="center">
+  <img src="docs/readme/banner.svg" alt="CarAALink" width="100%" />
+</p>
 
 A native Android replacement for a CarbitLink wireless-CarPlay/Android-Auto
 USB dongle. The phone plugs straight into the car's factory head unit — which
@@ -39,6 +41,11 @@ See [`claude/handoff.md`](claude/handoff.md) for the current state in detail,
 protocol findings (all cited to source or a live capture — see the ground
 rules below), and [`claude/roadmap.md`](claude/roadmap.md) for the CarbitLink
 wire protocol findings.
+
+## Screenshots
+
+_Coming soon — real screenshots of the car home screen, mirroring, and the
+Android Auto session to drop in here._
 
 ## Ground rules
 
