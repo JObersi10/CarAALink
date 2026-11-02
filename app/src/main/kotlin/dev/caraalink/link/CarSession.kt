@@ -118,6 +118,7 @@ class CarSession(
 
     private fun release() {
         aaWatchdog.removeCallbacks(aaWatchdogTick)
+        dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = null
         dev.caraalink.aa.AaSessionProbe.active?.stop()
         aaDecoder?.stop()
         aaDecoder = null
@@ -208,6 +209,14 @@ class CarSession(
     private fun showAaSurface() {
         aaWatchdog.removeCallbacks(aaWatchdogTick)
         aaWatchdog.postDelayed(aaWatchdogTick, AA_WATCHDOG_CHECK_MS)
+        // No mid-session resolution/DPI renegotiation exists in AA (confirmed,
+        // see roadmap.md) -- the only way to apply a changed video setting is
+        // a full reconnect, so arm the bus SettingsActivity signals through.
+        dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = {
+            logger.log("AA video settings changed -- reconnecting session")
+            dev.caraalink.aa.AaSessionProbe.active?.stop()
+            openAndroidAuto()
+        }
         val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
         display.showAa(
             videoWidth = config.resolution.width,

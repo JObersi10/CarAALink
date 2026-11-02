@@ -26,6 +26,34 @@ class SettingsActivity : AppCompatActivity() {
 
     class RootPreferenceFragment : PreferenceFragmentCompat() {
 
+        // AA has no mid-session resolution/DPI renegotiation (confirmed --
+        // see claude/roadmap.md): the only way a changed setting here takes
+        // effect on an already-running AA session is a full reconnect,
+        // which CarSession arms dev.caraalink.aa.AaReconnectBus to do.
+        private val videoSettingKeys = setOf(
+            "car_orientation", "video_resolution_mode", "video_resolution_custom_width",
+            "video_resolution_custom_height", "video_frame_rate", "video_dpi_auto", "video_dpi_manual",
+        )
+        private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in videoSettingKeys) {
+                val reconnect = dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged
+                if (reconnect != null) {
+                    Toast.makeText(requireContext(), "Reconnecting Android Auto with the new setting…", Toast.LENGTH_SHORT).show()
+                    reconnect()
+                }
+            }
+        }
+
+        override fun onResume() {
+            super.onResume()
+            preferenceManager.sharedPreferences?.registerOnSharedPreferenceChangeListener(prefsListener)
+        }
+
+        override fun onPause() {
+            preferenceManager.sharedPreferences?.unregisterOnSharedPreferenceChangeListener(prefsListener)
+            super.onPause()
+        }
+
         private val pickBackground = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri == null) return@registerForActivityResult
             val ctx = requireContext().applicationContext
