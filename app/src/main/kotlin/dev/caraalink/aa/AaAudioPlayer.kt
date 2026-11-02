@@ -24,7 +24,13 @@ import java.nio.ByteBuffer
  * the plain LC case) as `csd-0` before the first real frame -- standard
  * MediaCodec usage, not part of the AA protocol itself.
  */
-class AaAudioPlayer(private val context: Context, private val sampleRate: Int, private val channelCount: Int) {
+class AaAudioPlayer(
+    private val context: Context,
+    private val sampleRate: Int,
+    private val channelCount: Int,
+    /** True only for the on-phone Car Preview session -- see AaServiceDiscovery.configFromSettings(). */
+    private val preview: Boolean = false,
+) {
 
     companion object {
         private const val TAG = "AaAudioPlayer"
@@ -91,7 +97,24 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
         // a connected A2DP device (instead of hoping default routing picks
         // it over the earpiece/speaker) is what "Mic / speaker for Android
         // Auto" = BT preferred now also controls for playback, not just mic.
-        if (AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.BT_PREFERRED) {
+        if (preview) {
+            // Car Preview is always played on THIS phone, regardless of the
+            // real car's "Mic / speaker for Android Auto" setting -- that
+            // setting is about the real car's Bluetooth, meaningless here,
+            // and respecting it in preview was a confirmed real regression:
+            // whatever the owner last had it set to for real-car testing
+            // silently carried over and routed preview audio wrong too.
+            // Always force the phone's own speaker in preview instead.
+            val am = context.getSystemService(AudioManager::class.java)
+            val speaker = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            if (speaker != null) {
+                runCatching { t.preferredDevice = speaker }
+                logger.log("AA audio (preview) -> built-in speaker (forced)")
+            } else {
+                logger.log("AA audio (preview) -> default routing (no built-in speaker device found)")
+            }
+        } else if (AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.BT_PREFERRED) {
             val am = context.getSystemService(AudioManager::class.java)
             val a2dp = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
@@ -102,26 +125,7 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
                 logger.log("AA audio: BT-preferred but no A2DP device connected, falling back to default routing")
             }
         } else {
-            // "Default routing" used to mean whatever AudioManager picks
-            // unconstrained -- but this app always has an active USB
-            // accessory connection to the CarbitLink dongle for the whole
-            // session (required for Car Preview too, not just the real
-            // car), and confirmed live: PCM was genuinely being written to
-            // this track (real "frames delivered" counts on stop(), at a
-            // normal non-zero media volume) while still reported inaudible.
-            // That matches audio silently going out over the USB connection
-            // instead of the phone's own speaker, not a decode/volume bug.
-            // Force the built-in speaker explicitly rather than leaving it
-            // to chance.
-            val am = context.getSystemService(AudioManager::class.java)
-            val speaker = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            if (speaker != null) {
-                runCatching { t.preferredDevice = speaker }
-                logger.log("AA audio -> built-in speaker (forced, not left to default routing)")
-            } else {
-                logger.log("AA audio -> default routing (no built-in speaker device found)")
-            }
+            logger.log("AA audio -> default routing (device-only setting)")
         }
         // PCM has repeatedly shown up as genuinely written to AudioTrack
         // (confirmed via its own "frames delivered" log on stop()) while

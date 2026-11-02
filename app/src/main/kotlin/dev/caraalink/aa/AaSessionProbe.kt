@@ -502,7 +502,8 @@ class AaSessionProbe(
                                 // while music was already playing) was silently killing
                                 // whatever was already playing and never resuming it,
                                 // since music doesn't resend its own config afterward.
-                                val player = audioPlayer ?: AaAudioPlayer(context, sampleRate = 48_000, channelCount = 2).also { audioPlayer = it }
+                                val player = audioPlayer
+                                    ?: AaAudioPlayer(context, sampleRate = 48_000, channelCount = 2, preview = config.preview).also { audioPlayer = it }
                                 mediaExecutor.execute { player.setCodecConfig(chBody) }
                             }
                         } else if (chBody.size > 8) {
