@@ -417,8 +417,21 @@ class AaSessionProbe(
             // pattern implies. Not confirmed to be the actual cause --
             // worth specifically watching whether that disconnect cadence
             // changes on the next live test.
+            // maxMessages=2000 was sized for the pre-streaming startup phase
+            // (discovery/channel-open chatter is ~10 messages) and was never
+            // meant to cap an ACTIVE streaming session -- confirmed from a
+            // real log: hitting this cap mid-stream is exactly the long-
+            // standing, never-fully-explained ~30s periodic AA disconnect.
+            // At 30fps video plus continuous audio chunks, 2000 incoming
+            // messages passes in well under a minute, so the loop was
+            // cleanly exiting (no exception, no SHUTDOWN_REQUEST -- which
+            // is why it never showed up as a real failure) and immediately
+            // reconnecting itself on a timer nobody asked for. Once a
+            // session is actually established there's no reason to cap it
+            // at all; the cap still protects the pre-streaming phase from
+            // hanging indefinitely on a wedged handshake.
             var lastPingSentAt = System.currentTimeMillis()
-            while (running.get() && index < config.maxMessages) {
+            while (running.get() && (everEstablished || index < config.maxMessages)) {
                 index++
                 if (System.currentTimeMillis() - lastPingSentAt > 5_000) {
                     lastPingSentAt = System.currentTimeMillis()
