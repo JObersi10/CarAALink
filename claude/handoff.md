@@ -1,17 +1,54 @@
 # Handoff
 
-Last rewritten: 2026-11-01, end of a long live-testing session. Everything
-below reflects the current state of `main` (through PR #12) plus live
-testing done directly on the owner's phone (Samsung Galaxy S25 Ultra,
-wireless-debugging adb) against the real car head unit. See
-`roadmap.md` for full cited detail — this file is the "what actually
-happened and what to do next" summary.
+Last rewritten: 2026-11-01, end of a very long live-testing session on
+branch `aa-receiver` (PR #17, not yet merged). See `roadmap.md` for full
+cited CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol
+detail — this file is the "what actually happened and what to do next"
+summary.
+
+## LATEST (this session, after the H.264-flowing milestone below)
+
+Built on top of the working AA video pipeline: touch/input channel, mic
+passthrough, **AA audio playback** (media-sink audio channel was negotiating
+and streaming fine but nothing ever played it back -- that was the real
+"no AA audio" cause, not Bluetooth routing), auto-reconnect, and a
+`configFromSettings()` path so Settings > Video resolution/frame rate
+actually apply to the AA session instead of always using the 1920x1080
+default. Fixed a reopen-preview bug (phone sends SPS/PPS once per TCP
+session, not per attach -- now cached and replayed). `AaPreviewActivity`
+("Car Preview") now opens CarAALink's own home screen first and only starts
+the AA session when its tile is tapped, reusing the same view-building code
+as the real car `Presentation` (`buildHomeContent()`). UI modernization pass
+across Main/Settings/Onboarding/DeveloperTools/ConnectionDiagnostics; dev
+tools trimmed and moved into Settings; onboarding got a one-time intro
+screen; README got a banner + CI now publishes a rolling `dev` pre-release.
+
+**Verified live tonight:** version→TLS→discovery→channel-open→video+audio
+decode→touch, all working on hardware (gearhead 18.0.664244, S25 Ultra),
+including the owner confirming touch control working in the on-phone
+preview. **NOT yet re-verified on hardware** (built clean, untested on
+device as of this writing): the reopen-black-screen fix, audio playback,
+resolution-setting wiring end to end, landscape resize/rotation, and the
+new home-first preview flow. Do a device pass on these before anything else.
+
+**Known open issue, unconfirmed:** the AA session appears to drop and
+reconnect roughly every minute even while foregrounded. Checked the
+ping-echo logic (PingRequest/PingResponse timestamp field) against aasdk
+source -- it's structurally correct, so this isn't a fabricated-protocol
+issue, but the actual cause is still unknown. Needs a live capture
+correlating gearhead's own disconnect/reconnect log line with what we were
+doing at that moment, not more guessing from source alone.
+
+**Also not done yet:** decoded AA video/audio aren't piped into the actual
+CarbitLink video path (still only the on-phone preview) -- that's the next
+real integration step once the open items above are confirmed stable.
+
+## Earlier state (through the H.264-flowing milestone)
 
 **Two separate workstreams live here now:**
 1. **CarbitLink mirroring** — works on the car (below).
-2. **Android Auto receiver** — new, in progress, stops at service discovery.
-   Full detail in [`aa-receiver-notes.md`](aa-receiver-notes.md); ready-to-paste
-   continuation prompt in [`PROMPT-FOR-CLAUDE.md`](PROMPT-FOR-CLAUDE.md).
+2. **Android Auto receiver** — working through live H.264 video (see LATEST
+   above for what's built on top of it since).
 
 ## LATEST — Android Auto receiver: H.264 VIDEO IS FLOWING (2026-11-01)
 
