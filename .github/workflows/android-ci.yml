@@ -1,4 +1,11 @@
 name: Android CI
+# Auto-labels each run in the Actions list instead of a generic "Android
+# CI" repeated for every single run: a PR build names itself after the PR
+# (number + title), anything else after the branch and short commit.
+run-name: >-
+  ${{ github.event_name == 'pull_request'
+    && format('PR #{0}: {1}', github.event.pull_request.number, github.event.pull_request.title)
+    || format('{0} @ {1}', github.ref_name, github.sha) }}
 
 on:
   push:
