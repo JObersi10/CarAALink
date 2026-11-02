@@ -249,7 +249,12 @@ class CarSession(
                     aaDecoder = dec
                     dev.caraalink.aa.AaSessionProbe.active?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
                 } else {
-                    dev.caraalink.aa.AaSessionProbe.active?.videoSink = null
+                    // Leaving the AA tile (Home/Mirror picked instead) used to
+                    // just detach the video sink, leaving AaSessionProbe's TLS
+                    // connection to the phone's own head-unit-server mode
+                    // sitting open in the background indefinitely. Actually
+                    // end the session so the phone disconnects for real.
+                    dev.caraalink.aa.AaSessionProbe.active?.stop()
                     aaDecoder?.stop()
                     aaDecoder = null
                 }

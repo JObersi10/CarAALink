@@ -139,6 +139,11 @@ class AaPreviewActivity : Activity() {
             override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {}
 
             override fun surfaceDestroyed(holder: SurfaceHolder) {
+                // Same fix as CarSession's real-car path: actually end the
+                // session instead of just detaching the sink, so backing
+                // out of the preview disconnects from the phone's own
+                // head-unit-server mode instead of leaving it connected.
+                probe?.stop()
                 probe?.videoSink = null
                 decoder?.stop()
                 decoder = null

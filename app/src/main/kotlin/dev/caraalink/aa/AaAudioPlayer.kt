@@ -32,6 +32,7 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
 
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
+    private var trackStarted = false
     private val bufferInfo = MediaCodec.BufferInfo()
     private var lastCsd0: ByteArray? = null
     private val logger = dev.caraalink.diagnostics.DiagnosticLogger(context, "aa-audio")
@@ -103,10 +104,18 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
         } else {
             logger.log("AA audio -> default routing (device-only setting)")
         }
-        t.play()
+        // NOT t.play() here -- see feed(). Starting it now, before any real
+        // PCM exists to write, was confirmed from a real exported log: the
+        // track sat started-but-empty and the system kept cycling it
+        // (logcat spammed "disabled due to previous underrun, restarting"
+        // every ~600ms for the whole session) whenever AA's audio channel
+        // negotiated but never actually sent a data frame (e.g. nothing
+        // was playing on the phone at the time) -- a continuous, pointless
+        // restart loop on its own audio thread, not just silence.
 
         codec = c
         track = t
+        trackStarted = false
     }
 
     @Synchronized
@@ -127,6 +136,13 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
                 if (out != null && bufferInfo.size > 0) {
                     val pcm = ByteArray(bufferInfo.size)
                     out.get(pcm)
+                    // Lazy start: the first real PCM is the signal there's
+                    // actually something to play. Starting at setCodecConfig()
+                    // time instead left the track spinning empty -- see there.
+                    if (!trackStarted) {
+                        t.play()
+                        trackStarted = true
+                    }
                     t.write(pcm, 0, pcm.size)
                 }
                 c.releaseOutputBuffer(outIndex, false)
