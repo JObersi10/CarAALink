@@ -197,7 +197,14 @@ object AaServiceDiscovery {
         // events into resolution.width/height, so a mismatched advertised
         // touch size (the old hardcoded 1920x720 default) would have the
         // phone interpreting touch in the wrong coordinate space.
-        val (widthMargin, heightMargin) = if (AppSettings.aaAutoCrop(context)) {
+        // Auto-crop margin and FILL mode both solve the same 16:9-vs-car-panel
+        // aspect mismatch, in conflicting ways: the margin asks AA to
+        // pre-crop its own video, while FILL then crops our already-cropped
+        // render to fill the screen on top of that -- confirmed live, this
+        // combination double-crops ("fill made it worse"). They're mutually
+        // exclusive: FIT relies on the margin for a clean no-letterbox fit;
+        // FILL needs the full uncropped frame to crop from itself.
+        val (widthMargin, heightMargin) = if (AppSettings.aaAutoCrop(context) && AppSettings.aaFillMode(context) == AppSettings.AaFillMode.FIT) {
             autoMargin(resolution, dev.caraalink.link.CarScreenInfo.width, dev.caraalink.link.CarScreenInfo.height)
         } else 0 to 0
         return Config(
