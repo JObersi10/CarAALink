@@ -58,6 +58,29 @@ round's real, confirmed fixes (margin cropping, video `max_unacked`) --
 worth checking there FIRST before guessing on future AA protocol-shaped
 bugs, same pattern, before spending time on log-based speculation.
 
+## BIGGEST LEAD FOR NEXT SESSION: logcat the real gearhead app directly
+
+Raw `adb logcat` on the phone (not our app's own log) caught gearhead
+itself crashing, twice, in one short test:
+1. `IllegalArgumentException: Virtual display width must be positive` in
+   its own `VirtualDisplayConfig$Builder` -- a bad resolution/margin/
+   density value WE sent. Need to cross-reference the exact timestamp
+   against our own app's log from the same window to find which value.
+2. `IllegalStateException: Already connected` in
+   `DeveloperHeadUnitNetworkService` -- **very likely the actual reason
+   "have to restart head unit server" has been happening all session.**
+   This is gearhead's own component crashing when something reconnects
+   while it still thinks a session is live, not a timing/race issue the
+   1.5s grace delay can fix. Need to find which of our own actions
+   triggers this (settings reconnect? watchdog restart? the accessibility
+   toggle itself?) and avoid doing that specific thing, rather than adding
+   more delay.
+
+Start the next session by logcatting gearhead directly
+(`adb logcat -v threadtime`, filter for `GH.` tags afterward) during a
+normal test, alongside our own app's log -- this found two real crashes in
+minutes that our own log alone never would have surfaced.
+
 ## LATEST (2026-11-02, PR #18 in progress) -- headless harness, margin autodetect, bridge roadmap correction
 
 Same PR #18 session, same day. Picked up headless-testing-harness work
