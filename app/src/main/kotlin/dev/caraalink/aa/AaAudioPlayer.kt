@@ -29,9 +29,20 @@ class AaAudioPlayer(private val sampleRate: Int, private val channelCount: Int) 
     private var codec: MediaCodec? = null
     private var track: AudioTrack? = null
     private val bufferInfo = MediaCodec.BufferInfo()
+    private var lastCsd0: ByteArray? = null
 
+    /**
+     * No-ops if [csd0] matches what's already configured and a decoder is
+     * already running. AA can resend codec config defensively (e.g. a short
+     * voice-prompt stream starting while music is already playing) even
+     * when nothing actually changed; tearing down and recreating the
+     * decoder/track every time that happens was killing whatever was
+     * already mid-playback and never resuming it.
+     */
     @Synchronized
     fun setCodecConfig(csd0: ByteArray) {
+        if (codec != null && track != null && csd0.contentEquals(lastCsd0)) return
+        lastCsd0 = csd0
         stop()
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount).apply {
             setByteBuffer("csd-0", ByteBuffer.wrap(csd0))

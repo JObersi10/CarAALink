@@ -354,10 +354,15 @@ class AaSessionProbe(
                         if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
                             logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_MEDIA_AUDIO (${chBody.size}B)")
                             if (chBody.isNotEmpty()) {
-                                val player = AaAudioPlayer(sampleRate = 48_000, channelCount = 2)
+                                // Reuse the existing player (setCodecConfig() no-ops if
+                                // the bytes are unchanged) instead of always tearing down
+                                // and recreating -- a codec-config message mid-stream
+                                // (e.g. a voice prompt's own short-lived config arriving
+                                // while music was already playing) was silently killing
+                                // whatever was already playing and never resuming it,
+                                // since music doesn't resend its own config afterward.
+                                val player = audioPlayer ?: AaAudioPlayer(sampleRate = 48_000, channelCount = 2).also { audioPlayer = it }
                                 player.setCodecConfig(chBody)
-                                audioPlayer?.stop()
-                                audioPlayer = player
                             }
                         } else if (chBody.size > 8) {
                             audioPlayer?.feed(chBody.copyOfRange(8, chBody.size))
