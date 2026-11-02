@@ -1,10 +1,83 @@
 # Handoff
 
-Last rewritten: 2026-11-02, continuing the 2026-11-01 session on branch
-`aa-receiver` (PR #17, not yet merged). See `roadmap.md` for full cited
-CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol
+Last rewritten: 2026-11-02. PR #17 is **merged into `main`** (no GitHub
+release made -- owner publishes those manually). All work now continues on
+branch `aa-post-v1` (PR #18, open against `main`). See `roadmap.md` for full
+cited CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
 
-## LATEST (2026-11-02, later still) -- portrait cars, auto-detect, and the post-"real car tile" feature batch
+## LATEST (2026-11-02, PR #18 in progress) -- live-log diagnosis, decode-thread fix, aspect-ratio research
+
+PR #17 merged. Picked up PR #18 (`aa-post-v1` branch) with a real WhatsApp-
+exported device log (`caraalink-20261102-070408.log`) from the owner's own
+test of the merged build, plus continued aspect-ratio research sparked by
+`mrmees/open-android-auto`'s docs.
+
+- **Diagnosed the "choppy video + delayed touch feedback" complaint from
+  the log, not a guess.** `AaSessionProbe`'s single message-receive thread
+  -- the same thread replying to every ping/control message -- was also
+  doing `AaVideoDecoder.feed()` and `AaAudioPlayer.feed()` inline,
+  synchronously, per frame. Any decode/render stall there delayed every
+  other channel too. The same log shows the AA session lasting ~42s before
+  `SocketException: Socket closed` from the other end -- consistent with
+  (not proven to be caused by) this same stall plausibly missing whatever
+  gearhead's own disconnect-on-stall logic watches. **Fixed**: both now run
+  on a dedicated `mediaExecutor` thread, decoupled from the protocol loop.
+  Also fixed a real leak this surfaced: `touchExecutor`/`mediaExecutor`
+  were never shut down, and a fresh `AaSessionProbe` is built on every
+  reconnect -- during a drop/reconnect cycle this frequent, that's a
+  leaked daemon thread pool every ~42s. Now shut down in `stop()`.
+- **Confirmed from the same log: this car's panel is genuinely 1920x720
+  (2.67:1)**, straight from a real `CONFIG_CAPTURE`. AA has no resolution
+  that shape (only 16:9-family), so "doesn't fill the screen" is real,
+  expected, protocol-level behavior -- not fixable by picking a different
+  one of the 9 fixed resolutions. Shipped a real choice instead of
+  silently accepting one tradeoff: Settings > Android Auto > "Car screen
+  fill" -- Fit (default, letterbox/pillarbox, nothing cropped) or Fill
+  (scales to cover, clips overflow).
+- **Aspect-ratio research, corrected mid-session after reading the
+  source directly.** First pass (secondhand) concluded margins
+  (`width_margin`/`height_margin`) weren't worth pursuing over app-side
+  Fit/Fill since they don't reduce encode bandwidth. Reading
+  `open-android-auto`'s `docs/video-resolution.md` directly corrected
+  that: it says the head unit "crops/overscans the decoded video to show
+  only the content area" margins define -- meaning a correctly-sized
+  margin would let this app crop to an **exact native 1:1 region** instead
+  of scaling at all (sharper than Fit, and unlike Fill doesn't clip real
+  AA content, only AA's own intentional blank margin). **Not implemented**:
+  whether the margin value is per-side or total isn't stated by either
+  source, and guessing wrong would crop into real content -- added a
+  debug-only "Test height_margin" setting instead so the owner can set an
+  obviously-oversized value on the next live test and report back exactly
+  where the real content lands, which settles the question for real.
+  Full writeup in `roadmap.md`'s research notes, including the correction
+  itself (left visible, not silently rewritten).
+- **Started on PR #18's other tracked items**, modestly scoped:
+  - `AaReconnectBus` + a `SettingsActivity` preference listener: changing
+    video/orientation/DPI settings now auto-reconnects an active AA
+    session (confirmed there's no live renegotiation in the protocol).
+  - `CarProfiles`: named save/load snapshots of the settings that vary
+    per car (screen shape, resolution, DPI, fill mode, bitrate, audio
+    route) -- Settings > Android Auto > "Car profiles". Scoped down from
+    a full per-car device registry, since CarbitLink has no concept of
+    *which* car is connected to key one off.
+  - `MirrorChannelsTest`: start of the headless testing harness --
+    pure-JVM tests for `CaptureConfig.parse()` (pinned against this car's
+    own live-confirmed 1920x720 capture) and `MirrorDataChannel.frame()`.
+    `MirrorControlChannel`/`CarSession` still need a `Stream`-like
+    interface extracted from `AdbTransport.Stream` before they're
+    headlessly testable -- deliberately not rushed, to avoid refactoring
+    confirmed-working production code under time pressure.
+  - AA-to-CarbitLink bridge: **not started** -- still just the two-design
+    writeup in `roadmap.md`.
+- **Build/workflow note for next session**: this machine's Gradle home
+  (`~/.gradle` -> `/Volumes/SABRENT/gradle-home`) kept being unmounted
+  mid-session, breaking local `./gradlew` builds repeatedly. Switched to
+  building via GitHub Actions CI (`gh run watch` as a background task,
+  `gh run download` for the artifact, handed to the owner as a file to
+  sideload themselves) instead of fighting the local build -- do this by
+  default going forward rather than retrying local Gradle.
+
+## Earlier (2026-11-02, later still) -- portrait cars, auto-detect, and the post-"real car tile" feature batch
 
 Picked up right after the live verification pass below, on the same
 `aa-receiver` branch (PR #17, still open, heading toward v1.0.0). Owner's
