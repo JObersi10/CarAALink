@@ -770,37 +770,129 @@ hex dump is already wired to capture it.
   offering AA/CarPlay, independent of CarbitLink entirely. Explicitly a
   later idea, not scoped yet -- recorded here so it isn't lost, not a
   commitment to a design.
-- **Phone widgets on the car home screen** (CarHomePresentation / the
-  shared `buildHomeContent()`). Requested 2026-11-02, not scoped.
+- **Phone widgets on the car home screen -- SHIPPED 2026-11-02.** Battery
+  and now-playing (title/artist) in `buildHomeContent()`, refreshed every
+  3s. Now-playing needs notification access
+  (`MediaListenerService` + `NowPlayingInfo`, Settings > Appearance >
+  "Now playing on car home") since `MediaSessionManager.getActiveSessions`
+  requires the caller to itself be an enabled `NotificationListenerService`
+  -- the service never reads notification content, only holds that
+  permission.
 - **AA-to-CarbitLink bridge.** Pipe the AA receiver's decoded H.264 frames
   directly into the CarbitLink video encoder/transport pipeline (today the
   AA path only ever reaches its own `AaCarPresentation`/`AaPreviewActivity`
   surfaces, never the actual CarbitLink wire), and map touch events coming
   in from CarbitLink back into the AA input channel. This is the real "AA
   session actually appears over CarbitLink on a non-CarAALink head unit"
-  milestone -- not scoped yet.
-- **AA audio -> CarbitLink's own USB audio endpoint.** Capture/route AA's
-  media and guidance audio streams to whatever the car's USB audio
-  endpoint actually is, instead of (as of 2026-11-02) only playing out the
-  phone's own speaker. CarbitLink's wire protocol doesn't carry audio at
-  all yet in any path (mirroring included) -- that format/transport is
-  unconfirmed and would need its own RE pass before this can be built
+  milestone -- not scoped yet. Two designs, elaborated 2026-11-02:
+  - **(a) Decode + re-encode (recommended starting point).** Render AA's
+    decoded frames onto the *same* `Surface` `CarVideoEncoder` already
+    reads from (instead of `AaCarPresentation`'s own TextureView), so the
+    already-confirmed mirror pipeline (`CarVideoEncoder` ->
+    `MirrorDataChannel`) carries it to the head unit unchanged. Costs a
+    double transcode (AA's H.264 decoded, then re-encoded) -- added
+    latency and a quality/bitrate hit -- but touches zero unconfirmed
+    protocol surface, since it's just pointing our existing, working
+    encoder at a different source of frames.
+  - **(b) Direct NAL passthrough (later optimization, real risk).** Both
+    AA's `MEDIA_MESSAGE_DATA` and `MirrorDataChannel.frame()` carry raw
+    H.264 Annex-B bytes, so in principle AA's NALs could go straight into
+    `MirrorDataChannel.frame()` with no local decode/re-encode at all --
+    *if* the negotiated AA resolution matches the head unit's own
+    `CaptureConfig.encodeWidth/encodeHeight` and the head unit's hardware
+    decoder accepts whatever H.264 profile/level AA's own encoder chose
+    (not necessarily the Baseline profile `CarVideoEncoder` requests --
+    we don't control AA's encoder settings). Don't attempt this until (a)
+    is proven working and only if (a)'s extra latency is measured (via the
+    new perf HUD) to actually matter.
+  - Touch direction is the easy half: `CarSession`'s existing
+    `onTouch`/`display.touch()` path already demonstrates mapping car
+    coordinates into a target's space; this just needs to also call
+    `AaSessionProbe.active?.sendTouch(...)` scaled into
+    `config.resolution` instead of (or alongside) the mirror dispatch.
+- **AA audio -> CarbitLink's own USB audio endpoint -- still blocked,
+  practical workaround SHIPPED 2026-11-02.** CarbitLink's wire protocol
+  still doesn't carry audio in any path (mirroring included) --
+  `EPAudioInfo`'s sample-rate/channel/format enum is confirmed at the Java
+  boundary, but the native `Packet` framing for audio frames is PARTIAL/
+  unconfirmed (see the RE pass 1 findings above), so nothing was invented
+  for it per `claude.md`'s hard rule. Shipped instead: `AaAudioPlayer`
+  now explicitly steers its `AudioTrack` to a connected Bluetooth A2DP
+  device when "Mic / speaker for Android Auto" is BT-preferred, so AA
+  audio reaches the car's speakers over the car's own Bluetooth (which
+  almost every head unit already has) rather than only the phone's own
+  speaker. True CarbitLink-wire audio still needs the live-capture pass
+  (`usbmon`/hardware analyzer) `claude.md` calls for before it can be built
   without guessing.
-- **Performance/latency HUD.** A real-time on-screen overlay (decode
-  latency, frame rate, USB packet round-trip time) to actually measure the
-  "feels laggy"/bitrate-drop reports from 2026-11-02 instead of guessing
-  from symptoms. Not scoped.
-- **Built-in protocol sniffer (USB packet logger).** A tool that dumps raw
-  CarbitLink and AA traffic to storage for offline analysis, without
-  violating `claude.md`'s no-fabrication rule -- i.e. logging real captured
-  bytes, not synthesizing anything. Partial precedent already exists
-  (`UsbSnifferDiagnostic`, `AaSessionProbe`'s own hex dumps) but nothing
-  unified or always-on. Not scoped.
+- **Performance/latency HUD -- SHIPPED 2026-11-02.** `PerfStats` (fps,
+  kbps, dropped frames, AA reconnect count), gated by the existing
+  Settings > Debug > "On-screen debug overlay" toggle (previously
+  declared but wired to nothing). Shown on the car
+  (`AaCarPresentation`/`MirrorPresentation`) *and* the phone
+  (`MainActivity`, `AaPreviewActivity`) per the explicit ask that it
+  "lowk show that info also on the phone."
+- **Built-in protocol sniffer -- SHIPPED 2026-11-02.** The
+  `debug_verbose_logging` setting existed but was wired to nothing; it's
+  now "Protocol sniffer" and gates a hex preview (`ProtocolSniffer.
+  hexPreview`) on both `MirrorControlChannel`'s control messages
+  (heartbeat/screen-event included, previously always skipped) and
+  `AaSessionProbe`'s per-message log. Fixed a real bug in the process:
+  `AaSessionProbe`'s `"MESSAGE on ..."` log was firing unconditionally for
+  *every* video/audio `MEDIA_MESSAGE_DATA` frame through
+  `DiagnosticLogger`'s synchronous file write -- now only logged when the
+  sniffer toggle is on, off by default.
 - **Headless testing harness.** Mock-USB-device tests that simulate the
   CarbitLink handshake/state machine without physical car hardware, so
-  regressions in the handshake logic can be caught without a live car.
-  Not scoped -- would need a fake `UsbAccessory`/transport layer the
-  existing code can be pointed at.
+  regressions in the handshake logic can be caught without a live car. Not
+  scoped, but elaborated 2026-11-02:
+  - Neither `AdbTransport`'s stream framing nor `AaSessionProbe`'s TLS/
+    protobuf logic touches Android APIs in their core parsing (just
+    `java.io`/`java.net`/`javax.net.ssl`/the hand-rolled `AaProtobuf`), so
+    both can run as plain JVM unit tests in the existing CI workflow --
+    no instrumented emulator needed.
+  - CarbitLink side: wrap `conn.input`/`conn.output` behind a small
+    `Transport` interface so a `FakeTransport` (in-memory
+    `PipedInputStream`/`PipedOutputStream` pair) can stand in for the real
+    accessory connection; feed it the *exact* byte sequences already
+    confirmed in this doc's "Live capture"/"Live test" sections (e.g.
+    `TX 00 03 00 06 00 01 00 01 00 06` -> `RX 00 02 00 01 00 07 00 00`)
+    as golden-file regression fixtures -- real captured bytes, not
+    fabricated ones, so this stays inside `claude.md`'s rule.
+  - AA side: point `AaSessionProbe` at a loopback `ServerSocket` instead
+    of the real `127.0.0.1:5277` gearhead server, and script a fake AA
+    handshake (version exchange, a test-cert TLS handshake via plain
+    `SSLEngine`/`SSLContext` -- standard JDK, no device needed -- then a
+    canned `SERVICE_DISCOVERY_REQUEST`) to assert the probe reaches the
+    expected state (sends `VERSION_REQUEST`, completes the handshake,
+    answers with the right `SERVICE_DISCOVERY_RESPONSE`, etc.).
+  - Highest-value first test: replay this doc's own confirmed capture
+    bytes as a golden-file test -- would have mechanically caught at least
+    one of the "Real crashes found and fixed" bugs above instead of only
+    catching it live.
+- **Local crash marker + AA session watchdog -- SHIPPED 2026-11-02** (part
+  of the broader crash-telemetry/watchdog feasibility check above). Crash
+  reporting stays local-only -- there's no backend, so nothing is
+  "telemetry" in the upload sense: `CrashMarker` persists a one-shot
+  "crashed last run" summary (SharedPreferences, not a network call) that
+  `MainActivity` surfaces as a toast on the next launch; the full stack
+  trace was already going into the unified log via
+  `CarAALinkApplication`'s existing crash handler. `CarSession` now also
+  polls `AaSessionProbe.lastVideoFrameAt` every 5s and, if it's gone stale
+  (10s+) while the car is actually showing the AA screen, tears down and
+  restarts the session -- covers a frozen-but-still-connected socket,
+  which `AaSessionProbe`'s own `everEstablished` reconnect logic doesn't
+  (that only fires on an actual socket/TLS error).
+  - USB bulk-transfer tuning from the same feasibility check: **not
+    applicable, left alone.** `AdbTransport.readLoop()`'s 16 KB read
+    buffer is already confirmed to match the accessory driver's own bulk
+    buffer size (comment on that line, from the live-verified probe) --
+    there's no raw `bulkTransfer` tuning available through the AOA
+    `FileInputStream`/`FileOutputStream` abstraction this app uses, so
+    there's no headroom to tune without switching to a different USB API
+    entirely.
+  - Multi-profile/multi-car management from the same check: **deferred**,
+    not started -- the most UI-heavy piece, picked up in the next PR
+    instead of this one.
 
 ### Research notes (2026-11-02), for the three items below
 
@@ -861,6 +953,44 @@ Not scoped/started, just grounding for whoever picks these up.
   work against a real phone" is **UNKNOWN**, not confirmed, and would need
   a live capture (sending a `SERVICE_DISCOVERY_UPDATE` and seeing whether
   gearhead honors it) before building anything on top of it.
+
+  **Update (2026-11-02), from `mrmees/open-android-auto`'s own protocol
+  docs** (`docs/video-resolution.md` and the rest of that repo's `docs/`
+  tree -- a from-scratch AA receiver project with real written protocol
+  notes, worth treating as a reference alongside aasdk/openauto for this
+  codebase's own RE work going forward):
+  - **Letterboxing/pillarboxing is baked into the H.264 stream by the
+    phone, not left to the head unit.** The phone renders its UI into a
+    restricted, centered inner viewport and fills the remaining edge
+    space with black pixels *before* encoding -- the head unit just
+    displays whatever frame it gets, full-size, no cropping/masking logic
+    of its own needed.
+  - **`width_margin`/`height_margin` are commands, not hints.** Sent in
+    `ServiceDiscoveryResponse`, the phone uses them to shrink its internal
+    render canvas and bake the margins into the stream as described above
+    -- confirms our own `AaServiceDiscovery.Config` doc comment's "both
+    default to 0 and the car letterboxes instead" was the safe choice,
+    since 0 margins means AA renders edge-to-edge and leaves any
+    letterboxing to whoever displays the frame (us), rather than us
+    trying to guess margin values to get AA to do it for us.
+  - **No mid-session renegotiation -- CONFIRMED, not just "unimplemented
+    anywhere we can see."** Resolution and margins are locked for the
+    life of the session at the initial `ServiceDiscoveryResponse`
+    handshake; changing either requires tearing down and reconnecting.
+    This resolves the UNKNOWN above: "multi-display resolution/DPI
+    negotiation" cannot mean live renegotiation, full stop.
+  - **`density` only rescales UI elements (fonts/icons/padding) inside
+    the fixed frame** -- it cannot substitute for margins or fix an
+    aspect-ratio mismatch; a wrong-shaped frame stays wrong-shaped no
+    matter what density says.
+  - **Implication for this app, not yet implemented:** since there's no
+    live renegotiation, "change resolution/orientation without the user
+    manually restarting AA" has to mean *we* tear down and restart the
+    session automatically when a relevant Settings value changes
+    (`car_orientation`, resolution mode/custom width/height, frame rate,
+    DPI) while an AA session is active -- a `SharedPreferences` listener
+    in `SettingsActivity` calling back into `CarSession` to stop and
+    restart `AaSessionProbe`. Deferred to the next PR, not in this one.
 
 ### Feasibility check (2026-11-02), four more requested items
 
