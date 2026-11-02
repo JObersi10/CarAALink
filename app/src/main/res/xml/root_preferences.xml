@@ -126,6 +126,29 @@
             android:defaultValue="auto" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Updates">
+        <ListPreference
+            android:key="update_channel"
+            android:title="Update channel"
+            android:summary="Stable checks GitHub Releases; Dev checks the latest commit on a branch (your own PRs included) -- opens GitHub to grab the build either way, nothing installs itself"
+            android:entries="@array/update_channel_entries"
+            android:entryValues="@array/update_channel_values"
+            android:defaultValue="stable" />
+        <EditTextPreference
+            android:key="update_dev_branch"
+            android:title="Dev branch to watch"
+            android:summary="Only used when channel is Dev. Defaults to whatever branch this build was made from."
+            android:defaultValue="" />
+        <SwitchPreferenceCompat
+            android:key="update_auto_check"
+            android:title="Check automatically"
+            android:summary="Check once per app launch; only notifies when something newer actually exists"
+            android:defaultValue="true" />
+        <Preference
+            android:key="check_for_updates_now"
+            android:title="Check for updates now" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Debug">
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"

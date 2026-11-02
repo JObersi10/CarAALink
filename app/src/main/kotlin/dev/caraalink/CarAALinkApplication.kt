@@ -25,6 +25,14 @@ class CarAALinkApplication : Application() {
         super.onCreate()
         installCrashLogger()
         startSelfLogcatCapture()
+        // Carry a previous crash's full trace into THIS launch's own log
+        // file (a new file per launch -- see DiagnosticLogger.currentFile())
+        // rather than leaving it stuck in whatever old file was open when it
+        // happened. Doesn't clear the marker -- MainActivity's
+        // consumeLastCrash() still does that for the one-time Toast.
+        dev.caraalink.diagnostics.CrashMarker.peekLastCrashTrace(this)?.let { trace ->
+            logger.log("Previous run crashed -- carried forward from the crash marker:\n$trace")
+        }
         logger.log("CarAALinkApplication.onCreate")
     }
 

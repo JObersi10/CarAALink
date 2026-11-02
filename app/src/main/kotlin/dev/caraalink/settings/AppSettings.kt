@@ -16,6 +16,7 @@ object AppSettings {
     enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
     enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
     enum class AaFillMode { FIT, FILL }
+    enum class UpdateChannel { STABLE, DEV }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -137,4 +138,17 @@ object AppSettings {
             "device_only" -> AaAudioRoute.DEVICE_ONLY
             else -> AaAudioRoute.BT_PREFERRED
         }
+
+    fun updateChannel(context: Context): UpdateChannel =
+        when (prefs(context).getString("update_channel", "stable")) {
+            "dev" -> UpdateChannel.DEV
+            else -> UpdateChannel.STABLE
+        }
+
+    /** Blank (default) means "whatever branch this build was made from" -- see `BuildConfig.GIT_BRANCH`. */
+    fun updateDevBranch(context: Context): String =
+        prefs(context).getString("update_dev_branch", "")?.trim().orEmpty()
+
+    fun updateAutoCheck(context: Context): Boolean =
+        prefs(context).getBoolean("update_auto_check", true)
 }
