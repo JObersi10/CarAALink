@@ -489,6 +489,24 @@ class AaSessionProbe(
                         channel.sendControlEncrypted(AaFraming.MSG_SERVICE_DISCOVERY_RESPONSE, response)
                     }
                     AaFraming.MSG_PING_REQUEST -> channel.sendControlEncrypted(AaFraming.MSG_PING_RESPONSE, body)
+                    AaFraming.MSG_SHUTDOWN_REQUEST -> {
+                        // Confirmed from mrmees/open-android-auto's own protocol
+                        // docs (interactions/05-session-maintenance-teardown.md,
+                        // GPL-3.0 -- paraphrased, not copied): a dedicated
+                        // shutdown handshake exists separate from a plain
+                        // connection drop, with a reason field distinguishing
+                        // "user tapped Exit" from other causes. We previously
+                        // didn't handle this message at all, so every exit --
+                        // including a deliberate one via AA's own exit control --
+                        // looked identical to a dropped link to run()'s
+                        // auto-reconnect loop, which just reconnected right back
+                        // (the actual reason "AA's exit button doesn't work").
+                        // Acknowledge, then stop for real instead of reconnecting.
+                        val reason = AaProtobuf.parse(body).firstOrNull { it.number == 1 }?.varint
+                        logger.log("RX SHUTDOWN_REQUEST reason=$reason -- acking and ending session (no auto-reconnect)")
+                        channel.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_RESPONSE, ByteArray(0))
+                        running.set(false)
+                    }
                     AaFraming.MSG_AUDIO_FOCUS_REQUEST -> {
                         // AudioFocusRequest.audio_focus_type = 1 (AUDIO_FOCUS_RELEASE = 4).
                         // openauto's AndroidAutoEntity::onAudioFocusRequest(): release -> LOSS(3),

@@ -57,6 +57,8 @@ object AaFraming {
     const val MSG_PING_RESPONSE = 12
     const val MSG_AUDIO_FOCUS_REQUEST = 18
     const val MSG_AUDIO_FOCUS_NOTIFICATION = 19
+    const val MSG_SHUTDOWN_REQUEST = 15
+    const val MSG_SHUTDOWN_RESPONSE = 16
 
     // MediaMessageId.proto (media sink/source channels)
     const val MSG_MEDIA_DATA = 0
@@ -191,6 +193,8 @@ object AaFraming {
         MSG_CHANNEL_OPEN_RESPONSE -> "CHANNEL_OPEN_RESPONSE"
         MSG_AUDIO_FOCUS_REQUEST -> "AUDIO_FOCUS_REQUEST"
         MSG_AUDIO_FOCUS_NOTIFICATION -> "AUDIO_FOCUS_NOTIFICATION"
+        MSG_SHUTDOWN_REQUEST -> "SHUTDOWN_REQUEST"
+        MSG_SHUTDOWN_RESPONSE -> "SHUTDOWN_RESPONSE"
         MSG_MEDIA_DATA -> "MEDIA_DATA"
         MSG_MEDIA_SETUP -> "MEDIA_SETUP"
         MSG_MEDIA_START -> "MEDIA_START/SENSOR_REQUEST" // same numeric id, different channel namespace

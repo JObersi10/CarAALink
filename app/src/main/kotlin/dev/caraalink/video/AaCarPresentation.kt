@@ -14,6 +14,7 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.TextView
 
 /**
  * Car-side view for a live Android Auto session: the decoded video,
@@ -97,15 +98,29 @@ class AaCarPresentation(
             }
         }
         root.addView(area, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        // Small back button: tap = Back, hold = exit AA session to CarAALink home.
-        // No visible back button here -- Android Auto has its own in-app
-        // back/exit chrome, a second one of ours was redundant and could
-        // overlap it. Just a long-press-only corner to get back to the
-        // CarAALink home screen, since there needs to be *some* way out.
-        root.addView(FrameLayout(context).apply {
-            isClickable = true
-            setOnLongClickListener { onExit(); true }
-        }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START))
+        // Visible, tappable "home" corner back to CarAALink's own home
+        // screen. This used to be invisible (tap-blind, long-press-only)
+        // on the theory that AA's own in-app back/exit chrome made a
+        // second one redundant -- in practice that just made the only way
+        // out of AA undiscoverable, since AA's own exit chrome is a
+        // separate thing it draws inside the video, not something that
+        // gets you back to CarAALink. Semi-transparent so it doesn't
+        // block much of AA's own UI underneath it.
+        root.addView(
+            TextView(context).apply {
+                text = "⌂"
+                textSize = 22f
+                gravity = Gravity.CENTER
+                setTextColor(Color.WHITE)
+                setBackgroundColor(Color.argb(90, 0, 0, 0))
+                isClickable = true
+                setOnClickListener { onExit() }
+            },
+            FrameLayout.LayoutParams(dp(44), dp(44), Gravity.TOP or Gravity.START).apply {
+                topMargin = dp(8)
+                leftMargin = dp(8)
+            },
+        )
         dev.caraalink.diagnostics.PerfStats.attachHud(context, root)
         setContentView(root)
     }

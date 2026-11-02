@@ -206,13 +206,25 @@ class CarSession(
     private val aaWatchdogTick = object : Runnable {
         override fun run() {
             val probe = dev.caraalink.aa.AaSessionProbe.active
-            if (probe != null && display.mode == CarDisplay.Mode.AA) {
-                val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
-                if (staleMs > AA_WATCHDOG_STALL_MS) {
-                    logger.log("AA watchdog: no video frame in ${staleMs}ms -- restarting session")
-                    dev.caraalink.diagnostics.PerfStats.aaReconnects++
-                    probe.stop()
-                    openAndroidAuto()
+            if (display.mode == CarDisplay.Mode.AA) {
+                if (probe == null) {
+                    // The session ended on its own (e.g. the phone's AA app
+                    // sent a clean SHUTDOWN_REQUEST -- see AaSessionProbe)
+                    // rather than CarSession's own UI ever calling
+                    // AaSessionProbe.stop(). Without this the car was left
+                    // staring at AA's last frozen frame forever instead of
+                    // falling back to CarAALink's own home screen, the way a
+                    // real head unit returns to its launcher when AA exits.
+                    logger.log("AA watchdog: session ended on its own -- returning to car home")
+                    display.showHome()
+                } else {
+                    val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                    if (staleMs > AA_WATCHDOG_STALL_MS) {
+                        logger.log("AA watchdog: no video frame in ${staleMs}ms -- restarting session")
+                        dev.caraalink.diagnostics.PerfStats.aaReconnects++
+                        probe.stop()
+                        openAndroidAuto()
+                    }
                 }
             }
             aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
