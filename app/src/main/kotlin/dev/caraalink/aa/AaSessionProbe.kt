@@ -189,6 +189,13 @@ class AaSessionProbe(
     // keep up with pings/control traffic regardless of how decode is doing.
     private val mediaExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "AaSessionProbe-media").apply { isDaemon = true } }
 
+    // Confirmed live: video "struggling" (heavy frames, thermal throttling)
+    // and choppy audio were reported happening at the same time -- audio
+    // feed() calls were queued on the SAME single mediaExecutor thread as
+    // video decode, so a video backlog delayed audio right along with it.
+    // A separate thread means one falling behind can't stall the other.
+    private val audioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "AaSessionProbe-audio").apply { isDaemon = true } }
+
     /**
      * Sends one touch event on the INPUT_SOURCE channel: `InputReport{
      * timestamp=1, touch_event=3 {touch_location=1 (repeated) [{x,y,
@@ -270,6 +277,7 @@ class AaSessionProbe(
         // drop/reconnect cycle this session is still seeing adds up fast.
         touchExecutor.shutdownNow()
         mediaExecutor.shutdownNow()
+        audioExecutor.shutdownNow()
     }
 
     /**
@@ -516,11 +524,11 @@ class AaSessionProbe(
                                 // since music doesn't resend its own config afterward.
                                 val player = audioPlayer
                                     ?: AaAudioPlayer(context, sampleRate = 48_000, channelCount = 2, preview = config.preview).also { audioPlayer = it }
-                                mediaExecutor.execute { player.setCodecConfig(chBody) }
+                                audioExecutor.execute { player.setCodecConfig(chBody) }
                             }
                         } else if (chBody.size > 8) {
                             val pcm = chBody.copyOfRange(8, chBody.size)
-                            mediaExecutor.execute { audioPlayer?.feed(pcm) }
+                            audioExecutor.execute { audioPlayer?.feed(pcm) }
                         }
                         // Audio's own MEDIA_SETUP grants max_unacked=1 same as
                         // video -- the phone sends exactly one buffer then
