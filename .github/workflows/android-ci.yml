@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -37,3 +40,21 @@ jobs:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+      # Rolling pre-release: every push to main overwrites the single "dev"
+      # tag/release with the latest debug build, so there's always a current
+      # APK to grab without digging through Actions artifacts (which expire
+      # and need repo access). Never touches real (tagged) releases -- those
+      # stay a manual, owner-published step.
+      - name: Publish rolling dev pre-release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: "Dev build (latest main)"
+          body: |
+            Automatically rebuilt from `main` at ${{ github.sha }}.
+            **Not a real release** — unsigned debug build, may be broken. For testing only.
+          prerelease: true
+          draft: false
+          files: app/build/outputs/apk/debug/app-debug.apk
