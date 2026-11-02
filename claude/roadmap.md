@@ -772,3 +772,32 @@ hex dump is already wired to capture it.
   commitment to a design.
 - **Phone widgets on the car home screen** (CarHomePresentation / the
   shared `buildHomeContent()`). Requested 2026-11-02, not scoped.
+- **AA-to-CarbitLink bridge.** Pipe the AA receiver's decoded H.264 frames
+  directly into the CarbitLink video encoder/transport pipeline (today the
+  AA path only ever reaches its own `AaCarPresentation`/`AaPreviewActivity`
+  surfaces, never the actual CarbitLink wire), and map touch events coming
+  in from CarbitLink back into the AA input channel. This is the real "AA
+  session actually appears over CarbitLink on a non-CarAALink head unit"
+  milestone -- not scoped yet.
+- **AA audio -> CarbitLink's own USB audio endpoint.** Capture/route AA's
+  media and guidance audio streams to whatever the car's USB audio
+  endpoint actually is, instead of (as of 2026-11-02) only playing out the
+  phone's own speaker. CarbitLink's wire protocol doesn't carry audio at
+  all yet in any path (mirroring included) -- that format/transport is
+  unconfirmed and would need its own RE pass before this can be built
+  without guessing.
+- **Performance/latency HUD.** A real-time on-screen overlay (decode
+  latency, frame rate, USB packet round-trip time) to actually measure the
+  "feels laggy"/bitrate-drop reports from 2026-11-02 instead of guessing
+  from symptoms. Not scoped.
+- **Built-in protocol sniffer (USB packet logger).** A tool that dumps raw
+  CarbitLink and AA traffic to storage for offline analysis, without
+  violating `claude.md`'s no-fabrication rule -- i.e. logging real captured
+  bytes, not synthesizing anything. Partial precedent already exists
+  (`UsbSnifferDiagnostic`, `AaSessionProbe`'s own hex dumps) but nothing
+  unified or always-on. Not scoped.
+- **Headless testing harness.** Mock-USB-device tests that simulate the
+  CarbitLink handshake/state machine without physical car hardware, so
+  regressions in the handshake logic can be caught without a live car.
+  Not scoped -- would need a fake `UsbAccessory`/transport layer the
+  existing code can be pointed at.
