@@ -63,9 +63,16 @@ object UpdateChecker {
         }, "UpdateChecker").start()
     }
 
-    /** Returns (title, url) if a newer tagged release exists, else null. */
+    /**
+     * Returns (title, url) if a newer tagged release exists, else null.
+     * `/releases/latest` is a hard 404 (not an empty list) when the repo
+     * has never had a single Release published -- the owner cuts those
+     * manually, so a dev build like this one will hit that until the
+     * first one ever exists. That's "nothing to compare against", not a
+     * failure -- treated as up to date, no error surfaced.
+     */
     private fun checkStable(): Pair<String, String>? {
-        val body = get("https://api.github.com/repos/$OWNER/$REPO/releases/latest")
+        val body = get("https://api.github.com/repos/$OWNER/$REPO/releases/latest") ?: return null
         val json = JSONObject(body)
         val tag = json.getString("tag_name").removePrefix("v")
         if (tag == BuildConfig.VERSION_NAME) return null
@@ -75,7 +82,7 @@ object UpdateChecker {
     /** Returns (title, url) if the watched branch has moved past this build's commit, else null. */
     private fun checkDev(context: Context): Pair<String, String>? {
         val branch = AppSettings.updateDevBranch(context).ifBlank { BuildConfig.GIT_BRANCH }
-        val body = get("https://api.github.com/repos/$OWNER/$REPO/commits/$branch")
+        val body = get("https://api.github.com/repos/$OWNER/$REPO/commits/$branch") ?: return null
         val json = JSONObject(body)
         val sha = json.getString("sha").take(BuildConfig.GIT_SHA.length)
         if (sha == BuildConfig.GIT_SHA || BuildConfig.GIT_SHA == "unknown") return null
@@ -83,15 +90,19 @@ object UpdateChecker {
         return "Dev build updated on $branch ($sha)" to actionsUrl
     }
 
-    private fun get(url: String): String {
+    /** null on a 404 (nothing there to compare against); throws on any other non-2xx. */
+    private fun get(url: String): String? {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 5000
             readTimeout = 5000
             setRequestProperty("Accept", "application/vnd.github+json")
         }
         return try {
-            if (conn.responseCode !in 200..299) error("HTTP ${conn.responseCode}")
-            conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+            when (conn.responseCode) {
+                in 200..299 -> conn.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
+                404 -> null
+                else -> error("HTTP ${conn.responseCode}")
+            }
         } finally {
             conn.disconnect()
         }
