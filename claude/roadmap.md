@@ -801,3 +801,63 @@ hex dump is already wired to capture it.
   regressions in the handshake logic can be caught without a live car.
   Not scoped -- would need a fake `UsbAccessory`/transport layer the
   existing code can be pointed at.
+
+### Research notes (2026-11-02), for the three items below
+
+Static research only (cloned `opencardev/aasdk`+`openauto` to scratchpad,
+no new live testing) -- cited to source per `claude.md`, nothing guessed.
+Not scoped/started, just grounding for whoever picks these up.
+
+- **Wireless (Wi-Fi Direct / local AP) transport.** aasdk already has a
+  full wireless mode, confirmed from its own proto/source (not something
+  we'd invent): the transport layer underneath is just a plain TCP socket
+  (`aasdk::tcp::TCPEndpoint`/`TCPTransport` -- the exact same AA frame
+  format as USB, wrapped over `boost::asio` TCP instead of an AOA
+  accessory stream) and the pairing flow is a dedicated `WIFI_PROJECTION`
+  channel: the **head unit** is the one that hosts the Wi-Fi AP and sends
+  `WifiCredentialsResponse{car_wifi_ssid, car_wifi_password,
+  car_wifi_security_mode, access_point_type, supported_wifi_channels}`
+  (`WifiProjectionService::sendWifiCredentialsResponse()`, ENCRYPTED/
+  CONTROL framing, same pattern as `CHANNEL_OPEN_RESPONSE`) to the phone
+  in response to its `WifiCredentialsRequest` (empty body). There's also a
+  `WirelessTcpConfiguration{socket_receive_buffer_size_kb,
+  socket_send_buffer_size_kb, socket_read_timeout_ms}` message (sits
+  alongside `ping_configuration` in `ConnectionConfiguration`) for tuning
+  the TCP socket once it's up. Everything above the transport/pairing
+  layer (TLS handshake, service discovery, channels) is identical to what
+  `AaSessionProbe` already does over the USB loopback -- the real work
+  here is the AP-hosting + Bluetooth-RFCOMM-or-NSD pairing handshake
+  that real AA wireless dongles implement, which is **not present in
+  aasdk/openauto at all** (they assume Wi-Fi is already connected by the
+  time their code runs) and would need its own evidence source before any
+  of it gets implemented.
+- **Automated protocol fuzzing / state-machine testing.** No AA-specific
+  reference for this (not something aasdk/openauto do) -- general
+  methodology only. Two practical angles for this codebase specifically:
+  (1) a crash-oracle fuzzer feeding mutated byte sequences into
+  `AaFraming`'s frame parser and `AaProtobuf.parse()` directly (both are
+  small, dependency-free, pure functions over `ByteArray` -- ideal fuzz
+  targets, no device needed), checking only "does it throw/hang", not
+  protocol correctness; (2) a state-machine test harness around
+  `AaSessionProbe`'s message dispatch using a fake `Socket`/stream pair
+  replaying a captured or hand-built sequence of frames, verifying it
+  reaches the expected state (and doesn't crash) on reordered/truncated/
+  duplicated messages. Overlaps heavily with the headless testing harness
+  idea above; likely the same piece of work.
+- **Multi-display resolution/DPI negotiation.** AA's video resolution is
+  still hard-limited to the 5 fixed `VideoCodecResolutionType` values
+  (cited in `aa-receiver-notes.md` already) -- nothing about "multi-
+  display" changes that constraint, it's protocol-wide. What IS real and
+  relevant: `VideoConfiguration.ui_config` (field 11, cited now --
+  `UiConfig{margins, content_insets, stable_content_insets, ui_theme}`,
+  all `Insets`, i.e. safe-area-style padding, not a resolution/DPI
+  mechanism) and `MESSAGE_SERVICE_DISCOVERY_UPDATE` (control id 26,
+  `ServiceDiscoveryUpdate{service}` -- reuses the same `Service`/
+  `MediaSinkService`/`VideoConfiguration` message, so in principle could
+  renegotiate resolution/DPI for one channel after the initial discovery
+  without tearing down the session). **Neither is implemented anywhere in
+  aasdk or openauto** -- no sender, no receiver, in either reference
+  codebase. So "does mid-session resolution/DPI renegotiation actually
+  work against a real phone" is **UNKNOWN**, not confirmed, and would need
+  a live capture (sending a `SERVICE_DISCOVERY_UPDATE` and seeing whether
+  gearhead honors it) before building anything on top of it.
