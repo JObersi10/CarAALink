@@ -4,15 +4,20 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
-import android.widget.Button
+import android.util.TypedValue
+import android.view.ViewGroup
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import androidx.core.content.ContextCompat
+import com.google.android.material.button.MaterialButton
 import dev.caraalink.accessibility.HeadUnitServerLauncher
 
 /**
@@ -28,8 +33,17 @@ class OnboardingActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        setContentView(root)
+        val pad = dp(24)
+        root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad, pad, pad)
+        }
+        setContentView(
+            ScrollView(this).apply {
+                setBackgroundColor(Color.parseColor("#0E1116"))
+                addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            },
+        )
         render()
     }
 
@@ -40,6 +54,13 @@ class OnboardingActivity : Activity() {
 
     private fun render() {
         root.removeAllViews()
+
+        root.addView(TextView(this).apply {
+            text = "Setup checklist"
+            setTextColor(Color.parseColor("#F2F5F7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 26f)
+            setPadding(0, 0, 0, dp(20))
+        })
 
         addItem(
             title = "Accessibility service",
@@ -71,17 +92,52 @@ class OnboardingActivity : Activity() {
     }
 
     private fun addItem(title: String, detail: String, done: Boolean, actionLabel: String, onFix: () -> Unit) {
-        val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        row.addView(TextView(this).apply { text = (if (done) "✅ " else "❌ ") + title })
-        row.addView(TextView(this).apply { text = detail })
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = dp(16)
+            setPadding(pad, pad, pad, pad)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(Color.parseColor("#1B2129"))
+            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                bottomMargin = dp(14)
+            }
+        }
+        card.addView(TextView(this).apply {
+            text = (if (done) "✓  " else "○  ") + title
+            setTextColor(if (done) Color.parseColor("#36C9C6") else Color.parseColor("#F2F5F7"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
+        })
+        card.addView(TextView(this).apply {
+            text = detail
+            setTextColor(Color.parseColor("#9AA7B2"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+            setPadding(0, dp(4), 0, 0)
+        })
         if (!done) {
-            row.addView(Button(this).apply {
+            card.addView(MaterialButton(
+                this,
+                null,
+                com.google.android.material.R.attr.materialButtonOutlinedStyle,
+            ).apply {
                 text = actionLabel
+                isAllCaps = false
+                textSize = 15f
                 setOnClickListener { onFix() }
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)).apply {
+                    topMargin = dp(12)
+                }
+                cornerRadius = dp(14)
+                setTextColor(Color.parseColor("#F2F5F7"))
+                strokeColor = android.content.res.ColorStateList.valueOf(Color.parseColor("#36C9C6"))
             })
         }
-        root.addView(row)
+        root.addView(card)
     }
+
+    private fun dp(value: Int): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value.toFloat(), resources.displayMetrics).toInt()
 
     private fun isAccessibilityServiceEnabled(): Boolean =
         HeadUnitServerLauncher.isAccessibilityServiceEnabled(this)
