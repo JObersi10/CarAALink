@@ -251,15 +251,20 @@ class CarSession(
                 "autoCrop=${dev.caraalink.settings.AppSettings.aaAutoCrop(context)} fillMode=$fillMode " +
                 "carScreen=${dev.caraalink.link.CarScreenInfo.width}x${dev.caraalink.link.CarScreenInfo.height}",
         )
-        // Captured once per showAaSurface() call, not re-read live, because
-        // CarDisplay.showAa() overwrites its single shared onSurface field on
-        // every restart -- the OLD AaCarPresentation's dismiss() is async, so
-        // its surfaceDestroyed teardown can fire *after* a brand-new probe
-        // already took over AaSessionProbe.active, and would otherwise stop
-        // that new probe instead of the dead one it actually belongs to.
-        // Confirmed from a real log: a fresh probe died 3ms after connecting,
-        // blocked on the exact same "waiting for VERSION_RESPONSE" line the
-        // old one was stuck on -- the old presentation's teardown killed it.
+        // My first attempt at this fix (guarding on AaSessionProbe.active ===
+        // myProbe) was wrong -- confirmed wrong by a real log, a fresh probe
+        // still died ~2ms after starting, every single restart. The actual
+        // mechanism: ANY restart (watchdog, settings change) dismisses the
+        // OLD AaCarPresentation as part of building a new one, even though
+        // we're staying in AA mode the whole time. That old presentation's
+        // surfaceDestroyed teardown is indistinguishable from "user left AA
+        // for Home/Mirror" by probe identity alone -- active already points
+        // at the brand-new probe by the time it fires, so the old guard was
+        // always true. The real signal for "did the user actually leave AA"
+        // is display.mode: showHome()/showMirror() set it away from AA
+        // *before* dismissing this presentation, while an in-place restart
+        // sets it to AA first and only then dismisses -- so checking it here
+        // tells the two cases apart correctly.
         val myProbe = dev.caraalink.aa.AaSessionProbe.active
         display.showAa(
             videoWidth = config.resolution.width,
@@ -276,9 +281,13 @@ class CarSession(
                     // connection to the phone's own head-unit-server mode
                     // sitting open in the background indefinitely. Actually
                     // end the session so the phone disconnects for real --
-                    // but only if this presentation's own probe is still the
-                    // live one (see comment above).
-                    if (dev.caraalink.aa.AaSessionProbe.active === myProbe) myProbe?.stop()
+                    // but only when we really left AA mode, not when this is
+                    // just the previous presentation's own teardown mid-restart.
+                    if (display.mode != dev.caraalink.video.CarDisplay.Mode.AA &&
+                        dev.caraalink.aa.AaSessionProbe.active === myProbe
+                    ) {
+                        myProbe?.stop()
+                    }
                     aaDecoder?.stop()
                     aaDecoder = null
                 }
