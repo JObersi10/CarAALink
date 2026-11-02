@@ -15,6 +15,7 @@ object AppSettings {
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
     enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
     enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
+    enum class AaFillMode { FIT, FILL }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -96,6 +97,20 @@ object AppSettings {
 
     fun aaAutoLaunch(context: Context): Boolean =
         prefs(context).getBoolean("aa_auto_launch", false)
+
+    /**
+     * AA only offers 9 fixed resolutions (see AaServiceDiscovery), none of
+     * which matches CarbitLink's own 2.67:1 panel (confirmed: 1920x720) --
+     * so AA's video can never exactly fill that screen no matter which of
+     * the 9 is picked. FIT (default) letterboxes/pillarboxes so nothing is
+     * ever cropped; FILL scales up to cover the whole panel at the cost of
+     * clipping some of AA's UI off the top/bottom or sides.
+     */
+    fun aaFillMode(context: Context): AaFillMode =
+        when (prefs(context).getString("aa_fill_mode", "fit")) {
+            "fill" -> AaFillMode.FILL
+            else -> AaFillMode.FIT
+        }
 
     fun aaAudioRoute(context: Context): AaAudioRoute =
         when (prefs(context).getString("aa_audio_route", "bt_preferred")) {

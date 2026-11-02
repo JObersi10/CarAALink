@@ -40,6 +40,15 @@
         <item>48000</item>
     </string-array>
 
+    <string-array name="aa_fill_mode_entries">
+        <item>Fit (show everything, black bars)</item>
+        <item>Fill (edge to edge, crops a little)</item>
+    </string-array>
+    <string-array name="aa_fill_mode_values">
+        <item>fit</item>
+        <item>fill</item>
+    </string-array>
+
     <string-array name="aa_audio_route_entries">
         <item>Bluetooth if connected, else phone</item>
         <item>Always phone mic/speaker</item>

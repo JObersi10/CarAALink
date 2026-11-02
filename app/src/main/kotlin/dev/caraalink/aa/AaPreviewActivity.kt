@@ -12,6 +12,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
 import dev.caraalink.R
+import dev.caraalink.settings.AppSettings
 import dev.caraalink.video.CarHomePresentation
 import dev.caraalink.video.buildHomeContent
 
@@ -57,7 +58,11 @@ class AaPreviewActivity : Activity() {
             val availW = v.width
             val availH = v.height
             if (availW <= 0 || availH <= 0) return@addOnLayoutChangeListener
-            val scale = minOf(availW / targetW, availH / targetH)
+            val scale = if (AppSettings.aaFillMode(this) == AppSettings.AaFillMode.FILL) {
+                maxOf(availW / targetW, availH / targetH)
+            } else {
+                minOf(availW / targetW, availH / targetH)
+            }
             val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
             val newW = (targetW * scale).toInt()
             val newH = (targetH * scale).toInt()

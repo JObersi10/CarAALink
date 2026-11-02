@@ -68,6 +68,13 @@
             android:summary="Skip the CarAALink home screen and start the AA session as soon as the head unit server is up"
             android:defaultValue="false" />
         <ListPreference
+            android:key="aa_fill_mode"
+            android:title="Car screen fill"
+            android:summary="AA has no resolution matching this car's screen shape, so one of these is unavoidable"
+            android:entries="@array/aa_fill_mode_entries"
+            android:entryValues="@array/aa_fill_mode_values"
+            android:defaultValue="fit" />
+        <ListPreference
             android:key="aa_audio_route"
             android:title="Mic / speaker for Android Auto"
             android:summary="Which device handles AA voice/media audio in and out"

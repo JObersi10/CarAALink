@@ -150,6 +150,17 @@ class AaSessionProbe(
     // themselves @Synchronized so this doesn't race the worker thread's reads.
     private val touchExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "AaSessionProbe-touch").apply { isDaemon = true } }
 
+    // Video/audio decode used to run inline on this probe's single message-
+    // receive thread (the same thread doing TLS unwrap and replying to every
+    // other control message) -- any decode/render stall there delayed ping
+    // replies and every other channel too, which is a real, confirmed-live
+    // "choppy video + delayed touch feedback" cause: the backlog isn't on
+    // the touch SEND path (already its own thread), it's that frames render
+    // behind real-time, so the screen's response to a touch lags along with
+    // the video itself. A dedicated thread keeps the protocol loop free to
+    // keep up with pings/control traffic regardless of how decode is doing.
+    private val mediaExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "AaSessionProbe-media").apply { isDaemon = true } }
+
     /**
      * Sends one touch event on the INPUT_SOURCE channel: `InputReport{
      * timestamp=1, touch_event=3 {pointer_data=1 [{x,y,pointer_id}],
@@ -198,6 +209,12 @@ class AaSessionProbe(
         worker?.interrupt()
         worker = null
         if (active === this) active = null
+        // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
+        // each with its own executors -- without this they'd leak one idle
+        // daemon thread pool per reconnect, which during the ~every-minute
+        // drop/reconnect cycle this session is still seeing adds up fast.
+        touchExecutor.shutdownNow()
+        mediaExecutor.shutdownNow()
     }
 
     /**
@@ -383,7 +400,7 @@ class AaSessionProbe(
                             val frame = chBody.copyOfRange(8, chBody.size)
                             if (containsIdr(frame)) cachedKeyframe = frame
                             lastVideoFrameAt = System.currentTimeMillis()
-                            videoSink?.invoke(ts, frame)
+                            mediaExecutor.execute { videoSink?.invoke(ts, frame) }
                         }
                     } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
                         // SPS/PPS, no timestamp prefix (unlike MEDIA_MESSAGE_DATA) --
@@ -391,7 +408,7 @@ class AaSessionProbe(
                         logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_VIDEO (${chBody.size}B)")
                         if (chBody.isNotEmpty()) {
                             cachedCodecConfig = chBody
-                            videoSink?.invoke(0L, chBody)
+                            mediaExecutor.execute { videoSink?.invoke(0L, chBody) }
                         }
                     } else if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO &&
                         (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG || chId == AaFraming.MSG_MEDIA_DATA)
@@ -412,10 +429,11 @@ class AaSessionProbe(
                                 // whatever was already playing and never resuming it,
                                 // since music doesn't resend its own config afterward.
                                 val player = audioPlayer ?: AaAudioPlayer(context, sampleRate = 48_000, channelCount = 2).also { audioPlayer = it }
-                                player.setCodecConfig(chBody)
+                                mediaExecutor.execute { player.setCodecConfig(chBody) }
                             }
                         } else if (chBody.size > 8) {
-                            audioPlayer?.feed(chBody.copyOfRange(8, chBody.size))
+                            val pcm = chBody.copyOfRange(8, chBody.size)
+                            mediaExecutor.execute { audioPlayer?.feed(pcm) }
                         }
                     } else if (chId == AaFraming.MSG_MEDIA_MICROPHONE_REQUEST &&
                         message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE

@@ -71,12 +71,22 @@ class AaCarPresentation(
             onTouch(x, y, action)
             true
         }
+        area.clipChildren = true
         area.addView(texture, FrameLayout.LayoutParams(0, 0, Gravity.CENTER))
         area.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ ->
             val aw = r - l
             val ah = b - t
             if (aw <= 0 || ah <= 0) return@addOnLayoutChangeListener
-            val scale = minOf(aw.toFloat() / videoWidth, ah.toFloat() / videoHeight)
+            // AA has no resolution matching CarbitLink's 2.67:1 panel (confirmed:
+            // the car reports 1920x720, AA only offers 16:9-family sizes), so one
+            // of these two tradeoffs is unavoidable. FIT (min) letterboxes/
+            // pillarboxes with nothing cropped; FILL (max) covers the whole
+            // panel and relies on `area.clipChildren` to cut off the overflow.
+            val scale = if (dev.caraalink.settings.AppSettings.aaFillMode(context) == dev.caraalink.settings.AppSettings.AaFillMode.FILL) {
+                maxOf(aw.toFloat() / videoWidth, ah.toFloat() / videoHeight)
+            } else {
+                minOf(aw.toFloat() / videoWidth, ah.toFloat() / videoHeight)
+            }
             val w = (videoWidth * scale).toInt()
             val h = (videoHeight * scale).toInt()
             val lp = texture.layoutParams as FrameLayout.LayoutParams
