@@ -240,7 +240,18 @@ class CarSession(
         dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = {
             logger.log("AA video settings changed -- reconnecting session")
             dev.caraalink.aa.AaSessionProbe.active?.stop()
-            openAndroidAuto()
+            // Confirmed from a real log: reconnecting immediately after
+            // stop() got a healthy TCP connect but then silence -- no
+            // VERSION_RESPONSE ever, watchdog restarting every 10s with the
+            // same result, needing a full app/server restart to recover.
+            // This is a *warm* restart (gearhead had a live session we just
+            // yanked away), not the cold-start "service not up yet" case --
+            // it likely needs a moment to actually tear down the old
+            // session before it's ready to service a new one. A brief
+            // grace period before reconnecting, same idea as the existing
+            // accessibility-auto-start delay, gives it that room instead of
+            // racing it.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ openAndroidAuto() }, 1500)
         }
         val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
         val fillMode = dev.caraalink.settings.AppSettings.aaFillMode(context)

@@ -114,18 +114,38 @@ class AaAudioPlayer(
             } else {
                 logger.log("AA audio (preview) -> default routing (no built-in speaker device found)")
             }
-        } else if (AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.BT_PREFERRED) {
-            val am = context.getSystemService(AudioManager::class.java)
-            val a2dp = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-                ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
-            if (a2dp != null) {
-                runCatching { t.preferredDevice = a2dp }
-                logger.log("AA audio -> Bluetooth A2DP (${a2dp.productName})")
-            } else {
-                logger.log("AA audio: BT-preferred but no A2DP device connected, falling back to default routing")
-            }
         } else {
-            logger.log("AA audio -> default routing (device-only setting)")
+            // Unconstrained ("default") routing is the risky case: this app
+            // always has an active USB accessory connection to the dongle
+            // for the whole session, and PCM has repeatedly shown up as
+            // genuinely written to AudioTrack (real frames-delivered counts)
+            // while still reported inaudible -- consistent with audio
+            // silently going out over that USB connection instead of
+            // anywhere audible. Always pick an explicit device: A2DP if
+            // BT-preferred and actually connected, else the phone's own
+            // speaker as a safe, always-audible fallback (confirmed live:
+            // "BT-preferred but no A2DP device" was hitting unconstrained
+            // routing and going silent, even with the car paired over BT).
+            val am = context.getSystemService(AudioManager::class.java)
+            val devices = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            val a2dp = if (AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.BT_PREFERRED) {
+                devices?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+            } else null
+            when {
+                a2dp != null -> {
+                    runCatching { t.preferredDevice = a2dp }
+                    logger.log("AA audio -> Bluetooth A2DP (${a2dp.productName})")
+                }
+                else -> {
+                    val speaker = devices?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                    if (speaker != null) {
+                        runCatching { t.preferredDevice = speaker }
+                        logger.log("AA audio -> built-in speaker (no A2DP device found/wanted)")
+                    } else {
+                        logger.log("AA audio -> default routing (no built-in speaker device found)")
+                    }
+                }
+            }
         }
         // PCM has repeatedly shown up as genuinely written to AudioTrack
         // (confirmed via its own "frames delivered" log on stop()) while
