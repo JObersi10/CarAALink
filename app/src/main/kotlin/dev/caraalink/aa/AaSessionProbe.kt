@@ -461,14 +461,28 @@ class AaSessionProbe(
                         channel.sendChannelControl(message.channelId, AaFraming.MSG_CHANNEL_OPEN_RESPONSE, response)
                     } else if (chId == AaFraming.MSG_MEDIA_SETUP) {
                         // Setup{type=1}. Video/audio sinks answer with
-                        // Config{status=READY(2), max_unacked=1,
+                        // Config{status=READY(2), max_unacked,
                         // configuration_indices=[0]} on MEDIA_MESSAGE_CONFIG
                         // (32771); the microphone source quirkily reuses
                         // MEDIA_MESSAGE_SETUP (32768) as its own response id
                         // (aasdk's MediaSourceService::sendChannelSetupResponse()).
+                        //
+                        // max_unacked was hardcoded to 1 for EVERY channel,
+                        // video included -- confirmed wrong from
+                        // mrmees/open-android-auto's own docs
+                        // (docs/interactions/04-channel-lifecycle.md,
+                        // GPL-3.0, facts only): video's documented typical
+                        // value is 10 (a sliding window, pipelined), audio's
+                        // is 1 (strict lockstep). Forcing video to 1 made
+                        // every single frame wait a full ack round-trip
+                        // before the phone would send the next one, instead
+                        // of streaming several ahead -- a real, self-
+                        // inflicted throughput cap, not just decode speed or
+                        // thermal throttling.
+                        val maxUnacked = if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) 10 else 1
                         val config = AaProtobuf.Writer()
                             .int(1, 2) // status = STATUS_READY
-                            .int(2, 1) // max_unacked
+                            .int(2, maxUnacked)
                             .int(3, 0) // configuration_indices[0]
                             .build()
                         val responseId = if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE) {
