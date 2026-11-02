@@ -143,6 +143,26 @@ class AaSessionProbe(
     @Volatile
     private var audioPlayer: AaAudioPlayer? = null
 
+    // AVMediaAckIndication (0x8004) flow control, confirmed from
+    // mrmees/open-android-auto's protocol docs (GPL-3.0, paraphrased facts
+    // only -- field numbers/names, not their prose): every MEDIA_SETUP
+    // response here grants max_unacked=1, but nothing ever sent this ack
+    // back -- the phone tracks unacked AV frames against that limit and
+    // simply stops sending more once it's hit, with no timeout recovery.
+    // That's exactly the observed symptom: one audio MEDIA_CODEC_CONFIG,
+    // then silence forever. `session` comes from each channel's own
+    // MEDIA_START (AVChannelStartIndication) and must be echoed back.
+    private val avAckSession = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+    private val avAckCounter = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
+    private fun sendAvAck(channel: AaTlsChannel, channelId: Int) {
+        val session = avAckSession[channelId] ?: 0
+        val value = avAckCounter.merge(channelId, 1) { old, inc -> old + inc } ?: 1
+        val ack = AaProtobuf.Writer().int(1, session).int(2, value).build()
+        runCatching { channel.sendChannelSpecific(channelId, AaFraming.MSG_AV_MEDIA_ACK, ack) }
+            .onFailure { logger.log("AV_MEDIA_ACK send failed on ch$channelId: $it") }
+    }
+
     // sendTouch() is called from whatever thread owns the preview UI (not
     // this session's own worker thread) -- a raw socket write there would
     // throw NetworkOnMainThreadException on the UI thread. One background
@@ -390,6 +410,16 @@ class AaSessionProbe(
                             val focus = AaProtobuf.Writer().int(1, 1).bool(2, false).build()
                             channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION, focus)
                         }
+                    } else if (chId == AaFraming.MSG_MEDIA_START &&
+                        (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO ||
+                            message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO)
+                    ) {
+                        // AVChannelStartIndication{session=1, config=2}: the
+                        // `session` value must be echoed back in every
+                        // AVMediaAckIndication on this channel (see sendAvAck).
+                        val session = AaProtobuf.parse(chBody).firstOrNull { it.number == 1 }?.varint?.toInt() ?: 0
+                        avAckSession[message.channelId] = session
+                        logger.log("RX MEDIA_START on ${AaFraming.channelName(message.channelId)} session=$session")
                     } else if (chId == AaFraming.MSG_MEDIA_DATA && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
                         // handleMediaWithTimestampIndication(): payload is an
                         // 8-byte big-endian Timestamp (microseconds) followed
@@ -402,6 +432,14 @@ class AaSessionProbe(
                             lastVideoFrameAt = System.currentTimeMillis()
                             mediaExecutor.execute { videoSink?.invoke(ts, frame) }
                         }
+                        // Flow control (AVMediaAckIndication, 0x8004): our own
+                        // MEDIA_SETUP response above grants max_unacked=1, so
+                        // without acking every single frame the phone stalls
+                        // after exactly one -- confirmed from a real exported
+                        // log. Ack immediately on receipt rather than waiting
+                        // for decode, so a slow/dropped decode doesn't also
+                        // stall the phone's own send side.
+                        sendAvAck(channel, message.channelId)
                     } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG && message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO) {
                         // SPS/PPS, no timestamp prefix (unlike MEDIA_MESSAGE_DATA) --
                         // feed as-is, timestamp 0, ahead of the IDR frame that follows it.
@@ -410,6 +448,7 @@ class AaSessionProbe(
                             cachedCodecConfig = chBody
                             mediaExecutor.execute { videoSink?.invoke(0L, chBody) }
                         }
+                        sendAvAck(channel, message.channelId)
                     } else if (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO &&
                         (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG || chId == AaFraming.MSG_MEDIA_DATA)
                     ) {
@@ -435,6 +474,12 @@ class AaSessionProbe(
                             val pcm = chBody.copyOfRange(8, chBody.size)
                             mediaExecutor.execute { audioPlayer?.feed(pcm) }
                         }
+                        // Audio's own MEDIA_SETUP grants max_unacked=1 same as
+                        // video -- the phone sends exactly one buffer then
+                        // waits forever for this ack, which is the confirmed
+                        // root cause of "no music, ever" (not a routing or
+                        // AudioTrack-timing bug after all).
+                        sendAvAck(channel, message.channelId)
                     } else if (chId == AaFraming.MSG_MEDIA_MICROPHONE_REQUEST &&
                         message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE
                     ) {
