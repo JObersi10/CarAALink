@@ -1550,3 +1550,23 @@ tracking lives above the AA session specifically (tied to the whole USB
 accessory session) and a graceful AA-level shutdown still isn't enough to
 reset it. Not implemented -- bigger, riskier change since it would affect
 the whole CarbitLink session (Mirror/Home too), not just AA.
+
+## DPI direction is inverted from the assumed model -- confirmed twice live
+
+The simple `px = dp * density/160` model (higher density -> more pixels
+per UI element -> looks BIGGER) does not match reality. Confirmed from
+TWO separate real tests (Car Preview, and the real car with manual
+density=500): a HIGHER declared density makes AA's UI look **smaller**,
+not bigger. Best current hypothesis, not yet verified: AA likely follows
+Android's own `sw<N>dp` width-breakpoint convention -- a fixed pixel
+resolution at a higher density implies a SMALLER logical (dp) width
+(`dp_width = px_width * 160/density`), which would trigger a more compact
+layout breakpoint, same mechanism as a phone vs. a tablet getting
+different-sized UI chrome at the same physical resolution.
+
+No formula change made -- don't have a confirmed correct target value.
+Instead, Settings now shows the actual computed density number live (both
+auto and manual DPI preference summaries) so the owner can calibrate by
+eye on the real car instead of the app guessing blind. If/when a target
+value that "looks right" is found empirically, revisit `AppSettings
+.videoDpi()`'s auto formula with that data point.
