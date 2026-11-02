@@ -64,11 +64,17 @@ object AppSettings {
      * `density` value.
      */
     fun videoDpi(context: Context, width: Int, height: Int): Int {
-        if (prefs(context).getBoolean("video_dpi_auto", true)) {
+        if (videoDpiAuto(context)) {
             return (minOf(width, height) / 720f * 213).toInt().coerceIn(120, 320)
         }
-        return prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
+        return manualVideoDpi(context)
     }
+
+    /** True if the auto-DPI formula is in use; false means a manual value was set. */
+    fun videoDpiAuto(context: Context): Boolean = prefs(context).getBoolean("video_dpi_auto", true)
+
+    fun manualVideoDpi(context: Context): Int =
+        prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
 
     fun audioSampleRateHz(context: Context): Int =
         prefs(context).getString("audio_sample_rate", "48000")?.toIntOrNull() ?: 48000

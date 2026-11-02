@@ -184,7 +184,10 @@ object AaServiceDiscovery {
             defaultRes
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
-        val density = if (preview) {
+        // Same principle as Custom resolution above: a manually-set DPI is
+        // still the owner's explicit choice, honoured in preview too --
+        // only the *auto* case gets overridden with the phone's own density.
+        val density = if (preview && AppSettings.videoDpiAuto(context)) {
             context.resources.displayMetrics.densityDpi
         } else {
             AppSettings.videoDpi(context, resolution.width, resolution.height)

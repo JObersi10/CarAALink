@@ -14,7 +14,6 @@ import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.Toast
 import dev.caraalink.R
-import dev.caraalink.settings.AppSettings
 import dev.caraalink.settings.SettingsActivity
 import dev.caraalink.video.CarHomePresentation
 import dev.caraalink.video.buildHomeContent
@@ -76,17 +75,23 @@ class AaPreviewActivity : Activity() {
         val surfaceView = SurfaceView(this)
         root.addView(surfaceView, FrameLayout.LayoutParams(1, 1, Gravity.CENTER))
 
+        // AA only offers 16:9-family resolutions, but a modern phone's own
+        // screen is nowhere close to 16:9 in either orientation -- FIT
+        // (honouring the owner's car setting, meant for the car's own
+        // panel) made that mismatch visible as letterbox bars, worse-looking
+        // in landscape even though the actual proportional mismatch is the
+        // same in both orientations. Car Preview always crops to fill
+        // instead, same tradeoff FILL mode already makes for a real car's
+        // odd-aspect panel -- this is a dev preview tool, not meant to
+        // reproduce the car's exact letterboxing.
+        root.clipChildren = true
         root.addOnLayoutChangeListener { v, _, _, _, _, _, _, _, _ ->
             val targetW = config.resolution.width.toFloat()
             val targetH = config.resolution.height.toFloat()
             val availW = v.width
             val availH = v.height
             if (availW <= 0 || availH <= 0) return@addOnLayoutChangeListener
-            val scale = if (AppSettings.aaFillMode(this) == AppSettings.AaFillMode.FILL) {
-                maxOf(availW / targetW, availH / targetH)
-            } else {
-                minOf(availW / targetW, availH / targetH)
-            }
+            val scale = maxOf(availW / targetW, availH / targetH)
             val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
             val newW = (targetW * scale).toInt()
             val newH = (targetH * scale).toInt()
