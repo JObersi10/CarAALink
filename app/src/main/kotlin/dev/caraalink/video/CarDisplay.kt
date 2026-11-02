@@ -136,7 +136,12 @@ class CarDisplay(
      * the decoder and touch forwarding; the caller (CarSession) owns the
      * actual AaSessionProbe/AaVideoDecoder/AaAudioPlayer.
      */
-    fun showAa(videoWidth: Int, videoHeight: Int, onSurface: (Surface?) -> Unit, onTouch: (Int, Int, Int) -> Unit) = main.post {
+    fun showAa(
+        videoWidth: Int,
+        videoHeight: Int,
+        onSurface: (Surface?) -> Unit,
+        onTouch: (pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit,
+    ) = main.post {
         aaVideoSize = videoWidth to videoHeight
         aaOnSurface = onSurface
         aaOnTouch = onTouch
@@ -146,7 +151,7 @@ class CarDisplay(
 
     private var aaVideoSize: Pair<Int, Int>? = null
     private var aaOnSurface: ((Surface?) -> Unit)? = null
-    private var aaOnTouch: ((Int, Int, Int) -> Unit)? = null
+    private var aaOnTouch: ((pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit)? = null
 
     private fun showCurrent() {
         val display = carDisplay?.display ?: return
@@ -177,7 +182,7 @@ class CarDisplay(
             context, display, w, h,
             onExit = onExit,
             onSurface = { s -> aaOnSurface?.invoke(s) },
-            onTouch = { x, y, action -> aaOnTouch?.invoke(x, y, action) },
+            onTouch = { pointers, actionIndex, action -> aaOnTouch?.invoke(pointers, actionIndex, action) },
         )
     }
 

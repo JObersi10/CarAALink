@@ -150,9 +150,17 @@ object AaServiceDiscovery {
         // using them here produced a landscape 1920x1080 feed on a portrait
         // phone screen, confirmed from a real log. Preview always matches
         // the phone's own current screen shape and size instead.
+        // A Custom resolution is still the owner's explicit choice -- preview
+        // should honour it like the real car does, not silently override it
+        // with phone-matched auto-sizing. Preview only takes over orientation
+        // and sizing when the owner hasn't set a specific custom target.
+        val isCustom = AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM
+        val customWh = if (isCustom) AppSettings.customResolution(context) else null
         val metrics = context.resources.displayMetrics
-        val portrait = if (preview) {
+        val portrait = if (preview && customWh == null) {
             metrics.heightPixels >= metrics.widthPixels
+        } else if (customWh != null) {
+            customWh.second > customWh.first
         } else {
             when (AppSettings.carOrientation(context)) {
                 AppSettings.CarOrientation.PORTRAIT -> true
@@ -165,13 +173,13 @@ object AaServiceDiscovery {
         }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
         val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
-        val resolution = if (preview) {
+        val resolution = if (customWh != null) {
+            val (w, h) = customWh
+            candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
+        } else if (preview) {
             candidates.minByOrNull {
                 kotlin.math.abs(it.width * it.height - metrics.widthPixels * metrics.heightPixels)
             } ?: defaultRes
-        } else if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
-            val (w, h) = AppSettings.customResolution(context) ?: (defaultRes.width to defaultRes.height)
-            candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
         } else {
             defaultRes
         }
@@ -408,6 +416,6 @@ object AaServiceDiscovery {
     /** Human-readable summary for the log. */
     fun describe(config: Config = Config()): String =
         "video=${config.resolution.width}x${config.resolution.height}" +
-            "@${if (config.frameRate == FPS_60) 60 else 30}fps h264bp, " +
+            "@${if (config.frameRate == FPS_60) 60 else 30}fps h264bp density=${config.density}, " +
             "touch=${config.touchWidth}x${config.touchHeight}, name='${config.displayName}'"
 }

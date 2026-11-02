@@ -105,13 +105,16 @@ class AaPreviewActivity : Activity() {
         // event: at full rate a swipe can fire dozens of MotionEvents before
         // the previous send even reaches the phone, which is what made touch
         // feel laggy (on top of the logging fix in AaTlsChannel).
+        // Multi-touch (pinch/rotate in Maps etc.): AA's TouchEvent.touch_location
+        // is a repeated field (confirmed from mrmees/open-android-auto's
+        // docs/protocol-reference.md, GPL-3.0, field numbers only) -- every
+        // currently-down finger goes in one message, with actionIndex saying
+        // which one triggered this particular down/up/move.
         var lastMoveAt = 0L
         surfaceView.setOnTouchListener { view, event ->
-            val x = (event.x / view.width * config.resolution.width).toInt().coerceIn(0, config.resolution.width - 1)
-            val y = (event.y / view.height * config.resolution.height).toInt().coerceIn(0, config.resolution.height - 1)
             val action = when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> 0
-                MotionEvent.ACTION_UP -> 1
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> 1
                 MotionEvent.ACTION_MOVE -> {
                     val now = System.currentTimeMillis()
                     if (now - lastMoveAt < 30) return@setOnTouchListener true
@@ -120,7 +123,12 @@ class AaPreviewActivity : Activity() {
                 }
                 else -> return@setOnTouchListener false
             }
-            probe?.sendTouch(x, y, action)
+            val pointers = (0 until event.pointerCount).map { i ->
+                val x = (event.getX(i) / view.width * config.resolution.width).toInt().coerceIn(0, config.resolution.width - 1)
+                val y = (event.getY(i) / view.height * config.resolution.height).toInt().coerceIn(0, config.resolution.height - 1)
+                Triple(x, y, event.getPointerId(i))
+            }
+            probe?.sendTouch(pointers, event.actionIndex, action)
             true
         }
 

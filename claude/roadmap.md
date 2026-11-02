@@ -1306,3 +1306,67 @@ fixed three tiles -- something like phone-style widgets, user-arranged
 layout, and a car background image (untested so far). "Not really that
 needed, but it's just cool to have." No design/scope decided yet; revisit
 when there's bandwidth, not urgent.
+
+## Session findings (round 4) -- AA restart self-kill, Car Preview scaling, multi-touch
+
+- **AA restart self-kill -- FIRST FIX WAS WRONG, confirmed by a real live-car
+  log.** The watchdog-restart (and settings-change-restart) path was
+  killing the brand-new probe within ~2-3ms of it connecting, every single
+  time, before it could ever get a VERSION_RESPONSE. First attempt guarded
+  `CarSession.showAaSurface()`'s `onSurface(null)` branch on
+  `AaSessionProbe.active === myProbe` -- wrong, because by the time the
+  OLD `AaCarPresentation`'s async `surfaceDestroyed` teardown fires,
+  `.active` already points at the new probe (identity check is always
+  true during a normal restart). Real fix: check `display.mode != Mode.AA`
+  instead -- `showHome()`/`showMirror()` set mode away from AA *before*
+  dismissing, while an in-place restart sets it to AA first and only then
+  dismisses, so that's the signal that actually distinguishes "user left
+  AA" from "this is just the old presentation tearing down mid-restart."
+  Not yet re-verified live after this correction.
+- **Separately, in that same log: the phone's head-unit-server didn't
+  answer VERSION_REQUEST at all, 10s straight, across all 3 restart
+  attempts.** Real, independent issue -- not caused by our code, nothing
+  in our logs explains why gearhead went silent that particular session.
+- **Car Preview negotiated resolution/density/orientation all came from
+  car-oriented settings (or CarScreenInfo, which only reflects the last
+  REAL car), not from the phone actually running the preview.** Confirmed
+  from a real log + a screenshot: a landscape 1920x1080 feed rendered as a
+  small box on a portrait phone, with the UI inside looking tiny once
+  stretched (AA's auto-DPI formula keeps logical UI width constant at
+  ~541dp for a real car panel -- correct there, wrong once that buffer is
+  blown up to fill a much bigger phone screen). Fixed via a `preview: Boolean`
+  flag threaded through `AaServiceDiscovery.configFromSettings()` ->
+  `AaSessionProbe.Config` -> both `AaPreviewActivity`'s own sizing math and
+  the probe's actual `SERVICE_DISCOVERY_RESPONSE` (both MUST agree, or the
+  decoder silently fails per the existing code comment): preview mode uses
+  the phone's own current screen shape/size and real density instead of
+  car settings. A user-set Custom resolution is still honoured in preview
+  too (their explicit choice), only the *auto* case was being driven by
+  car-oriented defaults.
+- **Audio keeps showing up as genuinely written to AudioTrack** (confirmed
+  via its own "frames delivered" count on stop(), e.g. 1.2M+ frames in one
+  session -- real, sustained PCM) **at a normal non-zero media volume**
+  (7-8/15, confirmed via an added volume log), **while still reported
+  inaudible.** This app always has an active USB accessory connection to
+  the CarbitLink dongle for the entire session, even during Car Preview --
+  hypothesis (not yet confirmed live): default audio routing was letting
+  that USB connection claim output instead of the phone's own speaker.
+  Fixed by explicitly forcing `TYPE_BUILTIN_SPEAKER` as the preferred
+  device when not in BT-preferred mode, instead of leaving routing
+  unconstrained. **Not yet verified live.**
+- **Multi-touch (pinch/rotate) added.** Previously `sendTouch()` was
+  hardcoded single-pointer; Google Maps pinch-zoom and pan weren't
+  reachable at the protocol level at all, regardless of coordinates.
+  Confirmed from mrmees/open-android-auto's `docs/protocol-reference.md`
+  (GPL-3.0, field numbers only) that `TouchEvent.touch_location` (field 1)
+  is a `repeated` field -- exactly the shape needed, already proven
+  correct for single-touch. `AaSessionProbe.sendTouch()` now takes a list
+  of `(x, y, pointerId)` for every currently-down finger plus which one
+  triggered this event (`actionIndex`); `AaPreviewActivity` and
+  `AaCarPresentation`'s touch listeners now read `event.pointerCount` /
+  `getPointerId(i)` instead of just the primary pointer, and handle
+  `ACTION_POINTER_DOWN`/`ACTION_POINTER_UP` alongside `ACTION_DOWN`/`UP`.
+  **Not yet tested live** -- Maps panning (single-finger drag) was also
+  reported broken in the same test; that's likely a *separate* issue
+  (coarse 30ms move-throttling vs. whatever sample rate Maps' own gesture
+  recognizer expects), not fixed by this change, still open.

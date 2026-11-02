@@ -649,12 +649,19 @@ been installed/tested on the owner's actual phone:
 - CI now uploads the debug APK as a build artifact (`android-ci.yml`,
   `actions/upload-artifact`) — useful for grabbing an installable APK
   without local SDK access.
-- Local build note: this machine's Android SDK + Gradle home
-  (`~/.gradle` → symlinked to `/Volumes/SABRENT/gradle-home`) lives on an
-  external drive that gets unmounted sometimes — if local builds suddenly
-  fail with a missing SDK/lock-file error, check `ls /Volumes` first.
-  `JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
-  ./gradlew assembleDebug --no-daemon` is the working local build command.
+- Local build note: this machine's Android SDK (`local.properties`'
+  `sdk.dir`) and Gradle home live on the external **Sabrent** drive — if
+  local builds suddenly fail with a missing SDK/lock-file error, check
+  `ls /Volumes` first (needs to show `SABRENT` mounted). Working local
+  build command, confirmed 2026-11-02 (the Android-Studio-JBR path
+  previously noted here doesn't actually exist on this machine --
+  `/usr/bin/java` alone also fails with "Unable to locate a Java
+  Runtime"):
+  ```
+  JAVA_HOME="/Volumes/SABRENT/gradle-home/jdks/eclipse_adoptium-17-aarch64-os_x/jdk-17.0.20+8/Contents/Home" \
+  GRADLE_USER_HOME=/Volumes/SABRENT/gradle-home \
+  ./gradlew assembleDebug --console=plain
+  ```
 - The two source APKs (and extracted folders) are gitignored — large,
   third-party binaries. `jadx` (plain CLI, not the REA/MCP integration —
   `REA_JADX_MCP_JAR` isn't configured here) decompiles them fine for

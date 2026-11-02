@@ -102,7 +102,26 @@ class AaAudioPlayer(private val context: Context, private val sampleRate: Int, p
                 logger.log("AA audio: BT-preferred but no A2DP device connected, falling back to default routing")
             }
         } else {
-            logger.log("AA audio -> default routing (device-only setting)")
+            // "Default routing" used to mean whatever AudioManager picks
+            // unconstrained -- but this app always has an active USB
+            // accessory connection to the CarbitLink dongle for the whole
+            // session (required for Car Preview too, not just the real
+            // car), and confirmed live: PCM was genuinely being written to
+            // this track (real "frames delivered" counts on stop(), at a
+            // normal non-zero media volume) while still reported inaudible.
+            // That matches audio silently going out over the USB connection
+            // instead of the phone's own speaker, not a decode/volume bug.
+            // Force the built-in speaker explicitly rather than leaving it
+            // to chance.
+            val am = context.getSystemService(AudioManager::class.java)
+            val speaker = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            if (speaker != null) {
+                runCatching { t.preferredDevice = speaker }
+                logger.log("AA audio -> built-in speaker (forced, not left to default routing)")
+            } else {
+                logger.log("AA audio -> default routing (no built-in speaker device found)")
+            }
         }
         // PCM has repeatedly shown up as genuinely written to AudioTrack
         // (confirmed via its own "frames delivered" log on stop()) while

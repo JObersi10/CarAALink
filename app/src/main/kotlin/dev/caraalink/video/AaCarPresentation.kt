@@ -29,7 +29,7 @@ class AaCarPresentation(
     private val videoHeight: Int,
     private val onExit: () -> Unit,
     private val onSurface: (Surface?) -> Unit,
-    private val onTouch: (x: Int, y: Int, action: Int) -> Unit,
+    private val onTouch: (pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit,
 ) : Presentation(context, display) {
 
     private var surface: Surface? = null
@@ -54,13 +54,16 @@ class AaCarPresentation(
             }
             override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
         }
+        // Multi-touch (pinch/rotate): AA's TouchEvent.touch_location is a
+        // repeated field (confirmed from mrmees/open-android-auto's
+        // docs/protocol-reference.md, GPL-3.0, field numbers only) -- every
+        // currently-down finger goes in one message, with actionIndex saying
+        // which one triggered this particular down/up/move.
         var lastMoveAt = 0L
         texture.setOnTouchListener { v, ev ->
-            val x = (ev.x / v.width * videoWidth).toInt().coerceIn(0, videoWidth - 1)
-            val y = (ev.y / v.height * videoHeight).toInt().coerceIn(0, videoHeight - 1)
             val action = when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> 0
-                MotionEvent.ACTION_UP -> 1
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> 1
                 MotionEvent.ACTION_MOVE -> {
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastMoveAt < 30) return@setOnTouchListener true
@@ -69,7 +72,12 @@ class AaCarPresentation(
                 }
                 else -> return@setOnTouchListener true
             }
-            onTouch(x, y, action)
+            val pointers = (0 until ev.pointerCount).map { i ->
+                val x = (ev.getX(i) / v.width * videoWidth).toInt().coerceIn(0, videoWidth - 1)
+                val y = (ev.getY(i) / v.height * videoHeight).toInt().coerceIn(0, videoHeight - 1)
+                Triple(x, y, ev.getPointerId(i))
+            }
+            onTouch(pointers, ev.actionIndex, action)
             true
         }
         area.clipChildren = true

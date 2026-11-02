@@ -292,7 +292,9 @@ class CarSession(
                     aaDecoder = null
                 }
             },
-            onTouch = { x, y, action -> dev.caraalink.aa.AaSessionProbe.active?.sendTouch(x, y, action) },
+            onTouch = { pointers, actionIndex, action ->
+                dev.caraalink.aa.AaSessionProbe.active?.sendTouch(pointers, actionIndex, action)
+            },
         )
     }
 

@@ -45,6 +45,13 @@ that limitation stays visible there, not silently papered over elsewhere.
   Android (same category as tarplay-public / CarCast Launcher). No public
   source, so it's evidence of feasibility only, never a code reference.
   Also gitignored.
+- [mrmees/open-android-auto](https://github.com/mrmees/open-android-auto/tree/main/docs)
+  (GPL-3.0) — independent AA protocol documentation, useful for
+  cross-checking our own aasdk-derived understanding (field numbers,
+  message shapes). Fetch and read individual pages as needed; never
+  bulk-copy the docs tree into this repo, and paraphrase facts (field
+  names/numbers) into our own docs with attribution rather than
+  reproducing their prose/tables verbatim -- it's a GPL repo, not ours.
 
 ## Workflow
 

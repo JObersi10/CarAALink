@@ -185,20 +185,32 @@ class AaSessionProbe(
 
     /**
      * Sends one touch event on the INPUT_SOURCE channel: `InputReport{
-     * timestamp=1, touch_event=3 {pointer_data=1 [{x,y,pointer_id}],
-     * action_index=2, action=3}}`, `INPUT_MESSAGE_INPUT_REPORT` (32769),
-     * ENCRYPTED/SPECIFIC -- cited from aasdk's
-     * `InputSourceService::sendInputReport()`. No-op if no channel is
-     * established (e.g. still mid-handshake, or no session running).
-     * [action] is a `PointerAction`: DOWN=0, UP=1, MOVED=2.
+     * timestamp=1, touch_event=3 {touch_location=1 (repeated) [{x,y,
+     * pointer_id}], action_index=2, action=3}}`, `INPUT_MESSAGE_INPUT_REPORT`
+     * (32769), ENCRYPTED/SPECIFIC -- cited from aasdk's
+     * `InputSourceService::sendInputReport()`, field numbers/repetition
+     * cross-checked against mrmees/open-android-auto's
+     * `docs/protocol-reference.md` (TouchEvent `wcj` / TouchLocation `wci`,
+     * GPL-3.0, paraphrased facts only). No-op if no channel is established
+     * (e.g. still mid-handshake, or no session running).
+     *
+     * [pointers] lists every currently-down finger (x, y, pointerId) -- for
+     * a single-finger tap/drag that's one entry; for pinch/rotate it's two.
+     * [actionIndex] is which entry in [pointers] triggered this particular
+     * event (which finger went down/up/moved); [action] is a `PointerAction`:
+     * DOWN=0, UP=1, MOVED=2.
      */
-    fun sendTouch(x: Int, y: Int, action: Int, pointerId: Int = 0) {
+    fun sendTouch(pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) {
         val channel = activeChannel ?: return
+        if (pointers.isEmpty()) return
         touchExecutor.execute {
-            val pointer = AaProtobuf.Writer().int(1, x).int(2, y).int(3, pointerId).build()
-            val touchEvent = AaProtobuf.Writer()
-                .message(1, pointer)
-                .int(2, 0) // action_index
+            val touchEventWriter = AaProtobuf.Writer()
+            for ((x, y, pointerId) in pointers) {
+                val pointer = AaProtobuf.Writer().int(1, x).int(2, y).int(3, pointerId).build()
+                touchEventWriter.message(1, pointer)
+            }
+            val touchEvent = touchEventWriter
+                .int(2, actionIndex)
                 .int(3, action)
                 .build()
             val report = AaProtobuf.Writer()
@@ -209,6 +221,11 @@ class AaSessionProbe(
                 channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_INPUT_SOURCE, AaFraming.MSG_INPUT_REPORT, report)
             }.onFailure { Log.w(TAG, "sendTouch failed", it) }
         }
+    }
+
+    /** Single-finger convenience overload -- same as `sendTouch(listOf(Triple(x,y,pointerId)), 0, action)`. */
+    fun sendTouch(x: Int, y: Int, action: Int, pointerId: Int = 0) {
+        sendTouch(listOf(Triple(x, y, pointerId)), 0, action)
     }
 
     fun start() {
