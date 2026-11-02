@@ -1027,15 +1027,39 @@ could do better than the app's own Fit/Fill scaling:
   extensions outside the open AA spec entirely -- which is exactly why
   this project needs its own mirror bridge (CarbitLink) rather than
   native AA support, consistent with this whole project's premise.
-- **Conclusion: the app's current Fit/Fill approach (scale client-side,
-  nothing protocol-level) is already the right one, not a stopgap for
-  something better.** Protocol-level margins give zero efficiency
-  benefit over app-side scaling and are harder to control precisely
-  (AA's own clamping/fallback behavior isn't fully predictable) -- so
-  there's no reason to chase margin-based cropping instead of what's
-  already shipped. The one real remaining improvement is the UiConfig
-  insets point above, and only if Fill mode's clipping turns out to cut
-  off interactive AA elements in practice, not preemptively.
+- **Correction (same day, after reading `mrmees/open-android-auto`'s
+  `docs/video-resolution.md` directly rather than secondhand): margins
+  are worth pursuing after all, just not for the reason first assumed.**
+  That doc's own wording: the phone renders into "a centered sub-region"
+  and fills the rest with black, and **the head unit crops/overscans the
+  decoded video to show only the content area** -- i.e. margins aren't
+  just "AA paints black pixels we'd otherwise paint ourselves," they
+  define an *exact, known* inner content rectangle the head unit is
+  expected to crop to. For this panel specifically: requesting
+  `R1920X1080` with a `height_margin` sized so the inner content height
+  is exactly 720 would mean cropping to that inner rect and displaying
+  it 1:1 -- **no scaling at all**, vs. today's Fit (downscales to
+  1280x720, still pillarboxed) or Fill (upscales and clips real AA
+  content, not just AA's own intentional blank margin). That's strictly
+  better than either current option, not just a different tradeoff --
+  full native resolution, nothing real cropped, no interpolation
+  blur. Bandwidth/encode cost is still identical either way, as already
+  noted, but that was never the point; the point is this is a sharper,
+  more correct Fill than scaling can ever produce.
+- **Why this isn't implemented yet: the exact margin semantics are
+  genuinely unconfirmed, not just unimplemented.** Neither this repo's
+  own `AaServiceDiscovery.Config` doc comment nor
+  `open-android-auto`'s doc states whether `height_margin`/`width_margin`
+  is a *per-side* value (content height = resolution.height -
+  2*margin, split evenly top+bottom) or a *total* inset (content height
+  = resolution.height - margin, split some other way) -- "centered
+  sub-region" supports either reading. Shipping the wrong interpretation
+  wouldn't just look slightly off, it would crop into real AA content or
+  leave an unexpected black band, which is worse than the current
+  honest Fit/Fill. Per `claude.md`'s rule, this needs a live capture
+  (request a deliberately large, easily visually distinguishable margin
+  value and see exactly where AA puts the real content in the decoded
+  frame) before it's implemented, not a guess either way.
 
 ### Feasibility check (2026-11-02), four more requested items
 
