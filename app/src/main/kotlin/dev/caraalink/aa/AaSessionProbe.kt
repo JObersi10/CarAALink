@@ -266,6 +266,26 @@ class AaSessionProbe(
     fun stop() {
         if (!running.compareAndSet(true, false)) return
         logger.log("=== session probe stopped")
+        // Confirmed from mrmees/open-android-auto's own protocol docs
+        // (docs/interactions/05-session-maintenance-teardown.md, GPL-3.0,
+        // facts only): a session end is supposed to be announced with
+        // ShutdownRequest BEFORE the transport closes, so the other side
+        // can clean up its own session state -- we previously just
+        // abruptly closed the raw socket every time WE decided to end a
+        // session (settings change, watchdog restart, leaving AA), with
+        // no graceful signal at all. Plausible real-world consequence,
+        // caught live via gearhead's own logcat: gearhead's developer
+        // head-unit networking component crashed with "Already connected"
+        // on a subsequent reconnect attempt -- consistent with its session
+        // tracking never having been told the previous one actually ended
+        // on purpose, only ever seeing the pipe die. Best-effort: this
+        // must not block or throw if the channel's already unusable.
+        runCatching {
+            activeChannel?.let { ch ->
+                val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
+                ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+            }
+        }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
         runCatching { socket?.close() }
         socket = null
         worker?.interrupt()
