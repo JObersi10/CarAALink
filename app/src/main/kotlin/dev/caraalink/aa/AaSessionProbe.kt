@@ -638,6 +638,31 @@ class AaSessionProbe(
                         logger.log("RX SENSOR_MESSAGE_REQUEST on SENSOR type=$sensorType")
                         val response = AaProtobuf.Writer().int(1, 0).build() // status = STATUS_SUCCESS
                         channel.sendChannelSpecific(message.channelId, AaFraming.MSG_SENSOR_RESPONSE, response)
+                        // We ack the subscription but CarbitLink's own wire
+                        // protocol carries no real speed/gear/parking-brake
+                        // data to source an actual driving-status reading
+                        // from -- and we were never sending ANY DrivingStatus
+                        // event at all after acking. Confirmed from the
+                        // owner's live report: AA was *always* in its driving-
+                        // restricted UI mode, never "parked" -- consistent
+                        // with AA failing safe to "assume driving" when a
+                        // subscribed sensor never actually reports in
+                        // (mrmees/open-android-auto's docs/channels/sensor.md,
+                        // GPL-3.0, facts only: SensorEventIndication=32771,
+                        // DrivingStatus is field 13 of that message, status is
+                        // a bitmask where 0=UNRESTRICTED). Push one
+                        // UNRESTRICTED event right after acking the
+                        // subscription -- not a real sensor reading, just the
+                        // one value that stops AA defaulting to fully
+                        // restricted with nothing ever telling it otherwise.
+                        if (sensorType == AaServiceDiscovery.SENSOR_DRIVING_STATUS_DATA.toLong()) {
+                            val drivingStatus = AaProtobuf.Writer().int(1, 0).build() // status = UNRESTRICTED
+                            val event = AaProtobuf.Writer()
+                                .message(AaServiceDiscovery.SENSOR_DRIVING_STATUS_DATA, drivingStatus)
+                                .build()
+                            channel.sendChannelSpecific(message.channelId, AaFraming.MSG_SENSOR_EVENT_INDICATION, event)
+                            logger.log("TX SENSOR_EVENT_INDICATION DrivingStatus=UNRESTRICTED")
+                        }
                     }
                     continue
                 }

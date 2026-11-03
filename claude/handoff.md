@@ -1,8 +1,42 @@
 # Handoff
 
-Last rewritten: 2026-11-02. Owner is tagging the current state **v1.0.0**
-and merging PR #18 into `main` themselves. See `roadmap.md` for full cited
+Last rewritten: 2026-11-02. PR #18 is merged into `main`. Owner is tagging
+that state **v1.0.0** themselves. ChatGPT is picking up the investigation
+below for a while -- see round 7 first. See `roadmap.md` for full cited
 CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
+
+## LATEST (2026-11-02, round 7) -- driving-status fix + a real gearhead-side lead from ChatGPT
+
+**Fixed:** AA was always in its driving-restricted UI mode ("always on
+drive"), never "parked". Root cause: we advertise and ack the
+`DrivingStatus` sensor subscription but never actually pushed a
+`SensorEventIndication` (message `32771`) event -- AA appears to fail safe
+to fully restricted when a sensor it subscribed to never reports in.
+CarbitLink's own protocol gives us no real speed/gear/parking-brake data,
+so this isn't real detection -- it pushes one `DrivingStatus{status=0}`
+(UNRESTRICTED bitmask) event right after acking the subscription, which at
+least stops the false "always restricted" default. Confirmed from
+mrmees/open-android-auto's `docs/channels/sensor.md` (GPL-3.0, facts only).
+Not yet live-tested.
+
+**New lead, not yet actionable** -- ChatGPT analyzed an unfiltered phone-side
+logcat (comparing gearhead's behavior with the *PhoneAuto* reference app,
+not CarAALink) and found: gearhead processed a `USB_ACCESSORY_HANDSHAKE`
+dated ~11m35s stale (matching timestamps from our own earlier capture's very
+first handshake) **while simultaneously logging `USB_PORT_DISCONNECTED`** --
+and still proceeded through SSL/SDP negotiation and started a real session
+off that stale handshake. That session ran ~3m14s then hit the same
+`FRAMER_READ_END_OF_STREAM` EOF pattern already documented elsewhere in this
+file, followed by several quick (4-15s) failed retries. This is gearhead's
+own USB negotiation state machine doing something out-of-order, not
+anything CarAALink sent -- not fixable from our side, but a real, concrete
+lead for *why* sessions die the way they do.
+
+**Next step for whoever picks this up:** get a capture of CarAALink's own
+log (not just gearhead's) spanning the SAME window as a gearhead-side
+capture, long enough to catch a natural EOF + the retries after it, so the
+two can be correlated minute-for-minute. Every capture so far has had one
+side or the other missing the key moment.
 
 ## LATEST (2026-11-02, round 6) -- another marathon real-car session, mostly real fixes this time
 
