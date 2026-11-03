@@ -26,20 +26,20 @@ class AdbTransport(
 ) {
 
     interface StreamHandler {
-        fun onOpen(stream: Stream) {}
-        fun onData(stream: Stream, data: ByteArray)
-        fun onClose(stream: Stream) {}
+        fun onOpen(stream: MirrorStream) {}
+        fun onData(stream: MirrorStream, data: ByteArray)
+        fun onClose(stream: MirrorStream) {}
     }
 
-    inner class Stream(val localId: Int, val remoteId: Int, val service: String, val handler: StreamHandler) {
+    inner class Stream(override val localId: Int, val remoteId: Int, val service: String, val handler: StreamHandler) : MirrorStream {
         private val queue = ArrayDeque<ByteArray>()
         private var canSend = true
-        @Volatile var closed = false
+        @Volatile override var closed = false
             private set
         private var queuedBytes = 0
 
         /** Queues [data] (split to maxdata chunks); sent one WRTE per remote OKAY. */
-        fun write(data: ByteArray) {
+        override fun write(data: ByteArray) {
             if (closed || data.isEmpty()) return
             synchronized(this) {
                 var off = 0
@@ -53,9 +53,9 @@ class AdbTransport(
             pump()
         }
 
-        fun backlogBytes(): Int = synchronized(this) { queuedBytes }
+        override fun backlogBytes(): Int = synchronized(this) { queuedBytes }
 
-        fun clearBacklog() = synchronized(this) {
+        override fun clearBacklog() = synchronized(this) {
             queue.clear()
             queuedBytes = 0
         }

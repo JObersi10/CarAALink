@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+/** Short commit this build was made from -- for the in-app update checker to compare against. */
+fun gitSha(): String = runCatching {
+    providers.exec { commandLine("git", "rev-parse", "--short=10", "HEAD") }.standardOutput.asText.get().trim()
+}.getOrDefault("unknown")
+
 android {
     namespace = "dev.caraalink"
     compileSdk = 34
@@ -13,6 +18,11 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "GIT_SHA", "\"${gitSha()}\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     signingConfigs {
@@ -53,4 +63,5 @@ dependencies {
     implementation("com.google.android.material:material:1.12.0")
 
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.11.0")
 }

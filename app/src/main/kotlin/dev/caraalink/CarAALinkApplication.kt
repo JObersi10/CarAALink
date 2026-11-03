@@ -25,7 +25,20 @@ class CarAALinkApplication : Application() {
         super.onCreate()
         installCrashLogger()
         startSelfLogcatCapture()
-        logger.log("CarAALinkApplication.onCreate")
+        // Carry a previous crash's full trace into THIS launch's own log
+        // file (a new file per launch -- see DiagnosticLogger.currentFile())
+        // rather than leaving it stuck in whatever old file was open when it
+        // happened. Doesn't clear the marker -- MainActivity's
+        // consumeLastCrash() still does that for the one-time Toast.
+        dev.caraalink.diagnostics.CrashMarker.peekLastCrashTrace(this)?.let { trace ->
+            logger.log("Previous run crashed -- carried forward from the crash marker:\n$trace")
+        }
+        // Confirmed necessary live: a log once showed behavior that didn't
+        // match the current source at all, with no way to tell from the log
+        // itself whether that was a real regression or just an install that
+        // silently didn't take (older APK still running). Stamping the
+        // exact build identity at startup removes that ambiguity for good.
+        logger.log("CarAALinkApplication.onCreate build=${dev.caraalink.BuildConfig.GIT_SHA} versionName=${dev.caraalink.BuildConfig.VERSION_NAME}")
     }
 
     /**
@@ -42,6 +55,16 @@ class CarAALinkApplication : Application() {
                 logger.log("FATAL on ${thread.name}: ${Log.getStackTraceString(throwable)}")
             }
             runCatching { dev.caraalink.diagnostics.CrashMarker.recordCrash(this, thread.name, throwable) }
+            // Owner asked for this directly: a crash log saved automatically,
+            // not something to go dig out of Developer tools after the fact.
+            // Runs synchronously here, before the default handler terminates
+            // the process -- a single small file copy comfortably finishes
+            // in that window.
+            runCatching {
+                if (dev.caraalink.settings.AppSettings.autoSaveCrashLog(this)) {
+                    logger.saveToDownloads(logger.latestLogFile())
+                }
+            }
             previous?.uncaughtException(thread, throwable)
         }
     }

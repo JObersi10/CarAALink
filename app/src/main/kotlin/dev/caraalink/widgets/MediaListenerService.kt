@@ -18,6 +18,7 @@ import android.service.notification.StatusBarNotification
  */
 class MediaListenerService : NotificationListenerService() {
 
+    private val logger by lazy { dev.caraalink.diagnostics.DiagnosticLogger(this, "now-playing") }
     private var activeController: MediaController? = null
     private val controllerCallback = object : MediaController.Callback() {
         override fun onMetadataChanged(metadata: android.media.MediaMetadata?) = publish()
@@ -34,10 +35,13 @@ class MediaListenerService : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        logger.log("listener connected")
         val manager = getSystemService(MediaSessionManager::class.java)
         val component = android.content.ComponentName(this, MediaListenerService::class.java)
         runCatching { manager.addOnActiveSessionsChangedListener(sessionsListener, component) }
+            .onFailure { logger.log("addOnActiveSessionsChangedListener failed: $it") }
         runCatching { pickController(manager.getActiveSessions(component)) }
+            .onFailure { logger.log("getActiveSessions failed: $it") }
     }
 
     override fun onListenerDisconnected() {
@@ -60,6 +64,7 @@ class MediaListenerService : NotificationListenerService() {
         activeController?.unregisterCallback(controllerCallback)
         activeController = next
         next?.registerCallback(controllerCallback)
+        logger.log("active media session -> ${next?.packageName ?: "none"}")
         publish()
     }
 

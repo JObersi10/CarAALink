@@ -42,6 +42,36 @@ class CarDisplay(
     private var info = ""
     private var touchDownAt = 0L
 
+    // phoneSize() is only read when (re)building the mirror presentation, so a
+    // rotation mid-session otherwise stayed locked to whatever orientation the
+    // phone was in when "Phone screen" was tapped -- the mirrored app's own
+    // landscape content just got letterboxed smaller inside that fixed
+    // portrait canvas instead of the canvas itself expanding. Watching the
+    // phone's own (default) display for rotation and rebuilding on change is
+    // what picks up the new aspect ratio.
+    // onDisplayChanged fires for ANY property change on the default display
+    // (brightness, refresh rate, etc.), not just rotation -- rebuilding the
+    // presentation on every one of those caused a brief visible flash even
+    // when the phone never actually rotated. Only rebuild when the phone's
+    // own orientation genuinely flipped since the last time we checked.
+    private var lastMirrorPortrait: Boolean? = null
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != Display.DEFAULT_DISPLAY || mode != Mode.MIRROR) return
+            val phone = phoneSize()
+            val portrait = phone.y >= phone.x
+            if (lastMirrorPortrait != null && lastMirrorPortrait == portrait) return
+            lastMirrorPortrait = portrait
+            main.post { showCurrent() }
+        }
+    }
+
+    init {
+        context.getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, main)
+    }
+
     /** Point the car display at a (new) encoder surface of [w]x[h]. */
     fun attach(surface: Surface, w: Int, h: Int) = main.post {
         val dpi = (minOf(w, h) / 720f * 213).toInt().coerceIn(120, 320)
@@ -94,6 +124,18 @@ class CarDisplay(
     }
 
     fun showHome() = main.post {
+        // Leaving an active mirror session used to just swap the on-screen
+        // Presentation -- the underlying MediaProjection (and the system's
+        // "screen is being recorded" capture, battery drain included) kept
+        // running in the background indefinitely, only ever actually
+        // stopped by release() (the whole car-session teardown). Stop it
+        // for real when genuinely leaving mirror, not just hiding it.
+        if (mode == Mode.MIRROR) {
+            projection?.stop()
+            projection = null
+            mirrorDisplay?.release()
+            mirrorDisplay = null
+        }
         mode = Mode.HOME
         showCurrent()
     }
@@ -115,8 +157,16 @@ class CarDisplay(
      * the decoder and touch forwarding; the caller (CarSession) owns the
      * actual AaSessionProbe/AaVideoDecoder/AaAudioPlayer.
      */
-    fun showAa(videoWidth: Int, videoHeight: Int, onSurface: (Surface?) -> Unit, onTouch: (Int, Int, Int) -> Unit) = main.post {
+    fun showAa(
+        videoWidth: Int,
+        videoHeight: Int,
+        widthMargin: Int = 0,
+        heightMargin: Int = 0,
+        onSurface: (Surface?) -> Unit,
+        onTouch: (pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit,
+    ) = main.post {
         aaVideoSize = videoWidth to videoHeight
+        aaMargin = widthMargin to heightMargin
         aaOnSurface = onSurface
         aaOnTouch = onTouch
         mode = Mode.AA
@@ -124,8 +174,9 @@ class CarDisplay(
     }
 
     private var aaVideoSize: Pair<Int, Int>? = null
+    private var aaMargin: Pair<Int, Int> = 0 to 0
     private var aaOnSurface: ((Surface?) -> Unit)? = null
-    private var aaOnTouch: ((Int, Int, Int) -> Unit)? = null
+    private var aaOnTouch: ((pointers: List<Triple<Int, Int, Int>>, actionIndex: Int, action: Int) -> Unit)? = null
 
     private fun showCurrent() {
         val display = carDisplay?.display ?: return
@@ -137,7 +188,15 @@ class CarDisplay(
                 else -> {
                     mode = Mode.HOME
                     mirrorDisplay?.surface = null
-                    CarHomePresentation(context, display, tiles).also {
+                    // onBack (phone.back()) only acts on the PHONE's own
+                    // screen, invisible from the car side and a no-op when
+                    // accessibility is off -- confirmed not doing anything
+                    // useful live. showHome() is what the car's own hardware
+                    // Home key already calls (CarSession.onKey) and is the
+                    // one mechanism actually proven to affect the car
+                    // screen -- dismisses and rebuilds this presentation,
+                    // which also recovers it if it's ever stuck.
+                    CarHomePresentation(context, display, tiles, onExit = ::showHome).also {
                         it.show()
                         it.setStatus(status)
                         it.setInfo(info)
@@ -152,16 +211,18 @@ class CarDisplay(
 
     private fun aaPresentation(display: Display): Presentation {
         val (w, h) = aaVideoSize!!
+        val (wm, hm) = aaMargin
         return AaCarPresentation(
-            context, display, w, h,
+            context, display, w, h, wm, hm,
             onExit = onExit,
             onSurface = { s -> aaOnSurface?.invoke(s) },
-            onTouch = { x, y, action -> aaOnTouch?.invoke(x, y, action) },
+            onTouch = { pointers, actionIndex, action -> aaOnTouch?.invoke(pointers, actionIndex, action) },
         )
     }
 
     private fun mirrorPresentation(display: Display): Presentation {
         val phone = phoneSize()
+        lastMirrorPortrait = phone.y >= phone.x
         // Half resolution is plenty for a 720p-tall car screen and halves encoder load.
         val mw = phone.x / 2
         val mh = phone.y / 2
@@ -176,13 +237,17 @@ class CarDisplay(
 
     private fun attachMirror(surface: Surface?, w: Int, h: Int) {
         val p = projection ?: return
+        val dpi = context.resources.displayMetrics.densityDpi / 2
         val existing = mirrorDisplay
         if (existing != null) {
+            // Rotation rebuilds MirrorPresentation with the new w/h (see
+            // displayListener above) -- resize the still-live VirtualDisplay to
+            // match instead of just swapping its surface at the old size.
+            existing.resize(w, h, dpi)
             existing.surface = surface
             return
         }
         if (surface == null) return
-        val dpi = context.resources.displayMetrics.densityDpi / 2
         // One createVirtualDisplay per projection on Android 14+, so keep it and swap surfaces.
         // AUTO_MIRROR = a copy of the phone screen, not a second display (no DeX).
         mirrorDisplay = p.createVirtualDisplay(
@@ -217,6 +282,7 @@ class CarDisplay(
     }
 
     fun release() = main.post {
+        context.getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         presentation?.dismiss()
         presentation = null
         carDisplay?.release()

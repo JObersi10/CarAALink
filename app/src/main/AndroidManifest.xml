@@ -19,6 +19,10 @@
     <!-- Without this, ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS silently
          fails on many OEM builds instead of showing the system dialog. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Installing the downloaded update APK ourselves (instead of just
+         opening the release page and making the user do it) needs this on
+         API 26+, same as any app distributed outside the Play Store. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Package visibility (API 30+): needed to launch Android Auto for the
          one-click head-unit-server start. -->

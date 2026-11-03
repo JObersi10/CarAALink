@@ -47,6 +47,8 @@ class DeveloperToolsActivity : Activity() {
         })
 
         root.addView(button("Export latest log") { exportLatestLog() })
+        root.addView(button("Save log to Downloads") { saveLogToDownloads() })
+        root.addView(button("Clear logs") { clearLogs() })
 
         root.addView(section("Car Preview: shows CarAALink's own car home screen on this phone, " +
             "same as the car sees it -- tap its Android Auto tile to start (or attach to) a " +
@@ -109,5 +111,25 @@ class DeveloperToolsActivity : Activity() {
                 "Share CarAALink logs",
             )
         )
+    }
+
+    private fun clearLogs() {
+        DiagnosticLogger.clearAll(this)
+        Toast.makeText(this, "Logs cleared", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun saveLogToDownloads() {
+        val logger = DiagnosticLogger(this, "app")
+        val file = logger.latestLogFile()
+        if (!file.exists() || file.length() == 0L) {
+            Toast.makeText(this, "No logs yet", Toast.LENGTH_LONG).show()
+            return
+        }
+        val name = logger.saveToDownloads(file)
+        Toast.makeText(
+            this,
+            if (name != null) "Saved $name to Downloads" else "Save failed",
+            Toast.LENGTH_LONG,
+        ).show()
     }
 }

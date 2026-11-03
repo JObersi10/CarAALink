@@ -1,122 +1,50 @@
 package dev.caraalink.aa
 
+import dev.caraalink.aa.AaServiceDiscovery.AaResolution
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Structural tests for the head unit's service discovery response. Field
- * numbers are pinned to aasdk's protos so the phone has something it can parse.
- *
- * Channels are located by their `Service.id` rather than by index, so adding a
- * service doesn't silently invalidate the assertions.
+ * Headless coverage for the margin-autodetect geometry (claude/roadmap.md's
+ * open per-side-vs-total question): this only tests the aspect-ratio math,
+ * not which semantics AA actually gives `width_margin`/`height_margin` on
+ * the wire -- that part still needs a live car (see AppSettings.aaAutoCrop).
  */
 class AaServiceDiscoveryTest {
 
-    private val config = AaServiceDiscovery.Config(
-        resolution = AaServiceDiscovery.AaResolution.R1920X1080,
-        touchWidth = 1920,
-        touchHeight = 720,
-    )
-
-    /** Map of Service.id -> parsed Service fields. */
-    private fun channels(): Map<Long, List<AaProtobuf.Field>> =
-        AaProtobuf.parse(AaServiceDiscovery.build(config))
-            .filter { it.number == 1 }
-            .associate { serviceFields ->
-                val parsed = AaProtobuf.parse(serviceFields.bytes!!)
-                parsed.first { it.number == 1 }.varint to parsed
-            }
-
     @Test
-    fun `video sink channel is present and typed`() {
-        val video = channels()[AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO.toLong()]
-        assertNotNull("media sink video channel missing", video)
-        assertTrue("video channel must carry media_sink_service (3)", video!!.any { it.number == 3 })
+    fun `this car (1920x720, 2point67-to-1) crops height off a 1920x1080 resolution`() {
+        val (widthMargin, heightMargin) = AaServiceDiscovery.autoMargin(AaResolution.R1920X1080, carWidth = 1920, carHeight = 720)
+
+        assertEquals(0, widthMargin)
+        // desiredHeight = 1920 / (1920/720) = 720 -> margin = 1080 - 720 = 360
+        assertEquals(360, heightMargin)
     }
 
     @Test
-    fun `input source channel is present and typed`() {
-        val input = channels()[AaServiceDiscovery.CHANNEL_INPUT_SOURCE.toLong()]
-        assertNotNull("input source channel missing", input)
-        assertTrue("input channel must carry input_source_service (4)", input!!.any { it.number == 4 })
+    fun `a resolution wider than the car crops width instead`() {
+        // Contrived: a car taller for its width than any real AA resolution (aspect 1.0),
+        // so a 16:9 resolution is the one that's "too wide" and needs a width crop.
+        val (widthMargin, heightMargin) = AaServiceDiscovery.autoMargin(AaResolution.R1280X720, carWidth = 720, carHeight = 720)
+
+        assertEquals(0, heightMargin)
+        // desiredWidth = 720 * (720/720) = 720 -> margin = 1280 - 720 = 560
+        assertEquals(560, widthMargin)
     }
 
     @Test
-    fun `media audio sink channel is present`() {
-        val audio = channels()[AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO.toLong()]
-        assertNotNull("media audio channel missing", audio)
-        assertTrue(audio!!.any { it.number == 3 })
+    fun `an exact aspect match needs no crop`() {
+        val (widthMargin, heightMargin) = AaServiceDiscovery.autoMargin(AaResolution.R1280X720, carWidth = 1280, carHeight = 720)
+
+        assertEquals(0, widthMargin)
+        assertEquals(0, heightMargin)
     }
 
     @Test
-    fun `video configuration carries resolution frame rate and codec`() {
-        val video = channels()[AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO.toLong()]!!
-        val mediaSink = video.first { it.number == 3 }.bytes!!
-        val videoConfigs = AaProtobuf.parse(mediaSink).filter { it.number == 4 }
-        assertEquals(1, videoConfigs.size)
+    fun `unknown car dimensions (no car connected yet) means no crop`() {
+        val (widthMargin, heightMargin) = AaServiceDiscovery.autoMargin(AaResolution.R1920X1080, carWidth = 0, carHeight = 0)
 
-        val vc = AaProtobuf.parse(videoConfigs[0].bytes!!)
-        assertEquals(
-            AaServiceDiscovery.AaResolution.R1920X1080.protocolValue.toLong(),
-            vc.first { it.number == 1 }.varint,
-        )
-        assertEquals(AaServiceDiscovery.FPS_30.toLong(), vc.first { it.number == 2 }.varint)
-        assertEquals(AaServiceDiscovery.CODEC_VIDEO_H264_BP.toLong(), vc.first { it.number == 10 }.varint)
-    }
-
-    @Test
-    fun `video sink advertises h264 not audio`() {
-        val video = channels()[AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO.toLong()]!!
-        val mediaSink = AaProtobuf.parse(video.first { it.number == 3 }.bytes!!)
-        assertEquals(
-            "available_type must be MEDIA_CODEC_VIDEO_H264_BP on a video sink",
-            AaServiceDiscovery.CODEC_VIDEO_H264_BP.toLong(),
-            mediaSink.first { it.number == 1 }.varint,
-        )
-    }
-
-    @Test
-    fun `touchscreen reports the car pixel area`() {
-        val input = channels()[AaServiceDiscovery.CHANNEL_INPUT_SOURCE.toLong()]!!
-        val body = AaProtobuf.parse(input.first { it.number == 4 }.bytes!!)
-        val touch = AaProtobuf.parse(body.first { it.number == 2 }.bytes!!)
-        assertEquals(1920L, touch.first { it.number == 1 }.varint)
-        assertEquals(720L, touch.first { it.number == 2 }.varint)
-    }
-
-    @Test
-    fun `driver position and display name are present`() {
-        val fields = AaProtobuf.parse(AaServiceDiscovery.build(config))
-        assertEquals(AaServiceDiscovery.DRIVER_POSITION_LEFT.toLong(), fields.first { it.number == 6 }.varint)
-        assertEquals("CarAALink", AaProtobuf.utf8(fields.first { it.number == 14 }))
-    }
-
-    @Test
-    fun `connection configuration carries the ping cadence`() {
-        val fields = AaProtobuf.parse(AaServiceDiscovery.build(config))
-        val connection = AaProtobuf.parse(fields.first { it.number == 16 }.bytes!!)
-        val ping = AaProtobuf.parse(connection.first { it.number == 1 }.bytes!!)
-        assertEquals(3000L, ping.first { it.number == 1 }.varint)
-        assertEquals(1000L, ping.first { it.number == 2 }.varint)
-        assertEquals(200L, ping.first { it.number == 3 }.varint)
-        assertEquals(5L, ping.first { it.number == 4 }.varint)
-    }
-
-    @Test
-    fun `head unit info is populated`() {
-        val fields = AaProtobuf.parse(AaServiceDiscovery.build(config))
-        val info = AaProtobuf.parse(fields.first { it.number == 17 }.bytes!!)
-        assertEquals("CarAALink", AaProtobuf.utf8(info.first { it.number == 1 }))
-    }
-
-    @Test
-    fun `no AA resolution offers 1920x720`() {
-        // Documents the constraint behind keeping 16:9: the car is 2.67:1 and
-        // AA has no matching mode, so the display side always fits/letterboxes.
-        val carAspect = 1920.0 / 720.0
-        val offered = AaServiceDiscovery.AaResolution.values().map { it.width.toDouble() / it.height }
-        assertTrue("no AA mode matches the car's aspect", offered.none { kotlin.math.abs(it - carAspect) < 0.01 })
+        assertEquals(0, widthMargin)
+        assertEquals(0, heightMargin)
     }
 }

@@ -243,6 +243,24 @@ class UsbLinkForegroundService : Service() {
         super.onDestroy()
     }
 
+    /**
+     * There was never a "Disconnect"/"Exit" control anywhere in the app --
+     * the only user-facing way to end a session was unplugging the USB
+     * cable (which the detach receiver above deliberately waits 30s on, in
+     * case it's a brief reseat). Swiping CarAALink away from recents does
+     * NOT call onDestroy() on its own -- without overriding this, the
+     * foreground service (and the whole USB/AA session underneath it) just
+     * keeps running invisibly in the background. That's "CarAALink won't
+     * close cleanly": swiping it away looks like closing it, but the stale
+     * session stays alive and wedged, which is exactly the kind of state
+     * that then needs the head-unit-server toggle to actually break.
+     */
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.i(TAG, "onTaskRemoved: app swiped away -- stopping session")
+        stopSelfCleanly()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     /**

@@ -34,6 +34,15 @@ class CarHomePresentation(
     context: Context,
     display: Display,
     private val tiles: List<Tile>,
+    /**
+     * Owner reported having no way to leave CarAALink from its own home
+     * screen at all -- AA/Mirror both got a corner button for this (see
+     * AaCarPresentation/MirrorPresentation), the home screen never did, on
+     * the assumption that being on it already meant "home". Wired to the
+     * same phone-back action as Mirror's button: it backs out on the phone
+     * side rather than tearing down the whole USB session.
+     */
+    private val onExit: (() -> Unit)? = null,
 ) : Presentation(context, display) {
 
     data class Tile(val label: String, val iconRes: Int, val color: Int, val onTap: () -> Unit)
@@ -48,6 +57,27 @@ class CarHomePresentation(
         statusView = built.statusView
         infoView = built.infoView
         frame.addView(built.root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (onExit != null) {
+            fun dp(v: Int) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics).toInt()
+            frame.addView(
+                TextView(context).apply {
+                    text = "‹"
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 30f)
+                    typeface = Typeface.DEFAULT_BOLD
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.argb(200, 31, 42, 48))
+                    }
+                    isClickable = true
+                    setOnClickListener { onExit.invoke() }
+                },
+                FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START).apply {
+                    setMargins(dp(12), dp(12), 0, 0)
+                },
+            )
+        }
         // Some hardware encoders emit nothing for an unchanged screen; the car
         // pulls frames continuously and gives up if they stop. A 1px view that
         // flickers between two near-identical colours keeps frames flowing.

@@ -778,38 +778,41 @@ hex dump is already wired to capture it.
   requires the caller to itself be an enabled `NotificationListenerService`
   -- the service never reads notification content, only holds that
   permission.
-- **AA-to-CarbitLink bridge.** Pipe the AA receiver's decoded H.264 frames
-  directly into the CarbitLink video encoder/transport pipeline (today the
+- **AA-to-CarbitLink bridge -- CORRECTION 2026-11-02: already shipped,
+  since the day AA support landed. This bullet previously said "today the
   AA path only ever reaches its own `AaCarPresentation`/`AaPreviewActivity`
-  surfaces, never the actual CarbitLink wire), and map touch events coming
-  in from CarbitLink back into the AA input channel. This is the real "AA
-  session actually appears over CarbitLink on a non-CarAALink head unit"
-  milestone -- not scoped yet. Two designs, elaborated 2026-11-02:
-  - **(a) Decode + re-encode (recommended starting point).** Render AA's
-    decoded frames onto the *same* `Surface` `CarVideoEncoder` already
-    reads from (instead of `AaCarPresentation`'s own TextureView), so the
-    already-confirmed mirror pipeline (`CarVideoEncoder` ->
-    `MirrorDataChannel`) carries it to the head unit unchanged. Costs a
-    double transcode (AA's H.264 decoded, then re-encoded) -- added
-    latency and a quality/bitrate hit -- but touches zero unconfirmed
-    protocol surface, since it's just pointing our existing, working
-    encoder at a different source of frames.
-  - **(b) Direct NAL passthrough (later optimization, real risk).** Both
-    AA's `MEDIA_MESSAGE_DATA` and `MirrorDataChannel.frame()` carry raw
-    H.264 Annex-B bytes, so in principle AA's NALs could go straight into
-    `MirrorDataChannel.frame()` with no local decode/re-encode at all --
-    *if* the negotiated AA resolution matches the head unit's own
-    `CaptureConfig.encodeWidth/encodeHeight` and the head unit's hardware
-    decoder accepts whatever H.264 profile/level AA's own encoder chose
-    (not necessarily the Baseline profile `CarVideoEncoder` requests --
-    we don't control AA's encoder settings). Don't attempt this until (a)
-    is proven working and only if (a)'s extra latency is measured (via the
-    new perf HUD) to actually matter.
-  - Touch direction is the easy half: `CarSession`'s existing
-    `onTouch`/`display.touch()` path already demonstrates mapping car
-    coordinates into a target's space; this just needs to also call
-    `AaSessionProbe.active?.sendTouch(...)` scaled into
-    `config.resolution` instead of (or alongside) the mirror dispatch.
+  surfaces, never the actual CarbitLink wire" -- that's wrong, caught by
+  actually re-reading `CarDisplay`/`CarSession` end to end rather than
+  reasoning from the class names.** Design (a) below isn't a "starting
+  point" to build -- it's exactly the architecture that's already running:
+  - `CarSession.onCaptureConfig()` creates ONE `CarVideoEncoder` per car
+    connection and calls `display.attach(enc.inputSurface, ...)`, which
+    `CarDisplay` uses as the backing `Surface` of its one private
+    `VirtualDisplay` (`carDisplay`).
+  - `CarDisplay.showCurrent()` puts the Home, Mirror, *or* AA
+    `Presentation` on that *same* `carDisplay.display` depending on mode
+    -- there's only ever one virtual display, one encoder, one
+    `MirrorDataChannel` (tcp:10920) feeding the real head unit, no matter
+    which of the three is showing.
+  - So when AA is active, `AaCarPresentation`'s `TextureView` (fed by
+    `AaVideoDecoder` decoding the phone's real AA session) is rendered
+    *inside* that same virtual display, which the same `CarVideoEncoder`
+    captures and sends to the head unit over CarbitLink exactly like the
+    phone-mirror and home-screen content do. The "bridge" is just this
+    app's normal one-encoder-per-car design, not a separate thing to wire
+    up -- there was never a second, AA-only rendering path that bypassed
+    the car.
+  - Touch already flows the other way too: `CarSession.onTouch()`
+    (CarbitLink -> us) and `AaCarPresentation`'s own touch listener ->
+    `AaSessionProbe.active?.sendTouch(...)` (us -> AA) are both live
+    already; AA mode just uses the latter instead of `display.touch()`.
+  - What design (b) (direct NAL passthrough, skipping the decode+re-encode
+    double transcode) would still be a real, unscoped optimization for --
+    only worth it if the perf HUD shows the existing decode-then-reencode
+    latency actually matters in practice. Not attempted: needs the AA
+    resolution to exactly match `CaptureConfig.encodeWidth/encodeHeight`
+    and the head unit's decoder to accept whatever profile/level AA's own
+    encoder picked, neither confirmed.
 - **AA audio -> CarbitLink's own USB audio endpoint -- still blocked,
   practical workaround SHIPPED 2026-11-02.** CarbitLink's wire protocol
   still doesn't carry audio in any path (mirroring included) --
@@ -841,10 +844,35 @@ hex dump is already wired to capture it.
   *every* video/audio `MEDIA_MESSAGE_DATA` frame through
   `DiagnosticLogger`'s synchronous file write -- now only logged when the
   sniffer toggle is on, off by default.
-- **Headless testing harness.** Mock-USB-device tests that simulate the
-  CarbitLink handshake/state machine without physical car hardware, so
-  regressions in the handshake logic can be caught without a live car. Not
-  scoped, but elaborated 2026-11-02:
+- **Headless testing harness -- `MirrorStream` extraction + channel tests
+  SHIPPED 2026-11-02.** Mock-USB-device tests that simulate the CarbitLink
+  handshake/state machine without physical car hardware, so regressions in
+  the handshake logic can be caught without a live car.
+  - **Done:** `MirrorStream` is now a top-level interface (`localId`,
+    `closed`, `write`/`backlogBytes`/`clearBacklog`) in `MirrorChannels.kt`;
+    `AdbTransport.Stream` implements it, and `MirrorHost`/
+    `AdbTransport.StreamHandler`/`MirrorControlChannel`/`MirrorDataChannel`/
+    `PxcChannel`/`CarSession` all take `MirrorStream` instead of the
+    concrete `AdbTransport.Stream` -- no behavior change, just the seam
+    this section asked for. `app/src/test/kotlin/dev/caraalink/link/
+    FakeStream.kt` + `FakeMirrorHost.kt` are the headless doubles;
+    `MirrorControlChannelTest.kt`/`MirrorDataChannelTest.kt` drive real
+    wire bytes through the real `MirrorControlChannel`/`MirrorDataChannel`
+    classes (CONFIG_CAPTURE parsing + reply bytes, SCREEN_EVENT ->
+    touch/key dispatch, DATA_NEXT -> frame-request, unknown-type refusal)
+    with no `AdbTransport`/USB/device needed. `AaServiceDiscoveryTest.kt`
+    covers the new margin-autodetect geometry the same way. Added
+    `testImplementation("org.mockito:mockito-core:5.11.0")` just to stub
+    `Context.getExternalFilesDir()` for `DiagnosticLogger` in these tests
+    -- JVM-only mocking, no Robolectric/instrumentation needed.
+  - **Not done (same reasoning as before, still correct):** `CarSession`
+    itself still isn't unit-testable -- it directly owns `CarVideoEncoder`
+    (`MediaCodec`), `CarDisplay` (`Presentation`/`VirtualDisplay`), and
+    other real Android framework classes with no interface seam, so its
+    touch-scaling/frame-queue/starvation-watchdog logic is still only
+    exercised live. Pulling that apart would be a real refactor of
+    confirmed-working code, not done here.
+  - Original plan, not yet started, elaborated 2026-11-02:
   - Neither `AdbTransport`'s stream framing nor `AaSessionProbe`'s TLS/
     protobuf logic touches Android APIs in their core parsing (just
     `java.io`/`java.net`/`javax.net.ssl`/the hand-rolled `AaProtobuf`), so
@@ -992,6 +1020,96 @@ Not scoped/started, just grounding for whoever picks these up.
     in `SettingsActivity` calling back into `CarSession` to stop and
     restart `AaSessionProbe`. Deferred to the next PR, not in this one.
 
+### Aspect-ratio/margin follow-up (2026-11-02), confirmed from a real live capture
+
+A live `CONFIG_CAPTURE` on this exact head unit confirms the panel is
+genuinely **1920x720** (2.67:1) -- not a guess, read straight off the
+car. Combined with the already-confirmed "no 2.67:1 `VideoCodecResolutionType`
+exists" above, this closes out whether `width_margin`/`height_margin`
+could do better than the app's own Fit/Fill scaling:
+
+- **Nonzero margins shrink AA's own render canvas, but change nothing
+  about encode cost.** AA honors a margin by rendering into a smaller
+  inner rectangle and painting the margin zone black itself -- but the
+  hardware encoder still encodes the *full* nominal resolution (e.g.
+  1920x1080) either way. Margins are a software canvas inset, not a
+  resolution reduction: identical USB bandwidth, identical decode cost,
+  whether margins are 0 or aggressive. Gearhead also clamps/falls back
+  if margins push the inner canvas outside a safe aspect-ratio bound, so
+  this isn't even a reliable way to coax AA into an arbitrary shape.
+- **`content_insets`/`stable_content_insets` (part of `UiConfig`) only
+  reposition AA's own UI elements** (buttons, route guidance) away from
+  known obstructions -- they don't touch the raw frame's aspect ratio or
+  replace letterboxing/pillarboxing. Real practical value for a Fill/crop
+  setup though: setting these to match the cropped-off zones would keep
+  AA's own interactive controls from landing in the part of the frame
+  this app clips, instead of just hoping they don't. **Not implemented
+  yet** -- `AaServiceDiscovery.build()` doesn't send a `UiConfig` at all
+  today; this would need those insets added to the `VideoConfiguration`
+  it builds, sized from the current Fit/Fill choice and the actual
+  clipped margin on each axis. Worth doing if Fill mode turns out to clip
+  AA's own buttons in practice.
+- **No standard head unit gets true native 2.67:1 over plain AA either.**
+  OEM ultrawide dashes either request a normal 16:9 stream and
+  scale/crop it with their own board's hardware, or use vendor-specific
+  extensions outside the open AA spec entirely -- which is exactly why
+  this project needs its own mirror bridge (CarbitLink) rather than
+  native AA support, consistent with this whole project's premise.
+- **Correction (same day, after reading `mrmees/open-android-auto`'s
+  `docs/video-resolution.md` directly rather than secondhand): margins
+  are worth pursuing after all, just not for the reason first assumed.**
+  That doc's own wording: the phone renders into "a centered sub-region"
+  and fills the rest with black, and **the head unit crops/overscans the
+  decoded video to show only the content area** -- i.e. margins aren't
+  just "AA paints black pixels we'd otherwise paint ourselves," they
+  define an *exact, known* inner content rectangle the head unit is
+  expected to crop to. For this panel specifically: requesting
+  `R1920X1080` with a `height_margin` sized so the inner content height
+  is exactly 720 would mean cropping to that inner rect and displaying
+  it 1:1 -- **no scaling at all**, vs. today's Fit (downscales to
+  1280x720, still pillarboxed) or Fill (upscales and clips real AA
+  content, not just AA's own intentional blank margin). That's strictly
+  better than either current option, not just a different tradeoff --
+  full native resolution, nothing real cropped, no interpolation
+  blur. Bandwidth/encode cost is still identical either way, as already
+  noted, but that was never the point; the point is this is a sharper,
+  more correct Fill than scaling can ever produce.
+- **Why this isn't implemented yet: the exact margin semantics are
+  genuinely unconfirmed, not just unimplemented.** Neither this repo's
+  own `AaServiceDiscovery.Config` doc comment nor
+  `open-android-auto`'s doc states whether `height_margin`/`width_margin`
+  is a *per-side* value (content height = resolution.height -
+  2*margin, split evenly top+bottom) or a *total* inset (content height
+  = resolution.height - margin, split some other way) -- "centered
+  sub-region" supports either reading. Shipping the wrong interpretation
+  wouldn't just look slightly off, it would crop into real AA content or
+  leave an unexpected black band, which is worse than the current
+  honest Fit/Fill. Per `claude.md`'s rule, this needs a live capture
+  (request a deliberately large, easily visually distinguishable margin
+  value and see exactly where AA puts the real content in the decoded
+  frame) before it's implemented, not a guess either way.
+
+#### SHIPPED (2026-11-02): auto-crop, with the semantics question still open
+
+Replaced the old manual "Test height_margin" debug probe with
+`AaServiceDiscovery.autoMargin()` (pure function, headless-tested in
+`AaServiceDiscoveryTest.kt`): it computes `width_margin`/`height_margin`
+automatically from this car's real reported screen size
+(`CarScreenInfo.width`/`height`, from its own `CONFIG_CAPTURE`) vs. the
+chosen AA resolution's aspect ratio, so the inner content rect's aspect
+ratio matches the car's panel exactly (no more manual guessing of a pixel
+value). Gated by `Settings > Android Auto > "Auto-crop to car screen
+shape"` (`AppSettings.aaAutoCrop`, default on).
+
+**Still UNKNOWN, per the per-side-vs-total question above:** this
+function assumes margin is a *total* inset (content size = resolution −
+margin), not confirmed. If the next live test shows the real content
+rect is off by roughly 2x in the cropped dimension, that's the per-side
+interpretation instead — the fix is multiplying the margin sent on the
+wire by 2 in `configFromSettings()`, not touching `autoMargin()`'s own
+geometry. Worst case either way is a wrong-looking crop, not a crash, and
+the setting can be turned off to fall back to plain Fit/Fill.
+
 ### Feasibility check (2026-11-02), four more requested items
 
 All four checked against what this app actually is (checked: **no NDK/
@@ -1064,3 +1182,391 @@ alone.
   the goal would be promising something this API can't deliver; framing it
   as "reduce copies and tune buffer/thread parameters" is accurate and
   achievable.
+
+## Session findings (2026-11-02, round 2): AudioTrack underrun loop, exit-session cleanup, AA exit button
+
+Three separate owner reports in one session: Car Preview still laggy and
+silent (no music audio), and AA's own built-in exit/back UI control not
+doing anything. Investigated from two real exported logs rather than
+guessing.
+
+- **FOUND + FIXED: `AudioTrack` stuck in a continuous underrun-restart
+  loop.** `AaAudioPlayer.setCodecConfig()` called `track.play()`
+  immediately, before any real PCM existed. In the first real log, AA's
+  audio channel negotiated (one `MEDIA_CODEC_CONFIG`) but never actually
+  sent a data frame that session -- the started-but-empty track sat
+  there, and the system kept cycling it: logcat spammed
+  `AudioTrack: restartIfDisabled(...): ... disabled due to previous
+  underrun, restarting` every ~600ms for the entire session. That's a
+  continuous, pointless restart loop on its own dedicated thread for as
+  long as the session runs -- a real, confirmed CPU cost, and plausibly
+  a meaningful contributor to "laggy" on top of explaining "no audio"
+  (the track was never actually playing anything in that test). Fixed:
+  `play()` now happens lazily, on the first real decoded PCM in `feed()`.
+- **FOUND + FIXED: quitting AA never actually disconnected.** Both
+  `CarSession` (real car) and `AaPreviewActivity` (on-phone preview) only
+  ever detached the video sink when leaving the AA tile/screen --
+  `AaSessionProbe.active` (and its TLS connection to the phone's own
+  head-unit-server mode) stayed alive in the background indefinitely.
+  Both paths now call `AaSessionProbe.active?.stop()` there, so leaving
+  AA actually ends the session.
+- **AA's own "exit"/back UI control still not confirmed fixed -- genuinely
+  unresolved, not guessed at.** Checked `mrmees/open-android-auto`'s
+  `docs/channels/input.md` (GPL-3.0; facts below paraphrased from reading
+  it directly, nothing copied into this repo) to rule out an encoding
+  bug first: AA's `TouchEvent` schema is pixel coordinates in the
+  negotiated video resolution (no normalization, no DPI scaling), no
+  pressure (phone hardcodes 0.8f, ignores whatever's sent), and the same
+  action codes we already use (DOWN=0/UP=1/MOVE=2) -- `AaSessionProbe.
+  sendTouch()`'s encoding matches that exactly, so this isn't an
+  encoding mismatch. The same doc also documents a *separate* message
+  type we don't implement at all: `ButtonEvents` (hardware
+  keycodes -- BACK=4, HOME=3, etc.), distinct from touch. If AA's own
+  exit control is actually bound to a BACK keycode rather than being a
+  tappable region, touch alone would never trigger it -- genuinely
+  unconfirmed either way, not implemented, because inventing a keycode
+  sender without evidence it's needed would be exactly the kind of guess
+  `claude.md` rules out.
+  - **What actually blocks confirming this:** the second real log
+    (the one covering the exit-tap attempt) has **zero** `INPUT_REPORT`
+    sends for the entire session -- not just missing the exit tap,
+    missing *every* touch that session. Settings > Debug > "Protocol
+    sniffer" was off, so the car's own incoming `SCREEN_EVENT` messages
+    (which would show whether the car even sent that tap to us) aren't
+    logged either -- `MirrorControlChannel` only logs those when the
+    sniffer is on. Can't tell from this data whether the tap never
+    reached us, reached us but didn't relay, or needs a keycode we don't
+    send.
+  - **Next step, not done here:** retest with the Protocol sniffer ON,
+    specifically tapping AA's exit control, then check for `MIRROR ctrl
+    0x0020` (RX, the car's `SCREEN_EVENT`) and the touch-forward log line
+    on the AA side -- whichever is present or missing tells us which half
+    is broken, instead of guessing.
+- **Car Preview home screen only ever showed "Android Auto" --
+  SHIPPED.** `AaPreviewActivity.showHome()` hardcoded a single-tile list
+  instead of the real three (Android Auto / Phone screen / Settings) from
+  `CarSession`'s own tile set -- fixed to match.
+- **Rolling `dev` GitHub pre-release never actually published --
+  SHIPPED.** `.github/workflows/android-ci.yml`'s publish step was gated
+  to `push` events on `main` only; all real work happens on
+  `aa-post-v1`/PRs against it, so it had never once fired. Now runs on
+  any push or PR build and labels the release by its real source
+  (branch or PR number + commit) instead of a hardcoded "main".
+
+## Session findings (2026-11-02, round 3): the real audio root cause -- missing AV flow-control ACK
+
+Owner reported the audio fix from round 2 didn't help -- two fresh
+exported logs still showed the exact same `AudioTrack` underrun-restart
+loop, unchanged timing. Rather than re-guess, re-checked
+`mrmees/open-android-auto`'s docs further (`docs/channels/audio.md`,
+`docs/interactions/04-channel-lifecycle.md` -- GPL-3.0, facts
+paraphrased/field-numbers cited, nothing of theirs copied in) and found
+the actual root cause:
+
+- **`AaServiceDiscovery`'s `MEDIA_SETUP` response has always granted
+  `max_unacked=1`** on every AV channel (video and audio) -- this repo's
+  own existing code, not new.
+- **Nothing ever sent the corresponding ack
+  (`AVMediaAckIndication`, msg id 0x8004/32772) back.** Per the
+  documented flow-control contract, the phone tracks unacked AV frames
+  against that limit and simply stops sending more once it's hit --
+  no timeout-based recovery, it waits forever. That matches both logs
+  exactly: one audio `MEDIA_CODEC_CONFIG`, then zero data frames, ever.
+  Not an `AudioTrack`-timing bug (round 2's fix), not Bluetooth routing
+  (an even earlier guess) -- a missing protocol ack.
+- **SHIPPED:** `AaSessionProbe` now captures `session` from each AV
+  channel's own `MEDIA_START` (`AVChannelStartIndication`) and sends an
+  incrementing `AVMediaAckIndication` after every video/audio data (and
+  video codec-config) frame.
+- **Open question this surfaces, not resolved:** video has been
+  "working" despite the exact same missing-ack bug applying to it too
+  (same generic `MEDIA_SETUP` handler, same `max_unacked=1`). Plausible
+  explanation, **not confirmed**: this may be the real cause behind the
+  long-standing, never-fully-explained ~42s periodic AA disconnect
+  mentioned earlier in this doc -- video stalling after its own
+  unacked-frame limit, then the session dying and reconnecting before
+  anyone could tell video had actually stopped mid-session rather than
+  the link just dropping. Worth specifically watching whether that
+  reconnect cadence changes (or stops happening) on the next live test,
+  now that acks are being sent.
+- **AA exit-button investigation, still unresolved:** the round-2 log
+  covering an exit attempt in Car Preview never received a
+  `SHUTDOWN_REQUEST` either (same as round 1's real-car log) -- whatever
+  the owner tapped didn't produce that message this time either. Genuinely
+  don't know yet whether that's "wrong control tapped", "AA on this
+  version/path doesn't send it", or something still not reaching AA at
+  all. Needs a fresh, deliberate retest on the build with this ack fix
+  in it, since a session that was silently stalled on audio may behave
+  differently now that it isn't.
+
+## Future idea (owner's, low priority, not started)
+
+Owner wants the car home screen to be more customizable than the current
+fixed three tiles -- something like phone-style widgets, user-arranged
+layout, and a car background image (untested so far). "Not really that
+needed, but it's just cool to have." No design/scope decided yet; revisit
+when there's bandwidth, not urgent.
+
+## Session findings (round 4) -- AA restart self-kill, Car Preview scaling, multi-touch
+
+- **AA restart self-kill -- FIRST FIX WAS WRONG, confirmed by a real live-car
+  log.** The watchdog-restart (and settings-change-restart) path was
+  killing the brand-new probe within ~2-3ms of it connecting, every single
+  time, before it could ever get a VERSION_RESPONSE. First attempt guarded
+  `CarSession.showAaSurface()`'s `onSurface(null)` branch on
+  `AaSessionProbe.active === myProbe` -- wrong, because by the time the
+  OLD `AaCarPresentation`'s async `surfaceDestroyed` teardown fires,
+  `.active` already points at the new probe (identity check is always
+  true during a normal restart). Real fix: check `display.mode != Mode.AA`
+  instead -- `showHome()`/`showMirror()` set mode away from AA *before*
+  dismissing, while an in-place restart sets it to AA first and only then
+  dismisses, so that's the signal that actually distinguishes "user left
+  AA" from "this is just the old presentation tearing down mid-restart."
+  Not yet re-verified live after this correction.
+- **Separately, in that same log: the phone's head-unit-server didn't
+  answer VERSION_REQUEST at all, 10s straight, across all 3 restart
+  attempts.** Real, independent issue -- not caused by our code, nothing
+  in our logs explains why gearhead went silent that particular session.
+- **Car Preview negotiated resolution/density/orientation all came from
+  car-oriented settings (or CarScreenInfo, which only reflects the last
+  REAL car), not from the phone actually running the preview.** Confirmed
+  from a real log + a screenshot: a landscape 1920x1080 feed rendered as a
+  small box on a portrait phone, with the UI inside looking tiny once
+  stretched (AA's auto-DPI formula keeps logical UI width constant at
+  ~541dp for a real car panel -- correct there, wrong once that buffer is
+  blown up to fill a much bigger phone screen). Fixed via a `preview: Boolean`
+  flag threaded through `AaServiceDiscovery.configFromSettings()` ->
+  `AaSessionProbe.Config` -> both `AaPreviewActivity`'s own sizing math and
+  the probe's actual `SERVICE_DISCOVERY_RESPONSE` (both MUST agree, or the
+  decoder silently fails per the existing code comment): preview mode uses
+  the phone's own current screen shape/size and real density instead of
+  car settings. A user-set Custom resolution is still honoured in preview
+  too (their explicit choice), only the *auto* case was being driven by
+  car-oriented defaults.
+- **Audio keeps showing up as genuinely written to AudioTrack** (confirmed
+  via its own "frames delivered" count on stop(), e.g. 1.2M+ frames in one
+  session -- real, sustained PCM) **at a normal non-zero media volume**
+  (7-8/15, confirmed via an added volume log), **while still reported
+  inaudible.** This app always has an active USB accessory connection to
+  the CarbitLink dongle for the entire session, even during Car Preview --
+  hypothesis (not yet confirmed live): default audio routing was letting
+  that USB connection claim output instead of the phone's own speaker.
+  Fixed by explicitly forcing `TYPE_BUILTIN_SPEAKER` as the preferred
+  device when not in BT-preferred mode, instead of leaving routing
+  unconstrained. **Not yet verified live.**
+- **Multi-touch (pinch/rotate) added.** Previously `sendTouch()` was
+  hardcoded single-pointer; Google Maps pinch-zoom and pan weren't
+  reachable at the protocol level at all, regardless of coordinates.
+  Confirmed from mrmees/open-android-auto's `docs/protocol-reference.md`
+  (GPL-3.0, field numbers only) that `TouchEvent.touch_location` (field 1)
+  is a `repeated` field -- exactly the shape needed, already proven
+  correct for single-touch. `AaSessionProbe.sendTouch()` now takes a list
+  of `(x, y, pointerId)` for every currently-down finger plus which one
+  triggered this event (`actionIndex`); `AaPreviewActivity` and
+  `AaCarPresentation`'s touch listeners now read `event.pointerCount` /
+  `getPointerId(i)` instead of just the primary pointer, and handle
+  `ACTION_POINTER_DOWN`/`ACTION_POINTER_UP` alongside `ACTION_DOWN`/`UP`.
+  **Not yet tested live** -- Maps panning (single-finger drag) was also
+  reported broken in the same test; that's likely a *separate* issue
+  (coarse 30ms move-throttling vs. whatever sample rate Maps' own gesture
+  recognizer expects), not fixed by this change, still open.
+
+## Session findings (round 5) -- real-car marathon: audio, the real ~30s mystery, margin cropping, max_unacked
+
+A very long live real-car testing session. Confirmed fixes marked (confirmed);
+everything else is shipped but not yet live-verified at time of writing.
+
+- **Real crash, found and fixed (confirmed from a real crash log on the
+  current build):** `AaSessionProbe.run()`'s retry loop slept via a bare
+  `Thread.sleep(retryDelayMs)` between attempts. `stop()` interrupts this
+  same worker thread; if that interrupt landed mid-sleep, the resulting
+  `InterruptedException` was uncaught anywhere in `run()` and crashed the
+  **entire app**. Reproduced by the owner's own workflow: toggling "Start
+  Head Unit Server" while a probe was mid-retry. Now caught and treated as
+  the normal shutdown it is.
+- **The real ~30s periodic AA disconnect mystery (long-standing, mentioned
+  in earlier rounds) -- likely actually found this time, confirmed from a
+  real log:** a "--- reconnecting" fired with NO exception and NO
+  `SHUTDOWN_REQUEST` logged anywhere before it, meaning the message loop
+  was exiting *cleanly*, not failing. `maxMessages=2000` was sized for the
+  pre-streaming startup phase (discovery/channel-open chatter is ~10
+  messages -- see the comment on the original fix) and was never meant to
+  cap an ACTIVE streaming session. At 30fps video plus continuous audio
+  chunks, 2000 incoming messages passes in well under a minute -- the loop
+  was cleanly hitting this self-inflicted cap and reconnecting on a timer
+  nobody asked for. Fixed: uncapped once a session is `everEstablished`.
+  A separate, doc-supported proactive-PING_REQUEST heartbeat was also added
+  (mrmees/open-android-auto's session-maintenance doc explicitly shows a
+  head unit sending periodic pings, which we never did) -- kept since it's
+  harmless and doc-supported, but the `maxMessages` cap is almost
+  certainly the real cause.
+- **Margin cropping -- confirmed bug, found via mrmees/open-android-auto's
+  own `docs/video-resolution.md` (GPL-3.0, facts only), not guessed:** the
+  phone renders its UI into a CENTERED sub-region of the frame and fills
+  the margin itself with black; the head unit is expected to crop that
+  black out, not scale the whole (content+padding) frame to fit. We were
+  doing the latter, which shrinks the actual content more than necessary --
+  the "could be sized bigger" extra black space reported from a real
+  screenshot. Our margin VALUE formula was already confirmed correct
+  (matches the doc's own formula exactly); only the missing crop step was
+  the bug. `AaCarPresentation` now scales against the content region
+  (`videoWidth-widthMargin x videoHeight-heightMargin`) and relies on the
+  existing `area.clipChildren` to cut the margin portion off-screen.
+  **Not yet exercised live** -- the one later test session had
+  `autoCrop=false` (margin 0,0), so this fix was a no-op in that test.
+- **`max_unacked` for video was wrong -- confirmed from
+  `docs/interactions/04-channel-lifecycle.md`:** video's documented typical
+  value is 10 (pipelined sliding window), audio's is 1 (strict lockstep).
+  We hardcoded 1 for every channel, video included, forcing every single
+  video frame to wait a full ack round-trip before the phone would send
+  the next one -- a real, self-inflicted throughput cap on top of whatever
+  decode-speed/thermal factors were also in play. Fixed: video channel now
+  grants 10.
+- **Audio routing, two real regressions found and fixed from live logs:**
+  (1) the Car-Preview-only forced-speaker fix was gated on the
+  `aa_audio_route` setting, not on preview-vs-real-car, so a setting left
+  on Device-Only from Car Preview testing silently carried over and forced
+  the real car's audio to the phone speaker instead of Bluetooth. (2)
+  BT-preferred-but-no-A2DP-device-found was falling back to *unconstrained*
+  routing, which carries the same "silently lost to the always-active USB
+  accessory connection" risk already fixed for the device-only case --
+  confirmed live, happened even with the car actually paired over
+  Bluetooth. Both real-car fallback paths now always pick an explicit
+  device (A2DP if found, else the phone's own speaker) instead of ever
+  leaving routing unconstrained.
+- **Video and audio decode were sharing one thread** (`mediaExecutor`) --
+  confirmed live, "video struggling" (heavy frames/thermal throttling) and
+  choppy audio (reported as not audibly playing ~80% of the time, despite
+  a large lifetime frames-delivered count -- that count only proves total
+  writes over time, not smooth continuous playback) were reported
+  happening together. Audio now has its own dedicated executor so a
+  stalled video decode can't stall audio playback too. Owner's own later
+  report: audio lag "does catch up after a while" post-fix -- improved,
+  not fully resolved.
+- **Settings-change reconnect loop, confirmed from a real log:** changing
+  a video setting mid-session triggered an immediate reconnect that got a
+  healthy TCP connect but then silence (no `VERSION_RESPONSE`, ever), with
+  the watchdog restarting every ~10s for 7 consecutive cycles and never
+  recovering without a full head-unit-server restart. This is a *warm*
+  restart (gearhead had a live session we just yanked away), unlike the
+  cold-start "service not up yet" case the earlier retry-window widening
+  (3->8 attempts) covered. A brief grace period (1.5s) before reconnecting
+  was added, giving gearhead room to actually tear down the old session
+  first instead of racing it. Not yet confirmed live.
+- **Still genuinely open, no fix attempted (need more evidence before
+  touching code again -- several guesses this session already turned out
+  wrong or incomplete):**
+  - **AA exit button**: still zero `SHUTDOWN_REQUEST` ever observed from
+    tapping AA's own exit control, across every single test this entire
+    session. Ruled out as the cause of the (now-fixed) periodic reconnect
+    -- that was a separate, coincidentally-timed bug. Genuinely unresolved.
+  - **Touch misalignment on the real car** ("gotta press a bit higher"):
+    reported in a session where `autoCrop=false` (margin 0,0), so this is
+    NOT caused by the margin-crop fix above -- a separate, pre-existing
+    coordinate mapping issue. No root cause identified yet.
+  - **`AudioTrack: restoreTrack_l(...): dead IAudioTrack ... creating a
+    new one`** firing ~10 times in under a second at one point in a real
+    log, tied to output-device-change events -- a strong, concrete lead
+    for audio choppiness, more specific than the thread-separation fix,
+    but root cause (why the native track keeps dying) not yet found.
+  - **Video blockiness**: owner reports it "does catch up after a while" --
+    consistent with the phone's hardware encoder's own adaptive/phase-out
+    bitrate behavior for low-motion content (saw `vq-bitrate-phaseout`
+    tuning in a real CCodec log), which is vendor/chipset-level behavior,
+    not something controllable from our MediaCodec configuration. May not
+    be "fixable" in the traditional sense.
+  - **"AA recovery" feature request (owner's, explicit ask)**: owner wants
+    behavior like the PhoneAuto-beta reference app -- exit the app
+    completely (not just background it) and reopen it, and AA reconnects
+    on its own, without needing to manually restart the head-unit-server
+    toggle first. Not investigated yet. Likely more about OUR app's own
+    process/session-state restoration on relaunch (does `MainActivity`/
+    `CarSession` detect "head unit server is already up, try reconnecting"
+    on a fresh process start?) than an AA protocol-level feature -- worth
+    checking `UsbLinkForegroundService`'s own restart/sticky behavior and
+    whether a fresh process re-attaches to an already-attached USB
+    accessory automatically. No mrmees doc section found directly on this
+    (checked `01-transport-setup.md`, nothing relevant -- that doc covers
+    WiFi-based AA setup, not this project's USB path).
+  - **Black screen before AA "kicks in"**: still happens, "head unit
+    server issue" per the owner's own words -- likely overlaps with the
+    already-covered gearhead-readiness/retry-window topic, but not
+    re-confirmed with a fresh log on the latest build.
+  - **No accessibility permission -> silent generic app launch**: owner's
+    observation -- if the accessibility permission isn't granted, tapping
+    "Start Head Unit Server" just opens the AA app with no further
+    navigation (expected, since the accessibility service is what drives
+    the actual developer-mode-toggle navigation) and no explicit prompt
+    telling the owner that's why. Worth a clearer in-app message/permission
+    prompt in that case; not implemented yet, just noted.
+
+## MAJOR FINDING (same day, later) -- gearhead itself crashes, found via raw `adb logcat`
+
+Not from our own app's logs -- from logcatting the **real Android Auto app**
+(`com.google.android.projection.gearhead`) directly on the phone while
+testing. Two distinct real crashes caught:
+
+1. `GH FATAL EXCEPTION: main` / `java.lang.IllegalArgumentException: Virtual
+   display width must be positive`, at
+   `android.hardware.display.VirtualDisplayConfig$Builder.<init>`. Gearhead
+   crashes building its OWN internal virtual display with a width that's
+   zero or negative -- and that width is derived from values **we** send
+   (resolution/margin/density in the `ServiceDiscoveryResponse`). Not yet
+   cross-referenced against our own app's log for the same timestamp to
+   find which exact value is bad -- next step.
+2. `GH FATAL EXCEPTION: Thread-2` / `java.lang.IllegalStateException:
+   Already connected`, at
+   `com.google.android.projection.gearhead.companion.DeveloperHeadUnitNetworkService`.
+   **This is very likely the real cause of "have to restart head unit
+   server to make it work," across this entire session.** Gearhead's own
+   developer-mode networking component crashes (not just hangs/delays) when
+   something attempts a new connection while it still internally believes
+   the previous one is live. This is a *crash*, not a timing race -- the
+   1.5s settings-change reconnect grace delay added earlier this round
+   probably isn't sufficient, because gearhead's broken state doesn't
+   recover on a timer; it needs its own crashed process/component to
+   actually respawn, which is exactly what manually toggling the developer
+   setting off and on does.
+
+**This is a gearhead-side bug, not something directly patchable in our
+code** -- but it IS something to avoid *triggering*. Also worth logcatting
+gearhead directly (`adb logcat`, filter for `GH.` tags, no package-specific
+flag needed since gearhead's own tags are self-identifying) as a standard
+diagnostic step going forward -- this found two real, concrete gearhead
+crashes in one short test that our own app's log alone would never have
+shown, since from our side those just look like "the phone went silent."
+
+**First fix attempted (shipped, not yet live-verified):** `AaSessionProbe
+.stop()` now sends a graceful `ShutdownRequest` (reason=USER_SELECTION)
+before closing the raw socket, per the teardown doc's own guidance --
+previously we just abruptly closed the socket every time WE ended a
+session (settings change, watchdog restart, leaving AA), never telling the
+phone we meant to. Best-effort/non-blocking.
+
+**If that alone isn't enough, owner's own suggested next experiment:** do
+a full USB/accessory-level disconnect-and-reattach on settings change
+instead of just a TCP-level AA reconnect, in case gearhead's "connected"
+tracking lives above the AA session specifically (tied to the whole USB
+accessory session) and a graceful AA-level shutdown still isn't enough to
+reset it. Not implemented -- bigger, riskier change since it would affect
+the whole CarbitLink session (Mirror/Home too), not just AA.
+
+## DPI direction is inverted from the assumed model -- confirmed twice live
+
+The simple `px = dp * density/160` model (higher density -> more pixels
+per UI element -> looks BIGGER) does not match reality. Confirmed from
+TWO separate real tests (Car Preview, and the real car with manual
+density=500): a HIGHER declared density makes AA's UI look **smaller**,
+not bigger. Best current hypothesis, not yet verified: AA likely follows
+Android's own `sw<N>dp` width-breakpoint convention -- a fixed pixel
+resolution at a higher density implies a SMALLER logical (dp) width
+(`dp_width = px_width * 160/density`), which would trigger a more compact
+layout breakpoint, same mechanism as a phone vs. a tablet getting
+different-sized UI chrome at the same physical resolution.
+
+No formula change made -- don't have a confirmed correct target value.
+Instead, Settings now shows the actual computed density number live (both
+auto and manual DPI preference summaries) so the owner can calibrate by
+eye on the real car instead of the app guessing blind. If/when a target
+value that "looks right" is found empirically, revisit `AppSettings
+.videoDpi()`'s auto formula with that data point.

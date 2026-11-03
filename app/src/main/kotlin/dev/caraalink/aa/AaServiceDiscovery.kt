@@ -133,35 +133,137 @@ object AaServiceDiscovery {
      * Frame rate only has two real values (30/60); anything else in the
      * setting falls back to 30.
      */
-    fun configFromSettings(context: Context): Config {
-        val portrait = when (AppSettings.carOrientation(context)) {
-            AppSettings.CarOrientation.PORTRAIT -> true
-            AppSettings.CarOrientation.LANDSCAPE -> false
-            // AUTO: go by what the car itself reported; unknown (no car
-            // connected yet, e.g. the on-phone preview) falls back to
-            // landscape, the overwhelmingly common case.
-            AppSettings.CarOrientation.AUTO -> dev.caraalink.link.CarScreenInfo.isPortrait ?: false
+    /**
+     * [preview] is true only for the on-phone Car Preview test screen, never
+     * for a real car. The auto-DPI formula below keeps AA's logical UI width
+     * constant (~541dp) regardless of which resolution is picked, which is
+     * the right calibration for a real car panel -- but Car Preview then
+     * scales that same buffer up to fill the *phone's* much bigger screen,
+     * so UI drawn for a small car panel's dp-width ends up looking tiny
+     * relative to the phone. Declaring the phone's own real density instead
+     * makes the preview look like a normal-sized app on it.
+     */
+    fun configFromSettings(context: Context, preview: Boolean = false): Config {
+        // Car orientation/resolution settings (and CarScreenInfo, which only
+        // ever reflects the last REAL car connected) describe the car's own
+        // panel, not whatever phone happens to be running the preview --
+        // using them here produced a landscape 1920x1080 feed on a portrait
+        // phone screen, confirmed from a real log. Preview always matches
+        // the phone's own current screen shape and size instead.
+        // A Custom resolution is still the owner's explicit choice -- preview
+        // should honour it like the real car does, not silently override it
+        // with phone-matched auto-sizing. Preview only takes over orientation
+        // and sizing when the owner hasn't set a specific custom target.
+        val isCustom = AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM
+        val customWh = if (isCustom) AppSettings.customResolution(context) else null
+        val metrics = context.resources.displayMetrics
+        val portrait = if (preview && customWh == null) {
+            metrics.heightPixels >= metrics.widthPixels
+        } else if (customWh != null) {
+            customWh.second > customWh.first
+        } else {
+            when (AppSettings.carOrientation(context)) {
+                AppSettings.CarOrientation.PORTRAIT -> true
+                AppSettings.CarOrientation.LANDSCAPE -> false
+                // AUTO: go by what the car itself reported; unknown (no car
+                // connected yet) falls back to landscape, the overwhelmingly
+                // common case.
+                AppSettings.CarOrientation.AUTO -> dev.caraalink.link.CarScreenInfo.isPortrait ?: false
+            }
         }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
-        val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
-        val resolution = if (AppSettings.resolutionMode(context) == AppSettings.ResolutionMode.CUSTOM) {
-            val (w, h) = AppSettings.customResolution(context) ?: (defaultRes.width to defaultRes.height)
+        // "Downscale resolution" (Settings > Video), separate from Custom
+        // resolution -- Custom is an exact owner-typed WxH; this is a
+        // simpler one-tap "send AA 720p instead of 1080p" for when AA's own
+        // adaptive bitrate is making 1080p blocky. Only changes what the
+        // *default* (non-custom) path resolves to -- Custom resolution
+        // still wins outright below when it's set.
+        val defaultRes = if (AppSettings.videoDownscale720p(context)) {
+            if (portrait) AaResolution.R720X1280 else AaResolution.R1280X720
+        } else if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
+        val resolution = if (customWh != null) {
+            val (w, h) = customWh
             candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
+        } else if (preview) {
+            candidates.minByOrNull {
+                kotlin.math.abs(it.width * it.height - metrics.widthPixels * metrics.heightPixels)
+            } ?: defaultRes
         } else {
             defaultRes
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
-        val density = AppSettings.videoDpi(context, resolution.width, resolution.height)
-        // Advertise the touchscreen at the same size as the video we're
-        // actually sending -- AaCarPresentation/AaPreviewActivity map touch
-        // events into resolution.width/height, so a mismatched advertised
-        // touch size (the old hardcoded 1920x720 default) would have the
-        // phone interpreting touch in the wrong coordinate space.
+        // Same principle as Custom resolution above: a manually-set DPI is
+        // still the owner's explicit choice, honoured in preview too --
+        // only the *auto* case gets overridden with the phone's own density.
+        val density = if (preview && AppSettings.videoDpiAuto(context)) {
+            context.resources.displayMetrics.densityDpi
+        } else {
+            AppSettings.videoDpi(context, resolution.width, resolution.height)
+        }
+        // Advertise the touchscreen at the CONTENT size, not the full video
+        // frame -- confirmed from mrmees/open-android-auto's own docs
+        // (docs/video-resolution.md, GPL-3.0, facts only): "Touches in the
+        // content region map to full AA coordinate space (0-remoteWidth x
+        // 0-remoteHeight)", where remoteWidth/Height are the content
+        // dimensions, not the margin-padded frame. AaCarPresentation/
+        // AaPreviewActivity now map touch events into that same content
+        // space (see their own comment), so this has to match or AA
+        // misinterprets the range -- this was advertising the full frame
+        // size while touch was sent in full-frame coords too, which is
+        // internally consistent but wrong per the protocol: AA was always
+        // expecting content-space coordinates on the wire.
+        // Auto-crop margin and FILL mode both solve the same 16:9-vs-car-panel
+        // aspect mismatch, in conflicting ways: the margin asks AA to
+        // pre-crop its own video, while FILL then crops our already-cropped
+        // render to fill the screen on top of that -- confirmed live, this
+        // combination double-crops ("fill made it worse"). They're mutually
+        // exclusive: FIT relies on the margin for a clean no-letterbox fit;
+        // FILL needs the full uncropped frame to crop from itself.
+        val (widthMargin, heightMargin) = if (AppSettings.aaAutoCrop(context) && AppSettings.aaFillMode(context) == AppSettings.AaFillMode.FIT) {
+            autoMargin(resolution, dev.caraalink.link.CarScreenInfo.width, dev.caraalink.link.CarScreenInfo.height)
+        } else 0 to 0
         return Config(
             resolution = resolution, frameRate = frameRate, density = density,
-            touchWidth = resolution.width, touchHeight = resolution.height,
+            touchWidth = (resolution.width - widthMargin).coerceAtLeast(1),
+            touchHeight = (resolution.height - heightMargin).coerceAtLeast(1),
+            widthMargin = widthMargin, heightMargin = heightMargin,
         )
     }
+
+    /**
+     * Crops [resolution]'s content area down to the car's real aspect ratio,
+     * so AA letterboxes/pillarboxes to the *exact* shape the car wants
+     * instead of a generic 16:9. Which axis gets cropped follows directly
+     * from comparing aspect ratios -- that part is just geometry. What's
+     * NOT confirmed (claude/roadmap.md) is whether AA's `width_margin`/
+     * `height_margin` wire fields mean "total pixels to remove" (this
+     * function's assumption) or "pixels to remove per side" (which would
+     * make the real crop twice as deep as computed here). Wrong in the
+     * worst case means an imperfect crop, never a crash -- this replaces
+     * the old manual "Test height_margin" debug probe now that the
+     * direction/magnitude is at least derived from real numbers instead of
+     * a hand-typed guess, but the per-side-vs-total question is still open.
+     */
+    fun autoMargin(resolution: AaResolution, carWidth: Int, carHeight: Int): Pair<Int, Int> {
+        if (carWidth <= 0 || carHeight <= 0) return 0 to 0
+        val carAspect = carWidth.toFloat() / carHeight
+        val resAspect = resolution.width.toFloat() / resolution.height
+        return when {
+            resAspect > carAspect + ASPECT_EPSILON -> {
+                // Video is wider than the car's panel -- crop width.
+                val desiredWidth = (resolution.height * carAspect).toInt()
+                (resolution.width - desiredWidth).coerceAtLeast(0) to 0
+            }
+            resAspect < carAspect - ASPECT_EPSILON -> {
+                // Video is taller/narrower than the car's panel -- crop height.
+                val desiredHeight = (resolution.width / carAspect).toInt()
+                0 to (resolution.height - desiredHeight).coerceAtLeast(0)
+            }
+            else -> 0 to 0 // already a near-exact aspect match, nothing to crop
+        }
+    }
+
+    private const val ASPECT_EPSILON = 0.01f
 
     /**
      * Serialized `ServiceDiscoveryResponse`. Deliberately minimal: a video
@@ -340,6 +442,6 @@ object AaServiceDiscovery {
     /** Human-readable summary for the log. */
     fun describe(config: Config = Config()): String =
         "video=${config.resolution.width}x${config.resolution.height}" +
-            "@${if (config.frameRate == FPS_60) 60 else 30}fps h264bp, " +
+            "@${if (config.frameRate == FPS_60) 60 else 30}fps h264bp density=${config.density}, " +
             "touch=${config.touchWidth}x${config.touchHeight}, name='${config.displayName}'"
 }

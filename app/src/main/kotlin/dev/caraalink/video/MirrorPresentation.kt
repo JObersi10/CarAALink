@@ -85,7 +85,10 @@ class MirrorPresentation(
             }
         }
         root.addView(area, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-        // Small back button: tap = Back on the phone, hold = exit mirror to CarAALink home.
+        // Small home button: one tap exits mirror back to CarAALink's own
+        // home screen -- used to be tap=phone-Back/hold=exit, which made
+        // the actual way out of mirror undiscoverable (same lesson as
+        // AaCarPresentation's equivalent button).
         root.addView(TextView(context).apply {
             text = "‹"
             gravity = Gravity.CENTER
@@ -97,8 +100,7 @@ class MirrorPresentation(
                 setColor(Color.argb(200, 31, 42, 48))
             }
             isClickable = true
-            setOnClickListener { onBack() }
-            setOnLongClickListener { onExit(); true }
+            setOnClickListener { onExit() }
         }, FrameLayout.LayoutParams(dp(52), dp(52), Gravity.TOP or Gravity.START).apply {
             setMargins(dp(12), dp(12), 0, 0)
         })

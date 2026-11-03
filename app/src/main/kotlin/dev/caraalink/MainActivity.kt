@@ -42,6 +42,7 @@ class MainActivity : Activity() {
         dev.caraalink.diagnostics.CrashMarker.consumeLastCrash(this)?.let { summary ->
             Toast.makeText(this, "Restarted after a crash: $summary", Toast.LENGTH_LONG).show()
         }
+        dev.caraalink.update.UpdateChecker.checkIfDue(this)
         render()
         maybeShowOnboarding()
         maybeAutoStartOnAttach(intent)
@@ -199,6 +200,8 @@ class MainActivity : Activity() {
         outlineButton("Connection diagnostics") { open(ConnectionDiagnosticsActivity::class.java) }.also { root.addView(it) }
         spacer(root)
         outlineButton("Settings") { open(SettingsActivity::class.java) }.also { root.addView(it) }
+        spacer(root)
+        outlineButton("Check for updates") { dev.caraalink.update.UpdateChecker.checkNow(this, manual = true) }.also { root.addView(it) }
 
         val frame = android.widget.FrameLayout(this)
         frame.addView(root, android.widget.FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))

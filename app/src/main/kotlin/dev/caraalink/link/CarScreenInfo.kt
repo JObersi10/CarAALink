@@ -11,8 +11,16 @@ package dev.caraalink.link
 object CarScreenInfo {
     @Volatile var isPortrait: Boolean? = null
         private set
+    @Volatile var width: Int = 0
+        private set
+    @Volatile var height: Int = 0
+        private set
 
     fun update(width: Int, height: Int) {
-        if (width > 0 && height > 0) isPortrait = height > width
+        if (width > 0 && height > 0) {
+            isPortrait = height > width
+            this.width = width
+            this.height = height
+        }
     }
 }

@@ -36,6 +36,7 @@ class CarSession(
     private val logger = DiagnosticLogger(context, "car-session")
     private var transport: AdbTransport? = null
     private var config: CaptureConfig? = null
+    private var lastBitRate: Int = -1
     private var encoder: CarVideoEncoder? = null
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
@@ -49,7 +50,7 @@ class CarSession(
 
 
     private val frameLock = Any()
-    @Volatile private var dataStream: AdbTransport.Stream? = null
+    @Volatile private var dataStream: MirrorStream? = null
     private var codecConfig: ByteArray? = null
     private var configSent = false
     private val pullQueue = ArrayDeque<ByteArray>()
@@ -118,6 +119,7 @@ class CarSession(
 
     private fun release() {
         aaWatchdog.removeCallbacks(aaWatchdogTick)
+        dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = null
         dev.caraalink.aa.AaSessionProbe.active?.stop()
         aaDecoder?.stop()
         aaDecoder = null
@@ -149,31 +151,95 @@ class CarSession(
      * carry audio to the car at all yet (not implemented anywhere, mirroring
      * included), so that's a separate, later piece of work.
      */
+    // Confirmed from a real logcat capture: openAndroidAuto()'s only guard
+    // was checking AaSessionProbe.active on the CALLING thread, but the
+    // probe itself isn't created until partway through the background
+    // Thread below -- a real gap where `active` is still null (old probe
+    // just stopped, new one not constructed yet) that TWO calls can both
+    // walk through at once (e.g. the watchdog's own restart racing a tap on
+    // the AA tile a moment later). Both then ran their own independent
+    // accessibility-toggle check concurrently -- one's "server not up, tap
+    // Start" stepped on the other's freshly-started session by tapping
+    // "Stop" on it instead (the overflow menu read stale "on" state),
+    // killing a session that had just barely connected (session failed:
+    // Connection reset, immediately after that tap, logged live).
+    @Volatile private var openingAa = false
+
     private fun openAndroidAuto() {
         if (dev.caraalink.aa.AaSessionProbe.active != null) {
             display.setStatus("AA: already running")
             showAaSurface()
             return
         }
+        synchronized(this) {
+            if (openingAa) {
+                logger.log("openAndroidAuto: already opening -- ignoring concurrent call")
+                return
+            }
+            openingAa = true
+        }
         display.setStatus("AA: checking head unit server…")
         logger.log("openAndroidAuto: checking 127.0.0.1:5277 before starting")
         Thread({
-            val serverUp = runCatching {
+            fun serverUp() = runCatching {
                 java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5277), 400) }
                 true
             }.getOrDefault(false)
-            if (!serverUp) {
-                logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start")
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    display.setStatus("AA: starting head unit server…")
-                    dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+            var up = serverUp()
+            if (!up) {
+                if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
+                    // The accessibility service taps whichever label the
+                    // overflow menu is actually showing (a real toggle, not
+                    // always "Start") -- but if gearhead crashed while the
+                    // menu still reads "Stop head unit server" (server
+                    // thinks it's running, the process is actually dead),
+                    // our one tap turns an already-broken "on" into a clean
+                    // "off" instead of starting it, leaving the owner to
+                    // manually tap it a second time themselves. Retrying
+                    // once here, bounded, covers that case: a second tap
+                    // now correctly finds "Start" and turns it on for real.
+                    for (tapAttempt in 1..2) {
+                        logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start (tap $tapAttempt/2)")
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            display.setStatus("AA: starting head unit server…")
+                            dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
+                        }
+                        // Give the accessibility-driven toggle a moment to actually bind the
+                        // listener before we try to connect to it.
+                        Thread.sleep(2500)
+                        up = serverUp()
+                        if (up) break
+                    }
+                } else {
+                    // "Auto-start head unit server" is off (Settings > Connection) --
+                    // the owner wants to flip AA's developer-mode switch themselves,
+                    // not have this app drive the accessibility service for them.
+                    // Just tell them, same notification the "service not enabled"
+                    // path already uses, no accessibility automation triggered.
+                    logger.log("openAndroidAuto: server not listening, auto-start disabled -- notifying only")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        display.setStatus("AA: start the head unit server on your phone")
+                        dev.caraalink.accessibility.HeadUnitServerLauncher.notifyOpenAndroidAutoManually(context)
+                    }
                 }
-                // Give the accessibility-driven toggle a moment to actually bind the
-                // listener before we try to connect to it.
-                Thread.sleep(2500)
             }
+            // Confirmed from a real logcat capture: exiting AA closes our
+            // socket, which kicks off gearhead's OWN teardown of the whole
+            // car-projection session (releases automotive projection, tears
+            // down its displays, disconnects its car-client connector --
+            // that disconnect logged TWICE, ~2.1s apart). The dev-mode
+            // socket (127.0.0.1:5277) stays listening the whole time since
+            // only the specific session tore down, not the server itself --
+            // so reopening right after exit used to skip straight to a new
+            // AaSessionProbe with no delay at all, landing while gearhead's
+            // teardown was still mid-flight (its window manager was still
+            // "tearing down a window that's still in use" a second after
+            // our new probe had already started). Give it the same grace
+            // window the accessibility-retry path already gets.
+            if (up) Thread.sleep(2000)
             logger.log("openAndroidAuto: starting AA session probe")
             dev.caraalink.aa.AaSessionProbe(context).start()
+            openingAa = false
             android.os.Handler(android.os.Looper.getMainLooper()).post { showAaSurface() }
         }, "AA-server-check").start()
     }
@@ -189,16 +255,49 @@ class CarSession(
      * whole session instead of leaving a dead picture up indefinitely.
      */
     private val aaWatchdog = android.os.Handler(android.os.Looper.getMainLooper())
+    // Confirmed from a real log: when gearhead's own head-unit-server is
+    // wedged/recovering, a fixed 10s stall timeout fires faster than it can
+    // actually come back -- every restarted probe's FIRST attempt alone (TLS
+    // handshake against an unresponsive peer) was eating most of that 10s,
+    // so the watchdog kept killing and replacing the probe (always logging
+    // "attempt 1/8", never getting to attempt 2) every ~10-15s for 42
+    // straight seconds before one attempt happened to land. That's a worse,
+    // self-inflicted version of "have to restart head unit server" -- back
+    // off the stall threshold on each consecutive watchdog-triggered restart
+    // instead of hammering it at the same fixed interval forever.
+    private var watchdogRestartStreak = 0
     private val aaWatchdogTick = object : Runnable {
         override fun run() {
             val probe = dev.caraalink.aa.AaSessionProbe.active
-            if (probe != null && display.mode == CarDisplay.Mode.AA) {
-                val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
-                if (staleMs > AA_WATCHDOG_STALL_MS) {
-                    logger.log("AA watchdog: no video frame in ${staleMs}ms -- restarting session")
-                    dev.caraalink.diagnostics.PerfStats.aaReconnects++
-                    probe.stop()
-                    openAndroidAuto()
+            if (display.mode == CarDisplay.Mode.AA) {
+                if (probe == null) {
+                    // The session ended on its own (e.g. the phone's AA app
+                    // sent a clean SHUTDOWN_REQUEST -- see AaSessionProbe)
+                    // rather than CarSession's own UI ever calling
+                    // AaSessionProbe.stop(). Without this the car was left
+                    // staring at AA's last frozen frame forever instead of
+                    // falling back to CarAALink's own home screen, the way a
+                    // real head unit returns to its launcher when AA exits.
+                    logger.log("AA watchdog: session ended on its own -- returning to car home")
+                    watchdogRestartStreak = 0
+                    display.showHome()
+                } else {
+                    val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                    val stallThreshold = (AA_WATCHDOG_STALL_MS * (1 shl watchdogRestartStreak.coerceAtMost(3)))
+                        .coerceAtMost(AA_WATCHDOG_STALL_MAX_MS)
+                    if (staleMs > stallThreshold) {
+                        logger.log("AA watchdog: no video frame in ${staleMs}ms (threshold ${stallThreshold}ms, " +
+                            "streak $watchdogRestartStreak) -- restarting session")
+                        dev.caraalink.diagnostics.PerfStats.aaReconnects++
+                        watchdogRestartStreak++
+                        probe.stop()
+                        openAndroidAuto()
+                    } else if (staleMs < AA_WATCHDOG_CHECK_MS) {
+                        // A frame actually arrived since the last tick -- the
+                        // session is genuinely healthy again, not just early
+                        // in its grace window. Reset the backoff.
+                        watchdogRestartStreak = 0
+                    }
                 }
             }
             aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
@@ -208,23 +307,80 @@ class CarSession(
     private fun showAaSurface() {
         aaWatchdog.removeCallbacks(aaWatchdogTick)
         aaWatchdog.postDelayed(aaWatchdogTick, AA_WATCHDOG_CHECK_MS)
+        // No mid-session resolution/DPI renegotiation exists in AA (confirmed,
+        // see roadmap.md) -- the only way to apply a changed video setting is
+        // a full reconnect, so arm the bus SettingsActivity signals through.
+        dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = {
+            logger.log("AA video settings changed -- reconnecting session")
+            dev.caraalink.aa.AaSessionProbe.active?.stop()
+            // Confirmed from a real log: reconnecting immediately after
+            // stop() got a healthy TCP connect but then silence -- no
+            // VERSION_RESPONSE ever, watchdog restarting every 10s with the
+            // same result, needing a full app/server restart to recover.
+            // This is a *warm* restart (gearhead had a live session we just
+            // yanked away), not the cold-start "service not up yet" case --
+            // it likely needs a moment to actually tear down the old
+            // session before it's ready to service a new one. A brief
+            // grace period before reconnecting, same idea as the existing
+            // accessibility-auto-start delay, gives it that room instead of
+            // racing it.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({ openAndroidAuto() }, 1500)
+        }
         val config = dev.caraalink.aa.AaServiceDiscovery.configFromSettings(context)
+        val fillMode = dev.caraalink.settings.AppSettings.aaFillMode(context)
+        logger.log(
+            "AA config: resolution=${config.resolution.width}x${config.resolution.height} " +
+                "fps=${config.frameRate} density=${config.density} " +
+                "widthMargin=${config.widthMargin} heightMargin=${config.heightMargin} " +
+                "autoCrop=${dev.caraalink.settings.AppSettings.aaAutoCrop(context)} fillMode=$fillMode " +
+                "carScreen=${dev.caraalink.link.CarScreenInfo.width}x${dev.caraalink.link.CarScreenInfo.height}",
+        )
+        // My first attempt at this fix (guarding on AaSessionProbe.active ===
+        // myProbe) was wrong -- confirmed wrong by a real log, a fresh probe
+        // still died ~2ms after starting, every single restart. The actual
+        // mechanism: ANY restart (watchdog, settings change) dismisses the
+        // OLD AaCarPresentation as part of building a new one, even though
+        // we're staying in AA mode the whole time. That old presentation's
+        // surfaceDestroyed teardown is indistinguishable from "user left AA
+        // for Home/Mirror" by probe identity alone -- active already points
+        // at the brand-new probe by the time it fires, so the old guard was
+        // always true. The real signal for "did the user actually leave AA"
+        // is display.mode: showHome()/showMirror() set it away from AA
+        // *before* dismissing this presentation, while an in-place restart
+        // sets it to AA first and only then dismisses -- so checking it here
+        // tells the two cases apart correctly.
+        val myProbe = dev.caraalink.aa.AaSessionProbe.active
         display.showAa(
             videoWidth = config.resolution.width,
             videoHeight = config.resolution.height,
+            widthMargin = config.widthMargin,
+            heightMargin = config.heightMargin,
             onSurface = { surface ->
                 if (surface != null) {
                     val dec = dev.caraalink.aa.AaVideoDecoder(config.resolution.width, config.resolution.height)
                     dec.start(surface)
                     aaDecoder = dec
-                    dev.caraalink.aa.AaSessionProbe.active?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
+                    myProbe?.attachVideoSink { ts, nal -> aaDecoder?.feed(ts, nal) }
                 } else {
-                    dev.caraalink.aa.AaSessionProbe.active?.videoSink = null
+                    // Leaving the AA tile (Home/Mirror picked instead) used to
+                    // just detach the video sink, leaving AaSessionProbe's TLS
+                    // connection to the phone's own head-unit-server mode
+                    // sitting open in the background indefinitely. Actually
+                    // end the session so the phone disconnects for real --
+                    // but only when we really left AA mode, not when this is
+                    // just the previous presentation's own teardown mid-restart.
+                    if (display.mode != dev.caraalink.video.CarDisplay.Mode.AA &&
+                        dev.caraalink.aa.AaSessionProbe.active === myProbe
+                    ) {
+                        myProbe?.stop()
+                    }
                     aaDecoder?.stop()
                     aaDecoder = null
                 }
             },
-            onTouch = { x, y, action -> dev.caraalink.aa.AaSessionProbe.active?.sendTouch(x, y, action) },
+            onTouch = { pointers, actionIndex, action ->
+                dev.caraalink.aa.AaSessionProbe.active?.sendTouch(pointers, actionIndex, action)
+            },
         )
     }
 
@@ -253,9 +409,9 @@ class CarSession(
     // --- MirrorHost ---
 
     override fun onCaptureConfig(config: CaptureConfig) {
+        val previous = this.config
         this.config = config
         CarScreenInfo.update(config.width, config.height)
-        encoder?.release()
         val fps = if (config.wantFps > 0) config.wantFps else 30
         // Settings > Video > bitrate used to be decorative -- nothing ever
         // read it, the encoder always used either the car's own requested
@@ -265,6 +421,22 @@ class CarSession(
         val settingsBitrate = dev.caraalink.settings.AppSettings.videoBitrateKbps(context) * 1000
         val carBitrate = if (config.bitRate > 0) config.bitRate else DEFAULT_BITRATE
         val bitRate = maxOf(carBitrate, settingsBitrate)
+        // The dongle re-sends this CONFIG_CAPTURE control message on its own
+        // periodically -- not just on an actual resolution/orientation change
+        // -- confirmed from a real log: it showed up twice (~9s apart) during
+        // a single unbroken AA session with nothing touched on either end.
+        // Tearing down and reallocating the encoder/display on every one of
+        // those stomped the surface AA's own video was actively streaming
+        // into (BufferQueue abandoned, frames dropped), which is the visible
+        // glitch/artifacting the owner reported -- and happened right before
+        // that AA session died outright. Skip the rebuild when nothing the
+        // encoder actually cares about changed.
+        if (encoder != null && previous == config && bitRate == lastBitRate) {
+            logger.log("CONFIG_CAPTURE repeated with no change -- not rebuilding encoder")
+            return
+        }
+        lastBitRate = bitRate
+        encoder?.release()
         val enc = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
@@ -280,7 +452,19 @@ class CarSession(
         encoder = enc
         display.attach(enc.inputSurface, config.encodeWidth, config.encodeHeight)
         display.setStatus("Connected")
+        // Settings > Android Auto > "Jump straight to Android Auto" had a
+        // getter (AppSettings.aaAutoLaunch) but nothing ever called it --
+        // confirmed live, the toggle did nothing. This is the first point in
+        // a session where the car display actually exists to switch away
+        // from; only do it once per session (display.attach() re-runs this
+        // on every real CONFIG_CAPTURE, not just the first).
+        if (!autoLaunchedAa && dev.caraalink.settings.AppSettings.aaAutoLaunch(context)) {
+            autoLaunchedAa = true
+            openAndroidAuto()
+        }
     }
+
+    @Volatile private var autoLaunchedAa = false
 
     override fun onStartVideo(): Boolean {
         encoder?.requestKeyFrame()
@@ -304,7 +488,7 @@ class CarSession(
         }
     }
 
-    override fun onDataStreamOpen(stream: AdbTransport.Stream) {
+    override fun onDataStreamOpen(stream: MirrorStream) {
         synchronized(frameLock) {
             dataStream = stream
             configSent = false
@@ -317,12 +501,12 @@ class CarSession(
         encoder?.requestKeyFrame()
     }
 
-    override fun onDataStreamClosed(stream: AdbTransport.Stream) {
+    override fun onDataStreamClosed(stream: MirrorStream) {
         synchronized(frameLock) { if (dataStream === stream) dataStream = null }
         logger.log("data stream closed; requests=$frameRequests sent=$framesSent encoded=$framesEncoded")
     }
 
-    override fun onFrameRequested(stream: AdbTransport.Stream) {
+    override fun onFrameRequested(stream: MirrorStream) {
         frameRequests++
         if (frameRequests <= 3 || frameRequests % 100 == 0L) logger.log("frame request #$frameRequests (queued=${pullQueue.size})")
         synchronized(frameLock) {
@@ -342,7 +526,7 @@ class CarSession(
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
     /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
-    private fun scheduleStarvationCheck(stream: AdbTransport.Stream) {
+    private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
             synchronized(frameLock) {
                 val key = lastKeyFrame
@@ -355,7 +539,7 @@ class CarSession(
     }
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
-    private fun sendFrameLocked(stream: AdbTransport.Stream, frame: ByteArray) {
+    private fun sendFrameLocked(stream: MirrorStream, frame: ByteArray) {
         val cfg = codecConfig
         if (!configSent && cfg != null) {
             stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))
@@ -415,5 +599,6 @@ class CarSession(
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
+        private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
     }
 }

@@ -15,6 +15,8 @@ object AppSettings {
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
     enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
     enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
+    enum class AaFillMode { FIT, FILL }
+    enum class UpdateChannel { STABLE, DEV }
 
     private fun prefs(context: Context) =
         PreferenceManager.getDefaultSharedPreferences(context)
@@ -62,11 +64,17 @@ object AppSettings {
      * `density` value.
      */
     fun videoDpi(context: Context, width: Int, height: Int): Int {
-        if (prefs(context).getBoolean("video_dpi_auto", true)) {
+        if (videoDpiAuto(context)) {
             return (minOf(width, height) / 720f * 213).toInt().coerceIn(120, 320)
         }
-        return prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
+        return manualVideoDpi(context)
     }
+
+    /** True if the auto-DPI formula is in use; false means a manual value was set. */
+    fun videoDpiAuto(context: Context): Boolean = prefs(context).getBoolean("video_dpi_auto", true)
+
+    fun manualVideoDpi(context: Context): Int =
+        prefs(context).getString("video_dpi_manual", "160")?.toIntOrNull() ?: 160
 
     fun audioSampleRateHz(context: Context): Int =
         prefs(context).getString("audio_sample_rate", "48000")?.toIntOrNull() ?: 48000
@@ -74,6 +82,14 @@ object AppSettings {
     fun audioStereo(context: Context): Boolean =
         prefs(context).getBoolean("audio_stereo", true)
 
+    /**
+     * Read by `CarSession.openAndroidAuto()` when the AA tile is tapped and
+     * the head unit server isn't already up: true (default) drives AA's
+     * Settings via the accessibility service automatically; false just
+     * notifies the owner to start it themselves, no accessibility
+     * automation triggered. (This key existed before but was never
+     * actually wired to anything -- fixed 2026-11-02.)
+     */
     fun autoStartHeadUnitServer(context: Context): Boolean =
         prefs(context).getBoolean("auto_start_head_unit_server", true)
 
@@ -94,12 +110,62 @@ object AppSettings {
     fun debugOverlay(context: Context): Boolean =
         prefs(context).getBoolean("debug_overlay", false)
 
+    fun autoSaveCrashLog(context: Context): Boolean =
+        prefs(context).getBoolean("auto_save_crash_log", true)
+
+    /**
+     * When on (default), `AaServiceDiscovery.configFromSettings()` computes
+     * `width_margin`/`height_margin` automatically from the car's real
+     * reported screen size (CarScreenInfo) vs. the chosen AA resolution's
+     * aspect ratio, instead of leaving it at 0 (plain letterbox/pillarbox)
+     * or requiring a manually-typed debug value. The per-side-vs-total
+     * semantics of the wire field are still unconfirmed (claude/roadmap.md)
+     * -- turn this off if a live test shows the crop going the wrong way.
+     */
+    fun aaAutoCrop(context: Context): Boolean =
+        prefs(context).getBoolean("aa_auto_crop", true)
+
     fun aaAutoLaunch(context: Context): Boolean =
         prefs(context).getBoolean("aa_auto_launch", false)
+
+    /**
+     * Separate from Custom resolution (which is an exact owner-typed WxH):
+     * a one-tap "send AA a smaller frame" toggle. AA's own adaptive bitrate
+     * is out of our control (confirmed: no bitrate field in its
+     * VideoConfiguration proto at all -- see AaServiceDiscovery docs), so
+     * the one lever left for blockiness is fewer pixels per frame at the
+     * same bitrate. Only applies to the plain auto-resolution path --
+     * Custom resolution still wins outright when it's set.
+     */
+    fun videoDownscale720p(context: Context): Boolean =
+        prefs(context).getBoolean("video_downscale_720p", false)
+
+    /**
+     * AA only offers 9 fixed resolutions (see AaServiceDiscovery), none of
+     * which matches CarbitLink's own 2.67:1 panel (confirmed: 1920x720) --
+     * so AA's video can never exactly fill that screen no matter which of
+     * the 9 is picked. FIT (default) letterboxes/pillarboxes so nothing is
+     * ever cropped; FILL scales up to cover the whole panel at the cost of
+     * clipping some of AA's UI off the top/bottom or sides.
+     */
+    fun aaFillMode(context: Context): AaFillMode =
+        when (prefs(context).getString("aa_fill_mode", "fit")) {
+            "fill" -> AaFillMode.FILL
+            else -> AaFillMode.FIT
+        }
 
     fun aaAudioRoute(context: Context): AaAudioRoute =
         when (prefs(context).getString("aa_audio_route", "bt_preferred")) {
             "device_only" -> AaAudioRoute.DEVICE_ONLY
             else -> AaAudioRoute.BT_PREFERRED
         }
+
+    fun updateChannel(context: Context): UpdateChannel =
+        when (prefs(context).getString("update_channel", "stable")) {
+            "dev" -> UpdateChannel.DEV
+            else -> UpdateChannel.STABLE
+        }
+
+    fun updateAutoCheck(context: Context): Boolean =
+        prefs(context).getBoolean("update_auto_check", true)
 }

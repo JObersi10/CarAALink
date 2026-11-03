@@ -62,11 +62,27 @@
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Android Auto">
+        <Preference
+            android:key="car_profiles"
+            android:title="Car profiles"
+            android:summary="Save/load video and AA settings per car (screen shape, resolution, fill mode, etc.)" />
         <SwitchPreferenceCompat
             android:key="aa_auto_launch"
             android:title="Jump straight to Android Auto"
             android:summary="Skip the CarAALink home screen and start the AA session as soon as the head unit server is up"
             android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="video_downscale_720p"
+            android:title="Downscale resolution"
+            android:summary="Send AA a 720p frame instead of 1080p -- fewer pixels for the same adaptive bitrate to cover, less blocky. Separate from Custom resolution below."
+            android:defaultValue="false" />
+        <ListPreference
+            android:key="aa_fill_mode"
+            android:title="Car screen fill"
+            android:summary="AA has no resolution matching this car's screen shape, so one of these is unavoidable"
+            android:entries="@array/aa_fill_mode_entries"
+            android:entryValues="@array/aa_fill_mode_values"
+            android:defaultValue="fit" />
         <ListPreference
             android:key="aa_audio_route"
             android:title="Mic / speaker for Android Auto"
@@ -74,6 +90,11 @@
             android:entries="@array/aa_audio_route_entries"
             android:entryValues="@array/aa_audio_route_values"
             android:defaultValue="bt_preferred" />
+        <SwitchPreferenceCompat
+            android:key="aa_auto_crop"
+            android:title="Auto-crop to car screen shape"
+            android:summary="Computes the AA video crop automatically from this car's real screen size, instead of a plain letterbox. Turn off if the picture looks worse than Fit/Fill alone."
+            android:defaultValue="true" />
     </PreferenceCategory>
 
     <PreferenceCategory android:title="Appearance">
@@ -94,7 +115,7 @@
         <SwitchPreferenceCompat
             android:key="auto_start_head_unit_server"
             android:title="Auto-start head unit server"
-            android:summary="Automatically start Android Auto's head-unit-server mode when plugged into the car"
+            android:summary="When tapping the Android Auto tile and it isn't running yet, automatically open AA's Settings and flip its developer toggle via the accessibility service. Turn off to just get a notification and start it yourself instead."
             android:defaultValue="true" />
         <SwitchPreferenceCompat
             android:key="auto_reconnect_usb"
@@ -110,6 +131,24 @@
             android:defaultValue="auto" />
     </PreferenceCategory>
 
+    <PreferenceCategory android:title="Updates">
+        <ListPreference
+            android:key="update_channel"
+            android:title="Update channel"
+            android:summary="Stable checks GitHub's tagged Releases; Dev checks the rolling 'dev' pre-release CI rebuilds on every push to main -- opens the release page either way, nothing installs itself"
+            android:entries="@array/update_channel_entries"
+            android:entryValues="@array/update_channel_values"
+            android:defaultValue="stable" />
+        <SwitchPreferenceCompat
+            android:key="update_auto_check"
+            android:title="Check automatically"
+            android:summary="Check once per app launch; only notifies when something newer actually exists"
+            android:defaultValue="true" />
+        <Preference
+            android:key="check_for_updates_now"
+            android:title="Check for updates now" />
+    </PreferenceCategory>
+
     <PreferenceCategory android:title="Debug">
         <SwitchPreferenceCompat
             android:key="debug_verbose_logging"
@@ -121,6 +160,11 @@
             android:title="On-screen debug overlay"
             android:summary="Show fps/bitrate/drops over the mirror, AA session, and this app's own screen"
             android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="auto_save_crash_log"
+            android:title="Auto-save crash log to Downloads"
+            android:summary="On a crash, save the current log straight to Downloads automatically -- no need to dig through Developer tools afterward"
+            android:defaultValue="true" />
         <Preference
             android:key="accessibility_service_shortcut"
             android:title="Accessibility service"

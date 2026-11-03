@@ -53,6 +53,27 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
         }
     }
 
+    /**
+     * Copies [file] into the public Downloads collection via MediaStore --
+     * no WRITE_EXTERNAL_STORAGE permission needed (scoped storage, API 29+,
+     * same as this app's minSdk), and unlike the share-sheet export this
+     * lands directly in the Downloads app/folder with nothing further to
+     * tap. Returns the saved file's display name, or null on failure.
+     */
+    fun saveToDownloads(file: File): String? {
+        val name = "CarAALink-${file.name}"
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name)
+            put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+        }
+        val uri = resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+        return runCatching {
+            resolver.openOutputStream(uri)?.use { out -> file.inputStream().use { it.copyTo(out) } }
+            name
+        }.getOrNull()
+    }
+
     companion object {
         private const val MAX_BYTES_PER_FILE = 4L * 1024 * 1024 // 4 MiB, then roll over
         private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
@@ -75,6 +96,13 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
         private fun write(context: Context, line: String) {
             val timestamped = "${TIMESTAMP_FORMAT.format(Date())}  $line\n"
             currentFile(context).appendText(timestamped)
+        }
+
+        /** Deletes every rolled-over log file and starts fresh on the next write. */
+        @Synchronized
+        fun clearAll(context: Context) {
+            logDir(context).listFiles()?.forEach { it.delete() }
+            currentFileRef = null
         }
     }
 
