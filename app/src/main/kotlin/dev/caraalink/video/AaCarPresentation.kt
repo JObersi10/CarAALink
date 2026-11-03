@@ -47,6 +47,7 @@ class AaCarPresentation(
 ) : Presentation(context, display) {
 
     private var surface: Surface? = null
+    private val touchLogger = dev.caraalink.diagnostics.DiagnosticLogger(context, "aa-touch")
 
     @SuppressLint("ClickableViewAccessibility")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -86,10 +87,37 @@ class AaCarPresentation(
                 }
                 else -> return@setOnTouchListener true
             }
+            // AA expects touch already remapped into the CONTENT region's
+            // own coordinate space (0..contentWidth, 0..contentHeight), not
+            // the full frame -- confirmed from mrmees/open-android-auto's
+            // docs/video-resolution.md (GPL-3.0, facts only): "Touches in
+            // the content region map to full AA coordinate space
+            // (0-remoteWidth x 0-remoteHeight)", remoteWidth/Height being
+            // the content dimensions, margins split evenly. We were sending
+            // full-FRAME coordinates (margin baked in) unchanged -- off by
+            // exactly half the margin on whichever axis has one, which is
+            // exactly the "touch registers lower" symptom (half of a 360px
+            // heightMargin = 180px low).
+            val contentWidth = (videoWidth - widthMargin).coerceAtLeast(1)
+            val contentHeight = (videoHeight - heightMargin).coerceAtLeast(1)
             val pointers = (0 until ev.pointerCount).map { i ->
-                val x = (ev.getX(i) / v.width * videoWidth).toInt().coerceIn(0, videoWidth - 1)
-                val y = (ev.getY(i) / v.height * videoHeight).toInt().coerceIn(0, videoHeight - 1)
+                val fullX = (ev.getX(i) / v.width * videoWidth).toInt()
+                val fullY = (ev.getY(i) / v.height * videoHeight).toInt()
+                val x = (fullX - widthMargin / 2).coerceIn(0, contentWidth - 1)
+                val y = (fullY - heightMargin / 2).coerceIn(0, contentHeight - 1)
                 Triple(x, y, ev.getPointerId(i))
+            }
+            // Owner reports touch registering lower than where they press,
+            // for AA specifically -- the render/crop math checks out on
+            // paper (touch and render use the identical scale+offset), so
+            // rather than guess again, log the actual numbers: raw view
+            // coords, view size, and the resulting video-pixel coords. Next
+            // capture, compare the logged (x,y) for a tap on a known AA
+            // button against that button's real on-screen position.
+            if (action == 0) {
+                touchLogger.log("DOWN rawX=${ev.getX(0)} rawY=${ev.getY(0)} viewW=${v.width} viewH=${v.height} " +
+                    "videoW=$videoWidth videoH=$videoHeight widthMargin=$widthMargin heightMargin=$heightMargin " +
+                    "-> mappedX=${pointers[0].first} mappedY=${pointers[0].second}")
             }
             onTouch(pointers, ev.actionIndex, action)
             true

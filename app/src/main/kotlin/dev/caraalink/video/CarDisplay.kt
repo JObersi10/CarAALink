@@ -188,7 +188,15 @@ class CarDisplay(
                 else -> {
                     mode = Mode.HOME
                     mirrorDisplay?.surface = null
-                    CarHomePresentation(context, display, tiles).also {
+                    // onBack (phone.back()) only acts on the PHONE's own
+                    // screen, invisible from the car side and a no-op when
+                    // accessibility is off -- confirmed not doing anything
+                    // useful live. showHome() is what the car's own hardware
+                    // Home key already calls (CarSession.onKey) and is the
+                    // one mechanism actually proven to affect the car
+                    // screen -- dismisses and rebuilds this presentation,
+                    // which also recovers it if it's ever stuck.
+                    CarHomePresentation(context, display, tiles, onExit = ::showHome).also {
                         it.show()
                         it.setStatus(status)
                         it.setInfo(info)

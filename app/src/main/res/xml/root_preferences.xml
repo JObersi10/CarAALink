@@ -71,6 +71,11 @@
             android:title="Jump straight to Android Auto"
             android:summary="Skip the CarAALink home screen and start the AA session as soon as the head unit server is up"
             android:defaultValue="false" />
+        <SwitchPreferenceCompat
+            android:key="video_downscale_720p"
+            android:title="Downscale resolution"
+            android:summary="Send AA a 720p frame instead of 1080p -- fewer pixels for the same adaptive bitrate to cover, less blocky. Separate from Custom resolution below."
+            android:defaultValue="false" />
         <ListPreference
             android:key="aa_fill_mode"
             android:title="Car screen fill"

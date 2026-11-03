@@ -172,7 +172,15 @@ object AaServiceDiscovery {
             }
         }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
-        val defaultRes = if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
+        // "Downscale resolution" (Settings > Video), separate from Custom
+        // resolution -- Custom is an exact owner-typed WxH; this is a
+        // simpler one-tap "send AA 720p instead of 1080p" for when AA's own
+        // adaptive bitrate is making 1080p blocky. Only changes what the
+        // *default* (non-custom) path resolves to -- Custom resolution
+        // still wins outright below when it's set.
+        val defaultRes = if (AppSettings.videoDownscale720p(context)) {
+            if (portrait) AaResolution.R720X1280 else AaResolution.R1280X720
+        } else if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
         val resolution = if (customWh != null) {
             val (w, h) = customWh
             candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
@@ -192,11 +200,18 @@ object AaServiceDiscovery {
         } else {
             AppSettings.videoDpi(context, resolution.width, resolution.height)
         }
-        // Advertise the touchscreen at the same size as the video we're
-        // actually sending -- AaCarPresentation/AaPreviewActivity map touch
-        // events into resolution.width/height, so a mismatched advertised
-        // touch size (the old hardcoded 1920x720 default) would have the
-        // phone interpreting touch in the wrong coordinate space.
+        // Advertise the touchscreen at the CONTENT size, not the full video
+        // frame -- confirmed from mrmees/open-android-auto's own docs
+        // (docs/video-resolution.md, GPL-3.0, facts only): "Touches in the
+        // content region map to full AA coordinate space (0-remoteWidth x
+        // 0-remoteHeight)", where remoteWidth/Height are the content
+        // dimensions, not the margin-padded frame. AaCarPresentation/
+        // AaPreviewActivity now map touch events into that same content
+        // space (see their own comment), so this has to match or AA
+        // misinterprets the range -- this was advertising the full frame
+        // size while touch was sent in full-frame coords too, which is
+        // internally consistent but wrong per the protocol: AA was always
+        // expecting content-space coordinates on the wire.
         // Auto-crop margin and FILL mode both solve the same 16:9-vs-car-panel
         // aspect mismatch, in conflicting ways: the margin asks AA to
         // pre-crop its own video, while FILL then crops our already-cropped
@@ -209,7 +224,8 @@ object AaServiceDiscovery {
         } else 0 to 0
         return Config(
             resolution = resolution, frameRate = frameRate, density = density,
-            touchWidth = resolution.width, touchHeight = resolution.height,
+            touchWidth = (resolution.width - widthMargin).coerceAtLeast(1),
+            touchHeight = (resolution.height - heightMargin).coerceAtLeast(1),
             widthMargin = widthMargin, heightMargin = heightMargin,
         )
     }

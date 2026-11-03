@@ -1,9 +1,100 @@
 # Handoff
 
-Last rewritten: 2026-11-02. PR #17 is **merged into `main`** (no GitHub
-release made -- owner publishes those manually). All work now continues on
-branch `aa-post-v1` (PR #18, open against `main`). See `roadmap.md` for full
-cited CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
+Last rewritten: 2026-11-02. Owner is tagging the current state **v1.0.0**
+and merging PR #18 into `main` themselves. See `roadmap.md` for full cited
+CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
+
+## LATEST (2026-11-02, round 6) -- another marathon real-car session, mostly real fixes this time
+
+**Confirmed fixed and live-verified (not just shipped):**
+- **Touch misalignment** (round 5's open item #2, "press a bit higher") --
+  real root cause found via mrmees/open-android-auto's
+  `docs/video-resolution.md`: AA expects touch coordinates already remapped
+  into the CONTENT region's own space (`0..contentWidth, 0..contentHeight`),
+  not the full margin-padded frame. `AaCarPresentation.kt`'s touch listener
+  and `AaServiceDiscovery.kt`'s advertised touch resolution were both
+  sending/declaring full-frame coordinates. Fixed both; owner confirmed live
+  ("touch is good").
+- **Video artifacting/glitching mid-AA-session** -- the CarbitLink dongle
+  resends `CONFIG_CAPTURE` on its own periodically (confirmed live, twice in
+  one unbroken session, ~9s apart, nothing touched on either end).
+  `CarSession.onCaptureConfig` was unconditionally tearing down and
+  rebuilding the video encoder/display on every one of those, stomping
+  AA's own actively-streaming surface. Now skips the rebuild when nothing
+  actually changed. Confirmed via log: `"CONFIG_CAPTURE repeated with no
+  change -- not rebuilding encoder"` fired cleanly, no more glitch.
+- **AA watchdog restart-hammering loop** -- fixed stall threshold was firing
+  faster than gearhead could actually recover (confirmed: 42 straight
+  seconds of "attempt 1/8, killed, attempt 1/8, killed" in one log). Now
+  backs off exponentially (`AA_WATCHDOG_STALL_MS` doubles per consecutive
+  restart, capped at 60s, resets once a frame actually arrives). Confirmed
+  via log: one restart, then the probe's own retry reached attempt 2 and
+  succeeded instead of being killed again.
+
+**Fixed, shipped, needs more live testing (each targets a real logged event, not a guess):**
+- A race where two concurrent `CarSession.openAndroidAuto()` calls could run
+  at once -- confirmed from a real capture: one call's accessibility-toggle
+  automation tapped "Stop head unit server" on a session another call had
+  *just* started a second earlier, killing it. Now guarded with a lock
+  (`openingAa`).
+- A 2-second grace delay before reconnecting when gearhead's dev-mode
+  socket (127.0.0.1:5277) is already listening -- confirmed gearhead's own
+  session teardown (releasing automotive projection, disconnecting its
+  `GearheadCarClientConnector`, removing virtual displays) takes a couple
+  of seconds, and reconnecting faster than that used to race it.
+- The accessibility automation that taps AA's own "Start/Stop head unit
+  server" now retries the tap up to twice -- confirmed live the overflow
+  menu can read stale "on" (session already dead) and the first tap turns
+  it fully off instead of starting it; the second tap then correctly finds
+  "off" and starts it for real.
+- `UsbLinkForegroundService` now overrides `onTaskRemoved()`. There was
+  **no explicit "Disconnect"/"Exit" control anywhere in the app** -- the
+  only way to end a session was unplugging USB. Swiping the app away from
+  recents did nothing: the foreground service (and the whole USB/AA
+  session) just kept running invisibly in the background. This is the
+  leading suspect for "CarAALink won't close cleanly" / needing the manual
+  head-unit-server toggle after swiping away, but not yet confirmed live
+  (the one capture done so far was an unplug/replug, a different path that
+  already looked fine).
+
+**New settings added (not bugs, feature requests):**
+- "Jump straight to Android Auto" (`aa_auto_launch`) -- existed as a dead
+  getter, read nowhere. Now actually wired into `CarSession.onCaptureConfig`.
+- "Downscale resolution" (`video_downscale_720p`) -- separate from Custom
+  resolution; one-tap "send AA 720p instead of 1080p" for when AA's own
+  adaptive bitrate makes 1080p blocky. See the bitrate finding below for why
+  this is the *only* lever that exists.
+
+**Closed for good, don't re-investigate without new evidence:**
+- **AA video bitrate ("blockiness")** -- triple-confirmed from primary
+  sources (AA's actual `VideoConfiguration` proto fields, two independent
+  AI cross-checks of mrmees/open-android-auto's `channels/video.md`,
+  `interactions/04-channel-lifecycle.md`, and `phenotype-flags.md`): there
+  is NO bitrate field in the protocol at all, no documented link between
+  ACK timing/pacing and encoder rate, and gearhead's internal adaptive-
+  encoder flags are explicitly phone-internal/server-side (set by Google,
+  cached on the phone), not head-unit-settable or exposed via ADB/Developer
+  Mode. Resolution downscale (above) is the only real lever. Do not chase
+  "trick gearhead via ACK pacing" or "hidden phone-side bitrate flag" again
+  without an actual cited mechanism -- both were proposed by an AI with
+  zero citation and don't survive a check against the primary docs.
+- USB audio routing -- confirmed not in use anywhere in `AaAudioPlayer.kt`
+  (only `TYPE_BLUETOOTH_A2DP`/`TYPE_BUILTIN_SPEAKER` are ever targeted).
+- In-app logcat-of-gearhead-on-demand (feature request) -- impossible by
+  Android's own design, `READ_LOGS` is signature/system-only; only a
+  PC-connected `adb logcat` session can ever see another app's logcat.
+
+**Still open, not touched this round:**
+1. `AudioTrack: restoreTrack_l` churn (round 5's lead #3) -- never
+   revisited.
+2. The gearhead `VirtualDisplay width must be positive` crash (see "biggest
+   lead" section below) -- never cross-referenced against our own log.
+3. Steering wheel button presses (voice-command button specifically) --
+   one capture attempt caught nothing but a routine heartbeat
+   (`REQ_HEARTBEAT`/`0x0040`) in the whole window; never retried with a
+   cleaner capture window.
+4. Whether the `onTaskRemoved()` fix above actually fixes "still have to
+   manually toggle head unit server" -- next session's first job.
 
 ## LATEST (2026-11-02, later same day) -- marathon real-car session, round 5
 

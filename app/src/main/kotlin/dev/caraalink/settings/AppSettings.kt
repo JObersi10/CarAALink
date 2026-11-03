@@ -129,6 +129,18 @@ object AppSettings {
         prefs(context).getBoolean("aa_auto_launch", false)
 
     /**
+     * Separate from Custom resolution (which is an exact owner-typed WxH):
+     * a one-tap "send AA a smaller frame" toggle. AA's own adaptive bitrate
+     * is out of our control (confirmed: no bitrate field in its
+     * VideoConfiguration proto at all -- see AaServiceDiscovery docs), so
+     * the one lever left for blockiness is fewer pixels per frame at the
+     * same bitrate. Only applies to the plain auto-resolution path --
+     * Custom resolution still wins outright when it's set.
+     */
+    fun videoDownscale720p(context: Context): Boolean =
+        prefs(context).getBoolean("video_downscale_720p", false)
+
+    /**
      * AA only offers 9 fixed resolutions (see AaServiceDiscovery), none of
      * which matches CarbitLink's own 2.67:1 panel (confirmed: 1920x720) --
      * so AA's video can never exactly fill that screen no matter which of
