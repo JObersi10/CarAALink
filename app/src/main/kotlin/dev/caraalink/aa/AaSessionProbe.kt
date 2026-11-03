@@ -1,6 +1,7 @@
 package dev.caraalink.aa
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
 import dev.caraalink.diagnostics.DiagnosticLogger
 import java.io.DataInputStream
@@ -63,6 +64,10 @@ class AaSessionProbe(
         // happened to land after it was finally ready.
         val maxAttempts: Int = 8,
         val retryDelayMs: Long = 2_000,
+        /** Maximum delay after repeated failures following an established session. */
+        val maxReconnectDelayMs: Long = 60_000,
+        /** A connection lasting this long resets the post-session failure backoff. */
+        val reconnectBackoffResetAfterMs: Long = 60_000,
         /** True only for the on-phone Car Preview session -- see AaServiceDiscovery.configFromSettings(). */
         val preview: Boolean = false,
     )
@@ -317,7 +322,11 @@ class AaSessionProbe(
         // (observed: attempt at 16:54:18 answered instantly, the one at
         // 16:55:17 got no reply at all). Retry on a fresh socket rather than
         // reporting a protocol failure that is really a stale-session artefact.
+        // Gearhead logs also show several post-session retries establishing
+        // projection before hitting EOF within seconds. Avoid reopening those
+        // sessions every 2s while Gearhead is still tearing down the prior one.
         var attempt = 0
+        var consecutiveReconnectFailures = 0
         try {
             while (running.get() && (everEstablished || attempt < config.maxAttempts)) {
                 attempt++
@@ -325,9 +334,27 @@ class AaSessionProbe(
                     if (everEstablished) "--- reconnecting (auto-reconnect, session was live before)"
                     else "--- attempt $attempt/${config.maxAttempts}",
                 )
-                attemptOnce()
+                val attemptStartedAt = SystemClock.elapsedRealtime()
+                val attemptCompleted = attemptOnce()
                 if (!running.get()) return
-                if (everEstablished) attempt = 0
+                var delayMs = config.retryDelayMs
+                if (everEstablished) {
+                    val sessionDurationMs = SystemClock.elapsedRealtime() - attemptStartedAt
+                    if (sessionDurationMs >= config.reconnectBackoffResetAfterMs) {
+                        if (consecutiveReconnectFailures > 0) {
+                            logger.log("AA connection lasted ${sessionDurationMs}ms -- resetting reconnect backoff")
+                        }
+                        consecutiveReconnectFailures = 0
+                    } else if (!attemptCompleted) {
+                        consecutiveReconnectFailures++
+                    }
+                    val multiplier = 1L shl consecutiveReconnectFailures.coerceAtMost(10)
+                    delayMs = (config.retryDelayMs * multiplier).coerceAtMost(config.maxReconnectDelayMs)
+                    if (delayMs > config.retryDelayMs) {
+                        logger.log("post-session reconnect failed $consecutiveReconnectFailures time(s); retrying in ${delayMs}ms")
+                    }
+                    attempt = 0
+                }
                 // stop() interrupts this worker thread -- if that lands
                 // while it's sleeping here between retries, Thread.sleep()
                 // throws InterruptedException, which was uncaught anywhere
@@ -336,7 +363,7 @@ class AaSessionProbe(
                 // was mid-retry did exactly this. A stop mid-sleep is just
                 // stop() doing its job, not a real error -- treat it as one.
                 try {
-                    Thread.sleep(config.retryDelayMs)
+                    Thread.sleep(delayMs)
                 } catch (e: InterruptedException) {
                     logger.log("sleep interrupted (stop() requested) -- ending retry loop")
                     return
@@ -532,6 +559,29 @@ class AaSessionProbe(
                             val focus = AaProtobuf.Writer().int(1, 1).bool(2, false).build()
                             channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION, focus)
                         }
+                    } else if (chId == AaFraming.MSG_MEDIA_VIDEO_FOCUS_REQUEST) {
+                        // VideoFocusRequest{focus_mode=2, focus_reason=3} --
+                        // phone->HU, previously unhandled (no branch at all
+                        // existed for this message id). Confirmed from
+                        // mrmees/open-android-auto's own docs
+                        // (docs/channels/video.md, GPL-3.0, facts only):
+                        // focus_mode 1=PROJECTED, 2=NATIVE (phone stops
+                        // rendering), 3=NATIVE_TRANSIENT (phone keeps
+                        // rendering, loses input), 4=PROJECTED_NO_INPUT_FOCUS;
+                        // focus_reason 1=PHONE_SCREEN_OFF, 2=LAUNCH_NATIVE,
+                        // 3=LAST_MODE, 4=USER_SELECTION. The doc's own
+                        // sequence examples and sample handler both reply by
+                        // echoing the SAME mode the phone asked for, with
+                        // unrequested=false -- not a fixed response
+                        // regardless of what was requested (that's LIVI's
+                        // shortcut, not the documented behavior).
+                        val fields = AaProtobuf.parse(chBody)
+                        val focusMode = fields.firstOrNull { it.number == 2 }?.varint ?: 1L
+                        val focusReason = fields.firstOrNull { it.number == 3 }?.varint ?: 0L
+                        logger.log("RX VIDEO_FOCUS_REQUEST on ${AaFraming.channelName(message.channelId)} " +
+                            "mode=$focusMode reason=$focusReason")
+                        val indication = AaProtobuf.Writer().int(1, focusMode.toInt()).bool(2, false).build()
+                        channel.sendChannelSpecific(message.channelId, AaFraming.MSG_MEDIA_VIDEO_FOCUS_NOTIFICATION, indication)
                     } else if (chId == AaFraming.MSG_MEDIA_START &&
                         (message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO ||
                             message.channelId == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO)
