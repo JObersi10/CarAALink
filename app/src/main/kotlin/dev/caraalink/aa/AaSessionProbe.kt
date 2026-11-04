@@ -121,6 +121,16 @@ class AaSessionProbe(
     /** Wall-clock time of the last video DATA frame actually received -- the watchdog's stall signal. */
     @Volatile
     var lastVideoFrameAt: Long = 0L
+    // Separate from lastVideoFrameAt -- that field gets grace-period bumps
+    // at start() and at other points before any real video has ever
+    // arrived (see its own comments), so it can't by itself distinguish
+    // "still negotiating" from "was healthy, now stalled." This flips once,
+    // at the one place real video data is actually received, and never
+    // resets for this probe's lifetime -- confirmed real gap (ChatGPT
+    // review, 2026-11-04, grounded against a log where the watchdog fired
+    // mid-negotiation and restarted a session that hadn't failed, just
+    // hadn't started yet).
+    @Volatile var hasReceivedVideo: Boolean = false
         private set
 
     /** Like setting [videoSink] directly, but also replays cached SPS/PPS + last keyframe if we have them. */
@@ -285,14 +295,30 @@ class AaSessionProbe(
         // tracking never having been told the previous one actually ended
         // on purpose, only ever seeing the pipe die. Best-effort: this
         // must not block or throw if the channel's already unusable.
-        runCatching {
+        val sentShutdown = runCatching {
             activeChannel?.let { ch ->
                 val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
                 ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
-            }
+                true
+            } ?: false
         }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
-        runCatching { socket?.close() }
+            .getOrDefault(false)
+        // stop() is called from several places, including the main-thread
+        // watchdog tick -- a blocking sleep here would risk UI jank/ANR, so
+        // the brief wait (giving the ShutdownRequest write a chance to
+        // actually leave before the FIN, rather than racing it) runs on a
+        // short-lived background thread instead of this caller's thread.
+        // Bounded so a dead/unresponsive peer can't hang anything.
+        val s = socket
         socket = null
+        if (sentShutdown && s != null) {
+            Thread({
+                runCatching { Thread.sleep(200) }
+                runCatching { s.close() }
+            }, "AaSessionProbe-teardown").apply { isDaemon = true }.start()
+        } else {
+            runCatching { s?.close() }
+        }
         worker?.interrupt()
         worker = null
         if (active === this) active = null
@@ -602,6 +628,7 @@ class AaSessionProbe(
                             val frame = chBody.copyOfRange(8, chBody.size)
                             if (containsIdr(frame)) cachedKeyframe = frame
                             lastVideoFrameAt = System.currentTimeMillis()
+                            hasReceivedVideo = true
                             mediaExecutor.execute { videoSink?.invoke(ts, frame) }
                         }
                         // Flow control (AVMediaAckIndication, 0x8004): our own

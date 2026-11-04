@@ -198,28 +198,17 @@ class CarSession(
             var up = serverUp()
             if (!up) {
                 if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
-                    // The accessibility service taps whichever label the
-                    // overflow menu is actually showing (a real toggle, not
-                    // always "Start") -- but if gearhead crashed while the
-                    // menu still reads "Stop head unit server" (server
-                    // thinks it's running, the process is actually dead),
-                    // our one tap turns an already-broken "on" into a clean
-                    // "off" instead of starting it, leaving the owner to
-                    // manually tap it a second time themselves. Retrying
-                    // once here, bounded, covers that case: a second tap
-                    // now correctly finds "Start" and turns it on for real.
-                    for (tapAttempt in 1..2) {
-                        logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start (tap $tapAttempt/2)")
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            display.setStatus("AA: starting head unit server…")
-                            dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
-                        }
-                        // Give the accessibility-driven toggle a moment to actually bind the
-                        // listener before we try to connect to it.
-                        Thread.sleep(2500)
-                        up = serverUp()
-                        if (up) break
+                    // Start is state-aware: it taps only when AA's menu says
+                    // the server is off. A failed TCP probe alone must never
+                    // trigger a Stop action on an enabled server.
+                    logger.log("openAndroidAuto: server not accepting TCP -- requesting safe start")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        display.setStatus("AA: starting head unit server…")
+                        dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
                     }
+                    Thread.sleep(2500)
+                    up = serverUp()
+                    if (!up) logger.log("openAndroidAuto: server did not accept TCP after start request; continuing without another toggle")
                 } else {
                     // "Auto-start head unit server" is off (Settings > Connection) --
                     // the owner wants to flip AA's developer-mode switch themselves,
@@ -293,6 +282,18 @@ class CarSession(
                     display.showHome()
                 } else {
                     val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                    if (!probe.hasReceivedVideo) {
+                        val startupMs = staleMs
+                        if (startupMs > AA_WATCHDOG_STARTUP_MS) {
+                            logger.log("AA watchdog: no video after ${startupMs}ms startup grace -- restarting session")
+                            dev.caraalink.diagnostics.PerfStats.aaReconnects++
+                            watchdogRestartStreak++
+                            probe.stop()
+                            openAndroidAuto()
+                        }
+                        aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
+                        return
+                    }
                     val stallThreshold = (AA_WATCHDOG_STALL_MS * (1 shl watchdogRestartStreak.coerceAtMost(3)))
                         .coerceAtMost(AA_WATCHDOG_STALL_MAX_MS)
                     if (staleMs > stallThreshold) {
@@ -653,6 +654,7 @@ class CarSession(
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
+        private const val AA_WATCHDOG_STARTUP_MS = 60_000L
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
     }
 }

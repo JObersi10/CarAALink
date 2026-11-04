@@ -12,9 +12,12 @@ import android.view.accessibility.AccessibilityNodeInfo
  * Automates the one step that's actually safe to automate: once Android
  * Auto's own Settings screen is in front, open its overflow menu, detect
  * whether the head unit server is currently running (menu shows "Stop...")
- * or not ("Start..."), and tap whichever is actually present -- a real
- * toggle instead of blindly tapping "Start" even when it's already on. Once
- * that tap lands, a single back press closes AA's Settings screen and
+ * or not ("Start..."), and tap "Start" only when it's actually off --
+ * confirmed live (2026-11-04) that treating this as a blind toggle could
+ * tap "Stop" on an already-running, healthy server (a failed TCP probe
+ * elsewhere isn't proof the server is off), killing a working AA session.
+ * Once that tap lands (or there was nothing to do), a single back press
+ * closes AA's Settings screen and
  * leaves the phone on whatever was actually in front before (or home, if
  * there wasn't anything) -- this used to force CarAALink's own activity to
  * the front instead, which stole phone focus from whatever the owner was
@@ -114,15 +117,23 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         try {
             if (overflowOpened) {
-                // Detect current state from whichever label the menu is
-                // actually showing, then tap that one -- this is the toggle.
+                // Was a real toggle (tap whichever of Start/Stop the menu
+                // shows) -- confirmed real bug (ChatGPT, grounded against a
+                // real log, 2026-11-04): the only caller (arm() has exactly
+                // one call site, HeadUnitServerLauncher.start()) always
+                // means "ensure the server is running," never "toggle it."
+                // A TCP probe that treats a failed connect as "server off"
+                // can be wrong (running but momentarily not accepting), and
+                // this used to tap "Stop" in that case -- confirmed live:
+                // server was on, got tapped off, AA connection reset, had
+                // to auto-recover a few seconds later. Start-only now:
+                // tap Start only when the server is actually off; if it's
+                // already on, there's nothing to do.
                 val startNode = findExactText(root, START_TEXTS)
                 val stopNode = findExactText(root, STOP_TEXTS)
-                val target = startNode ?: stopNode
-                if (target != null) {
-                    val label = if (startNode != null) "Start" else "Stop"
-                    if (clickUpToAncestor(target)) {
-                        Log.i(TAG, "Head unit server was ${if (startNode != null) "off" else "on"} -- tapped '$label head unit server'")
+                if (startNode != null) {
+                    if (clickUpToAncestor(startNode)) {
+                        Log.i(TAG, "Head unit server was off -- tapped 'Start head unit server'")
                         // Leave the phone wherever it actually was -- forcing
                         // CarAALink itself back to the front here was stealing
                         // phone focus from whatever the owner was doing on it
@@ -134,6 +145,10 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
                         deactivate(pressBack = true)
                         return
                     }
+                } else if (stopNode != null) {
+                    Log.i(TAG, "Head unit server already on -- leaving it alone")
+                    deactivate(pressBack = true)
+                    return
                 }
             }
 
