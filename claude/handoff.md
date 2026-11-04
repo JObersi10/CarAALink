@@ -1,9 +1,204 @@
 # Handoff
 
-Last rewritten: 2026-11-02. PR #18 is merged into `main`. Owner is tagging
-that state **v1.0.0** themselves. ChatGPT is picking up the investigation
-below for a while -- see round 7 first. See `roadmap.md` for full cited
-CarbitLink detail and `aa-receiver-notes.md` for cited AA protocol.
+Last rewritten: 2026-11-03. PR #18 (v1.0.0) is merged into `main`. PR #19
+is open against `main` from `aa-post-v1` (driving-status fix, decoder
+diagnostics, video focus handling). **ChatGPT and Claude have been
+trading off on this investigation across several passes -- `chatgpt-
+status.md` at the repo root is the detailed, cited log of that back-and-
+forth (PhoneAuto/LIVI/Open-Headunit source and capture comparisons,
+panel-fit resolution change, density analysis) and is the first thing to
+read, in full, before continuing.** This file stays the higher-level
+summary. See `roadmap.md` for full cited CarbitLink detail and
+`aa-receiver-notes.md` for cited AA protocol.
+
+## LATEST (2026-11-03, round 9) -- real CarbitLink app decompiled, confirmed it uses software libx264 not hardware MediaCodec; x264 encode path built and installed, NOT YET TESTED
+
+Full detail, in order, is in `chatgpt-status.md`'s round-9 sections --
+this is the condensed version.
+
+**Landed and confirmed good:**
+- Margin-aware density (round 8) -- tested live, user confirmed density
+  142 "looked way better" than the old 213. Keep.
+- Starvation-fallback fix in `CarSession.kt` (`lastSentFrame` instead of
+  `lastKeyFrame` on the 80ms no-frame-ready fallback) -- measured
+  47%->86% fresh-frame ratio improvement across two real sessions. Real
+  fix, but did NOT change the reported blockiness on its own.
+- EIO auto-reconnect in `UsbLinkForegroundService.kt`
+  (`scheduleTransportReconnect`, capped/backed-off retry on a transport
+  I/O failure, never on a deliberate stop). Works, but a live log showed
+  the retry's own `openAccessory()` call throws `IllegalArgumentException:
+  no accessory attached` every time -- recovery actually comes from
+  Android's own `ACTION_USB_ACCESSORY_ATTACHED` broadcast reconnecting,
+  not this retry. **Open question, unresolved:** does the app already
+  auto-restart the service on that attach broadcast independent of this
+  patch? If yes this whole addition may be dead weight and the real
+  "have to manually restart" cause is still unexplained -- check the
+  manifest/receiver wiring before trusting this fix did anything.
+- H.264 level mismatch fix in `CarVideoEncoder.kt` (`levelFor()`,
+  computes the right AVC level instead of hardcoding Level 3.1 when
+  CarbitLink's own `CONFIG_CAPTURE` requests 1920x720, which needs at
+  least Level 4). Confirmed real (CarbitLink requests exactly 1920x720,
+  5400 macroblocks, over Level 3.1's 3600 spec max), but user tested and
+  confirmed it did NOT fix the blockiness either.
+
+**The actual likely root cause, found this round:** decompiled the real
+CarbitLink companion app (`CarbitLink-EasyConnection_6.5.1_APKPure.apk`
+at repo root -- NOT `com.tarplay.phonescreen`, that's PhoneAuto itself,
+a mixup that cost real time this round, corrected). `strings` on its
+`lib/arm64-v8a/libJNICodec.so` shows a custom FFmpeg build with
+`--enable-libx264 --enable-encoder='h264,libx264'` and an internal
+banner `(knNx264 [%s]:` -- **they run software libx264, not the phone's
+hardware MediaCodec encoder, for the Mirror channel.** Zero MediaCodec
+references in that library. Software x264 at a given bitrate produces
+meaningfully better quality than typical phone hardware H.264 encoders
+under bitrate pressure -- the leading explanation for blockiness that
+survived both prior fixes.
+
+**Built this round, in the working tree, NOT YET TESTED in the car:**
+- Added `dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.7` to
+  `app/build.gradle.kts` (Maven Central, prebuilt libx264 for arm64-v8a).
+  **GPL-3.0 -- user explicitly accepted this makes CarAALink itself GPL
+  if ever distributed.** Confirmed resolves and builds; `stripDebugDebugSymbols`
+  warns it can't strip `libavcodec.so`/`libffmpegkit.so`/etc., which is
+  expected and just means they ship unstripped (bigger APK, not a bug).
+- New `app/src/main/kotlin/dev/caraalink/video/VideoEncoder.kt` --
+  shared interface (`width`, `height`, `inputSurface`, `start()`,
+  `requestKeyFrame()`, `release()`) both encoders now implement.
+- New `app/src/main/kotlin/dev/caraalink/video/CarVideoEncoderX264.kt`
+  -- FFmpegKit has no live-Surface encode API like MediaCodec's, so this
+  owns an `ImageReader` (YUV_420_888), converts each frame to packed
+  I420 respecting per-plane row/pixel stride, pipes it into a live
+  `ffmpeg -f rawvideo ... -c:v libx264 ... -f h264` process over a named
+  FIFO (`Os.mkfifo`), and parses the Annex-B H.264 output back into
+  access units (`AnnexBParser`, NAL type 7/8 = config, 5 = key) to call
+  the same `onFrame` callback shape `CarVideoEncoder` does.
+  `requestKeyFrame()` is a deliberate no-op (no live force-IDR control
+  over the pipe; `-g fps` already guarantees a keyframe at least once a
+  second, same as `CarVideoEncoder`'s `KEY_I_FRAME_INTERVAL = 1`).
+- `CarVideoEncoder.kt` and `CarSession.kt` updated to implement/use the
+  shared interface; `CarSession.kt`'s `onCaptureConfig` now picks
+  `CarVideoEncoderX264` vs `CarVideoEncoder` based on
+  `AppSettings.videoUseX264(context)`.
+- New settings toggle, `root_preferences.xml` + `AppSettings.kt`:
+  **"Software H.264 encode (x264)"**, key `video_use_x264`, **default
+  true** (so it's actually exercised without the user needing to find
+  the toggle first) -- flip off to revert to the known-working hardware
+  `CarVideoEncoder` path if x264 causes new problems (CPU load, FIFO/
+  process issues, phone heat) instead of fixing the old one.
+- Build succeeded, installed to the phone. **The actual live test --
+  does it fix the blockiness, does the FIFO pipeline hold up, what does
+  CPU/heat look like -- has not happened yet.** This is the single most
+  important next step for whoever picks this up.
+
+**Biggest risk in the new code, unverified:** the YUV_420_888 ->
+packed-I420 conversion in `CarVideoEncoderX264.packI420()`/`copyPlane()`.
+Wrong row/pixel stride handling is the single most common cause of
+garbled/green video in any Android YUV capture pipeline, and this has
+never been run on a real device. If the car screen shows noise/green/
+corruption (as opposed to blockiness specifically), this conversion is
+the first place to check, not the x264 encode settings.
+
+**Also unverified:** FIFO lifecycle under session teardown/CONFIG_CAPTURE
+rebuild (same resolution-change-reopens-encoder path that round 7's
+"CONFIG_CAPTURE repeated with no change" fix was protecting). If the
+car's head unit keeps re-sending CONFIG_CAPTURE like it does today,
+confirm `CarVideoEncoderX264.release()` actually unblocks both FIFO
+threads cleanly each time rather than leaking a blocked thread per
+rebuild.
+
+## LATEST (2026-11-03, round 8) -- ChatGPT's PhoneAuto/LIVI/OHA comparison, panel-fit resolution, margin-aware density (untested)
+
+Full details and exact code/log citations are in `chatgpt-status.md`
+(much longer than what fits here). Short version:
+
+**Landed and pushed to `aa-post-v1` (PR #19), not yet live-verified:**
+- Auto resolution now panel-fits: for a known ultrawide car panel
+  (`carAspect >= 2.5`), picks `1280x720` + a 240px height margin (1280x480
+  visible content) instead of the old default `1920x1080`, matching the
+  largest mode PhoneAuto's own decompiled resolution picker offers for a
+  1920x720 panel (ChatGPT's decompile of `PhoneAuto-beta-2027-01-19.apk`,
+  `MainActivity.f()`/`C0056bq.java`). Custom resolution and the existing
+  "Force 720p" switch both still override this.
+- Decoder diagnostics (`AaVideoDecoder`/`PerfStats`, landed PR #19) made
+  visible-by-default: the `AA decode: recv=... sub=... miss=... exc=...
+  rend=...` line now shows after the first access unit even when
+  miss/exc are both zero, so "zero" can be told apart from "never ran."
+- Video focus handling (`AaSessionProbe`, landed PR #19): `VideoFocusRequest`
+  (was completely unhandled) now parsed/logged and answered with the
+  protocol-documented echo-back response, not a hardcoded PROJECTED.
+  Still NOT wired into the AA watchdog/display behavior -- a NATIVE focus
+  handoff means the phone intentionally stops sending video, and that's
+  not yet told to the watchdog's stall detector. Natural next step.
+- **Margin-aware density (just made, build triggered, NOT YET
+  installed/tested as of this entry):** `AaServiceDiscovery.configFromSettings()`'s
+  density formula used to be computed from the full negotiated resolution
+  (e.g. 1280x720), completely blind to the autocrop margin -- same density
+  whether heightMargin was 0 or 240. Now computed from the post-margin
+  CONTENT region instead (e.g. 1280x480), same formula/clamp, following
+  the same principle Open Headunit's own sizing code uses (derive density
+  from the VISIBLE pixel dimensions, not the raw buffer) -- NOT copying
+  OHA's actual 730dp number, which is an unrelated portrait-only policy.
+  **Important:** `roadmap.md` already has a confirmed-twice-live finding
+  that density behaves OPPOSITE the textbook formula in this app's real
+  rendering (higher density -> smaller UI on screen). So this change is
+  NOT a confirmed fix -- it needs a real before/after comparison on the
+  actual 1920x720 car screen (same scene, same session length, log the
+  `AA config: resolution=... density=... widthMargin=... heightMargin=...`
+  line and a photo/clear note of UI scale each time) before deciding to
+  keep it. Revert if it looks worse.
+
+**New diagnostic evidence from Open Headunit (a THIRD reference AA head
+unit app, alongside PhoneAuto and LIVI) + a synchronized gearhead logcat,
+2026-11-03, phone self-mode only (NOT a car test):**
+- Confirms OHA's own sizing method: derive density from
+  `visible_px_width * 160 / target_dp_width`, where visible_px_width is
+  POST-margin. Its own target (730dp) is a portrait-only internal policy,
+  not a protocol value -- do not copy the number, only the method (now
+  applied above, margin-awareness only, no borrowed constant).
+- Gearhead's own lifecycle log (`GH.ConnLoggerV2`) through a user-exit
+  shows clean, fast teardown (`PROJECTION_ENDED_BYEBYE_BY_CAR` ->
+  `FRAMER_READ_END_OF_STREAM` -> `SESSION_STOPPED`, all within ~4s) when
+  OHA sends a proper BYEBYE first -- a different, cleaner shutdown pattern
+  than CarAALink's own EOF-without-BYEBYE cases seen earlier. A low-memory
+  kill of gearhead's own `:watchdog` process happened ~4s after that
+  SESSION_STOPPED in this capture -- noted as a correlated-in-time
+  observation only, not proven causally connected to anything.
+- Pixelation measurement from a real CarAALink session log (protocol
+  sniffer on): measured H.264 payload bitrate directly from logged
+  `MEDIA_DATA` message sizes -- averaged ~1.6-2.3 Mbit/s across three runs,
+  with sustained 5-second windows as low as ~0.58-0.93 Mbit/s. Direct
+  evidence of genuinely low bitrate stretches in the real received stream
+  (not speculation). That same capture also measured the AA frame rate
+  setting (60fps) as a second real receiver-settable protocol input
+  (distinct from bitrate, which still has no field) worth a controlled
+  30-vs-60fps A/B test at the same resolution.
+
+**Open follow-ups, in rough priority order (see `chatgpt-status.md`'s own
+"Remaining open items" list for the full version):**
+1. Finish testing the margin-aware density change (in progress as of this
+   entry -- build was running when this was written).
+2. Matched live comparison: new Auto (1280x720) vs. the old 1080p default,
+   recording bitrate, decoder miss/exc counters, and visual result.
+3. 30fps vs 60fps A/B at the same resolution, same reasoning as above.
+4. Wire video-focus state into the AA watchdog so a NATIVE/NATIVE_TRANSIENT
+   handoff doesn't get mistaken for a stall.
+5. Capture a synchronized CarAALink + gearhead log through a NATURAL EOF
+   (not a user exit) to investigate the still-unexplained stale-USB-
+   handshake lead from round 7.
+6. `AudioTrack: restoreTrack_l` churn -- still never revisited.
+7. The `VirtualDisplay width must be positive` gearhead crash -- still
+   never cross-referenced against our own log.
+8. Steering-wheel voice-command button -- still never successfully
+   captured.
+9. Confirm live whether round 6/7's `onTaskRemoved`/reconnect-race/grace-
+   delay fixes actually eliminate the "manually toggle head unit server"
+   complaint for good.
+
+**Build environment note:** the SABRENT external drive (holds the only
+JDK and the Android SDK on this Mac) gets unmounted/disconnected between
+sessions somewhat often this week -- always `ls /Volumes` before assuming
+a local build will work, and ask the owner to reconnect it rather than
+guessing it's there.
 
 ## LATEST (2026-11-02, round 7) -- driving-status fix + a real gearhead-side lead from ChatGPT
 

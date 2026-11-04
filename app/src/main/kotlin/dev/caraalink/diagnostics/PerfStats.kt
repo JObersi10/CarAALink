@@ -71,12 +71,15 @@ object PerfStats {
         if (aa.fps > 0) parts += "AA ${aa.fps.toInt()}fps/${aa.kbps.toInt()}kbps"
         if (mirrorFramesDropped > 0) parts += "dropped $mirrorFramesDropped"
         if (aaReconnects > 0) parts += "AA reconnects $aaReconnects"
-        if (aaInputBufferUnavailable > 0 || aaDecodeExceptions > 0) {
-            parts += "AA decode: recv=$aaAccessUnitsReceived sub=$aaSubmitted " +
-                "miss=$aaInputBufferUnavailable exc=$aaDecodeExceptions rend=$aaFramesRendered"
+        if (aaAccessUnitsReceived > 0) {
+            parts += aaDecodeSummary()
         }
         return if (parts.isEmpty()) "No active stream" else parts.joinToString("  ")
     }
+
+    fun aaDecodeSummary(): String =
+        "AA decode: recv=$aaAccessUnitsReceived sub=$aaSubmitted " +
+            "miss=$aaInputBufferUnavailable exc=$aaDecodeExceptions rend=$aaFramesRendered"
 
     /**
      * Adds a small translucent HUD to [root] when Settings > Debug >

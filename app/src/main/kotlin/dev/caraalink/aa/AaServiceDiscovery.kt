@@ -39,9 +39,10 @@ import dev.caraalink.settings.AppSettings
  * - [AaResolution.R1280X720]  — exact height match, pillarboxed by the car
  * - [AaResolution.R1920X1080] — exact width match, letterboxed; more pixels
  *
- * Default is 1920x1080 (matches the car's width, so no horizontal scaling).
- * Whatever is chosen, the frames arrive at that size and the CarbitLink side
- * has to place them into 1920x720 rather than assume a 1:1 fit.
+ * Auto mode uses a panel-fit tier. On CarbitLink's 1920x720 ultrawide
+ * panel that is 1280x720 with a 240px height margin (the same largest
+ * mode PhoneAuto offers), rather than spending 2.25x as many active
+ * pixels on a 1920x1080 frame. Custom remains an explicit override.
  */
 object AaServiceDiscovery {
 
@@ -172,15 +173,22 @@ object AaServiceDiscovery {
             }
         }
         val candidates = AaResolution.values().filter { (it.height > it.width) == portrait }
-        // "Downscale resolution" (Settings > Video), separate from Custom
-        // resolution -- Custom is an exact owner-typed WxH; this is a
-        // simpler one-tap "send AA 720p instead of 1080p" for when AA's own
-        // adaptive bitrate is making 1080p blocky. Only changes what the
-        // *default* (non-custom) path resolves to -- Custom resolution
-        // still wins outright below when it's set.
-        val defaultRes = if (AppSettings.videoDownscale720p(context)) {
-            if (portrait) AaResolution.R720X1280 else AaResolution.R1280X720
-        } else if (portrait) AaResolution.R1080X1920 else AaResolution.R1920X1080
+        // The explicit 720p switch remains a force-downscale override. In
+        // Auto mode, also choose a 720p tier for a known ultrawide panel:
+        // the 1920x720 CarbitLink panel can use 1280x720 plus a 240px height
+        // margin to produce a 1280x480 content region at the panel's 2.67:1
+        // aspect ratio. This is the largest option PhoneAuto advertises for
+        // that panel. Custom resolution still takes precedence below.
+        val carWidth = if (preview) 0 else dev.caraalink.link.CarScreenInfo.width
+        val carHeight = if (preview) 0 else dev.caraalink.link.CarScreenInfo.height
+        val carAspect = if (carWidth > 0 && carHeight > 0) carWidth.toFloat() / carHeight else 0f
+        val ultrawidePanel = !portrait && carAspect >= ULTRAWIDE_PANEL_ASPECT
+        val defaultRes = when {
+            AppSettings.videoDownscale720p(context) || ultrawidePanel ->
+                if (portrait) AaResolution.R720X1280 else AaResolution.R1280X720
+            portrait -> AaResolution.R1080X1920
+            else -> AaResolution.R1920X1080
+        }
         val resolution = if (customWh != null) {
             val (w, h) = customWh
             candidates.minByOrNull { kotlin.math.abs(it.width * it.height - w * h) } ?: defaultRes
@@ -192,14 +200,6 @@ object AaServiceDiscovery {
             defaultRes
         }
         val frameRate = if (AppSettings.frameRate(context) >= 60) FPS_60 else FPS_30
-        // Same principle as Custom resolution above: a manually-set DPI is
-        // still the owner's explicit choice, honoured in preview too --
-        // only the *auto* case gets overridden with the phone's own density.
-        val density = if (preview && AppSettings.videoDpiAuto(context)) {
-            context.resources.displayMetrics.densityDpi
-        } else {
-            AppSettings.videoDpi(context, resolution.width, resolution.height)
-        }
         // Advertise the touchscreen at the CONTENT size, not the full video
         // frame -- confirmed from mrmees/open-android-auto's own docs
         // (docs/video-resolution.md, GPL-3.0, facts only): "Touches in the
@@ -219,13 +219,42 @@ object AaServiceDiscovery {
         // combination double-crops ("fill made it worse"). They're mutually
         // exclusive: FIT relies on the margin for a clean no-letterbox fit;
         // FILL needs the full uncropped frame to crop from itself.
+        // Margins are computed BEFORE density now (used to be after) so the
+        // auto-DPI formula below can see the actual visible content region
+        // instead of the full pre-crop buffer -- see next comment.
         val (widthMargin, heightMargin) = if (AppSettings.aaAutoCrop(context) && AppSettings.aaFillMode(context) == AppSettings.AaFillMode.FIT) {
-            autoMargin(resolution, dev.caraalink.link.CarScreenInfo.width, dev.caraalink.link.CarScreenInfo.height)
+            autoMargin(resolution, carWidth, carHeight)
         } else 0 to 0
+        // Same principle as Custom resolution above: a manually-set DPI is
+        // still the owner's explicit choice, honoured in preview too --
+        // only the *auto* case gets overridden with the phone's own density.
+        //
+        // One reversible change, not yet visually confirmed (see
+        // chatgpt-status.md's "OHA geometry vs. CarAALink's actual
+        // 1920x720 canvas" analysis): videoDpi() used to be called with the
+        // full negotiated resolution.width/height, completely blind to
+        // widthMargin/heightMargin -- it would compute the exact same
+        // density whether the margin was 0 or 240, because the margin
+        // never entered the formula. OHA's own sizing derives density from
+        // the VISIBLE (post-margin) pixel dimensions, not the raw buffer;
+        // this passes the content region (resolution minus margin) instead,
+        // same formula/clamp, now margin-aware. Isolated to this one call's
+        // inputs -- nothing else about the formula, the clamp, or the
+        // manual-DPI override path changed. Given a previously confirmed
+        // (twice, live) density-direction anomaly in this app's real AA
+        // rendering (claude/roadmap.md), do NOT treat this as a confirmed
+        // fix -- compare before/after on the real car screen before
+        // keeping it.
+        val contentWidth = (resolution.width - widthMargin).coerceAtLeast(1)
+        val contentHeight = (resolution.height - heightMargin).coerceAtLeast(1)
+        val density = if (preview && AppSettings.videoDpiAuto(context)) {
+            context.resources.displayMetrics.densityDpi
+        } else {
+            AppSettings.videoDpi(context, contentWidth, contentHeight)
+        }
         return Config(
             resolution = resolution, frameRate = frameRate, density = density,
-            touchWidth = (resolution.width - widthMargin).coerceAtLeast(1),
-            touchHeight = (resolution.height - heightMargin).coerceAtLeast(1),
+            touchWidth = contentWidth, touchHeight = contentHeight,
             widthMargin = widthMargin, heightMargin = heightMargin,
         )
     }
@@ -264,6 +293,7 @@ object AaServiceDiscovery {
     }
 
     private const val ASPECT_EPSILON = 0.01f
+    private const val ULTRAWIDE_PANEL_ASPECT = 2.5f
 
     /**
      * Serialized `ServiceDiscoveryResponse`. Deliberately minimal: a video

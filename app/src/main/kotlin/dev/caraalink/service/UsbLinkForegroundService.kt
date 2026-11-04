@@ -47,6 +47,23 @@ class UsbLinkForegroundService : Service() {
     private var pendingAccessory: UsbAccessory? = null
     private var resumeActiveMode: ((UsbAccessory) -> Unit)? = null
     private var detachStopRunnable: Runnable? = null
+    // Confirmed from real logs (chatgpt-status.md "EIO" findings): the
+    // Mirror transport dies with "read failed: EIO" after sustained use,
+    // at a different request count every time -- not a fixed timeout or
+    // counter, looks like CarbitLink itself dropping the link. Previously
+    // this always fell straight to stopSelfCleanly(), which is the actual
+    // mechanism behind the long-standing "have to manually toggle head
+    // unit server" complaint. The accessory is usually still physically
+    // attached when this happens (unlike a real unplug, which the
+    // detachReceiver below already handles separately with its own grace
+    // period) -- reusing the already-granted [pendingAccessory] avoids
+    // re-triggering Android's accessory chooser (see maybeScheduleReconnect's
+    // comment for why a *fresh* openAccessory() retry loop was avoided
+    // before). Capped and backed off so a permanently-dead link still gives
+    // up instead of retrying forever.
+    private var transportReconnectAttempts = 0
+    private var transportReconnectRunnable: Runnable? = null
+    private var stopping = false
 
     private val stateListener: (ConnectionSnapshot) -> Unit = { updateNotification(it) }
 
@@ -60,6 +77,7 @@ class UsbLinkForegroundService : Service() {
             detachStopRunnable?.let { handler.removeCallbacks(it) }
             val runnable = Runnable {
                 Log.i(TAG, "detachStopRunnable: still unplugged after 30s, stopping")
+                stopping = true
                 stopSelfCleanly()
             }
             detachStopRunnable = runnable
@@ -89,6 +107,7 @@ class UsbLinkForegroundService : Service() {
             ACTION_PROJECTION_GRANTED -> onProjectionGranted(intent)
             ACTION_STOP -> {
                 Log.i(TAG, "onStartCommand: ACTION_STOP")
+                stopping = true
                 stopSelfCleanly()
             }
         }
@@ -105,6 +124,14 @@ class UsbLinkForegroundService : Service() {
         pendingAccessory = accessory
         detachStopRunnable?.let { handler.removeCallbacks(it) }
         detachStopRunnable = null
+        // A fresh connect request from outside (user action, accessory
+        // attach) -- not an internal transport-failure retry -- so the
+        // backoff/stop state from any earlier reconnect attempt no longer
+        // applies.
+        transportReconnectRunnable?.let { handler.removeCallbacks(it) }
+        transportReconnectRunnable = null
+        transportReconnectAttempts = 0
+        stopping = false
         // CRASH SEEN ON REAL HARDWARE (claude/roadmap.md): starting a
         // connectedDevice-typed foreground service throws SecurityException
         // once the accessory's permission grant has lapsed (e.g. it was
@@ -156,7 +183,11 @@ class UsbLinkForegroundService : Service() {
             handler.post {
                 Log.i(TAG, "session ended: $reason")
                 session = null
-                stopSelfCleanly()
+                if (!stopping && isTransportIoFailure(reason) && pendingAccessory != null) {
+                    scheduleTransportReconnect()
+                } else {
+                    stopSelfCleanly()
+                }
             }
         }
         session = s
@@ -257,6 +288,7 @@ class UsbLinkForegroundService : Service() {
      */
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.i(TAG, "onTaskRemoved: app swiped away -- stopping session")
+        stopping = true
         stopSelfCleanly()
         super.onTaskRemoved(rootIntent)
     }
@@ -275,7 +307,31 @@ class UsbLinkForegroundService : Service() {
         stopSelfCleanly()
     }
 
+    /** Transport-level read/write failure, as opposed to a clean close or a real unplug. */
+    private fun isTransportIoFailure(reason: String): Boolean =
+        reason.contains("read failed", ignoreCase = true) || reason.contains("write failed", ignoreCase = true)
+
+    private fun scheduleTransportReconnect() {
+        val accessory = pendingAccessory ?: return
+        if (transportReconnectAttempts >= MAX_TRANSPORT_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "scheduleTransportReconnect: giving up after $transportReconnectAttempts attempts")
+            stopSelfCleanly()
+            return
+        }
+        transportReconnectAttempts++
+        val delayMs = TRANSPORT_RECONNECT_BASE_DELAY_MS * (1L shl (transportReconnectAttempts - 1))
+        Log.i(TAG, "scheduleTransportReconnect: attempt $transportReconnectAttempts in ${delayMs}ms")
+        val runnable = Runnable {
+            transportReconnectRunnable = null
+            if (!stopping) beginSession(accessory)
+        }
+        transportReconnectRunnable = runnable
+        handler.postDelayed(runnable, delayMs)
+    }
+
     private fun stopSelfCleanly() {
+        transportReconnectRunnable?.let { handler.removeCallbacks(it) }
+        transportReconnectRunnable = null
         session?.stop()
         session = null
         sniffer?.stop()
@@ -348,6 +404,8 @@ class UsbLinkForegroundService : Service() {
         private const val CHANNEL_ID = "usb_link"
         private const val NOTIFICATION_ID = 1
         private const val NOTIFICATION_ID_CAPTURE = 2
+        private const val MAX_TRANSPORT_RECONNECT_ATTEMPTS = 4
+        private const val TRANSPORT_RECONNECT_BASE_DELAY_MS = 2_000L
 
         const val ACTION_START_SNIFFER = "dev.caraalink.service.action.START_SNIFFER"
         const val ACTION_START_ADB_PROBE = "dev.caraalink.service.action.START_ADB_PROBE"

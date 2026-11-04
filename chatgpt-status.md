@@ -150,6 +150,84 @@ Do not present the current Android app or its `:protocol` module as Linux-ready.
 
 No implementation or tests were run for this follow-up; these are proposed, source-grounded changes for Claude to implement and validate.
 
+## Follow-up implementation: panel-fit Auto and decoder counter visibility
+
+Implemented locally after the PR #19 diagnostic/focus commit:
+
+- `AaServiceDiscovery.configFromSettings()` now auto-selects 1280x720 when a known landscape panel has aspect ratio >=2.5. For the reported 1920x720 panel, the existing `autoMargin()` derives a 240px height margin, yielding a 1280x480 content region. Custom resolution still overrides Auto. The existing force-720p preference also remains an explicit override. Other panels retain the prior 1080p Auto default unless the force-720p switch is enabled.
+- Settings text now describes the Auto behavior and labels the existing switch `Force 720p`.
+- `PerfStats.summary()` now displays decoder counters after the first received access unit even when misses/exceptions are zero. `AaVideoDecoder` emits the same `AA decode: recv=... sub=... miss=... exc=... rend=...` line every ~150 frames, so zeroes can be distinguished from missing instrumentation.
+
+### Live verification still needed
+
+ADB was explicitly deferred by the owner. A check attempt found no attached ADB device; the local Android SDK path in `local.properties` is `/Volumes/SABRENT/Applications/AndroidSDK`, and Java is not available in this shell, so no build or device run was performed. The available source/working-tree checks were `git diff --check` (passed) and manual review.
+
+When the owner next runs a blocky session, enable Settings > Debug > On-screen debug overlay and inspect `AA decode: recv=... sub=... miss=... exc=... rend=...`. To capture only these counters later from a connected development host, run:
+
+```sh
+adb logcat -v threadtime -s AaVideoDecoder:I > aa-decode.log
+```
+
+Stop the capture with Ctrl+C. The app preference turns the HUD on/off; logcat capture itself is started/stopped by the command/Ctrl+C. A zero `miss` and `exc` count over a sustained visibly blocky run would clear these particular decoder input/error paths, but would not by itself prove resolution is the only possible cause.
+
+### Remaining open items
+
+1. Build/install and do a matched live 1920x720-panel comparison: new Auto (1280x720) versus Custom 1920x1080; record active bytes/FPS and decoder counters for the same phone, scene, cable, and duration.
+2. Run the on-device decoder diagnostic during visible blockiness and determine whether `miss` or `exc` increments.
+3. Connect video focus changes to watchdog/display behavior only after reviewing real focus transitions and the intended NATIVE handoff behavior.
+4. Capture a synchronized CarAALink log plus Gearhead logcat through natural EOF/retries to investigate the stale USB handshake and session teardown.
+5. Revisit `AudioTrack: restoreTrack_l` churn against an audio-choppiness capture.
+6. Correlate Gearhead's `VirtualDisplay width must be positive` crash with CarAALink's actual resolution, margins, and density at the same timestamp.
+7. Capture the steering-wheel voice-command button with a narrowly timed log window.
+8. Confirm live whether the landed task-removal/reconnect/clean-close changes eliminate the need to toggle Gearhead's head-unit server manually.
+
+The only local app changes in this follow-up are the resolution policy/settings text and diagnostics visibility/log-line cleanup described above. The PR #19 focus handling and unrelated reconnect change were not modified here.
+
+## 2026-11-03 live capture: AA layout vs phone-screen mirror
+
+Files inspected:
+
+- Full phone logcat buffer copied locally to `logcat-live.txt` (captured around 13:50–13:51 local time).
+- CarAALink's detailed app log pulled from the phone to `/private/tmp/caraalink-20261103-134740.log` (session events 13:47:40–13:49:34).
+
+### What worked in the CarbitLink 1920x720 transport path
+
+- At 13:47:51.227 the car sent `CONFIG_CAPTURE width=1920 height=720`; CarAALink created the `CarAALink` virtual display at 1920x720, configured the H.264 encoder at 1920x720 / 6 Mbps, produced codec config + IDR, and opened the mirror data channel.
+- Data requests and sends continued through 13:49:34.082: final app summary says `requests=8011 sent=8011 encoded=4318`. This establishes that the phone-side CarbitLink encoder and pull-send path were active and returned a frame for every request. It does not establish what the head unit actually rendered or whether the content source was the phone screen.
+- The session ended at 13:49:34.083 with `Transport stopped: read failed: EIO (I/O error)`, followed by `UsbLinkForegroundService: session ended`. That is a USB/link teardown, after the mirror data path had been running; it is not an encoder failure.
+
+### Two different meanings of “mirror” in this capture
+
+- **Android Auto picture on the 1920x720 car canvas:** CarAALink logged AA config `resolution=1280x720`, `widthMargin=0`, `heightMargin=0`, `autoCrop=false`, `fillMode=FIT`, `carScreen=1920x720` at 13:48:01, 13:48:33, 13:49:13, and 13:49:33. FIT scales 1280x720 to 1280x720 on a 1920x720 canvas, centered: 320px side bars on each side. This is a concrete explanation if “doesn't work full-screen” means the AA picture no longer fills the ultrawide panel. Settings > Android Auto > Auto-crop to car screen shape is off in the captured config; enabling it while retaining FIT should request a 1280x480 content region (240px total height margin) that is intended to scale to 1920x720. The app's comment still marks per-side-vs-total margin semantics as not fully confirmed, so verify the picture live. FILL would also cover the width but crops vertically. No source edit has been made for this.
+- **Phone-screen MediaProjection mirror:** the app log has no `Screen capture granted` event, system log has no `CarAALink-mirror` virtual display, and a current `dumpsys media_projection` reports null. This capture therefore does not show an active phone-screen projection; the 1920x720 encoder may have been sending the current CarAALink home/AA presentation instead. To exercise that path, choose the car's `Phone screen` tile and accept Android's `Start now` prompt. If that prompt was accepted during this capture, the log does not show the projection being delivered to the service.
+
+### Other observations / limits
+
+- Three `AA video settings changed -- reconnecting session` events occurred at 13:48:29.618, 13:49:10.107, and 13:49:30.374. AA watchdogs then reported the session ending on its own at 13:48:31.807, 13:49:13.131, and 13:49:33.611. These explain repeated AA restarts, but are separate from the 1920x720 CarbitLink encoder setup.
+- The phone's active CarAALink version used 1280x720 with `autoCrop=false`; the local panel-fit source changes described above were not built/installed in this capture. Do not attribute this session's layout to that uninstalled code.
+- No `VirtualDisplay width must be positive` string appears in the available phone logcat. The latest run did not provide evidence for that Gearhead crash.
+- No decoder `AA decode: ...` summary appears in this app log. The final AA decoder was created at 13:49:33.91 and the transport ended ~0.17s later, too soon for the 150-frame log interval. Earlier decoder sessions also lack those counters in this capture; likely the installed APK predates the local counter-visibility change, so it cannot clear the decoder path.
+
+### Practical next check
+
+If the complaint is AA letterboxing, turn on **Auto-crop to car screen shape** and keep **Fit**, reconnect, and confirm the log reports `widthMargin=0 heightMargin=240` for 1280x720; visually verify the crop due the margin-semantics uncertainty. If the complaint is the separate phone-screen mirror, grant screen-capture permission from the car's `Phone screen` tile and capture the CarAALink log through that action; the present capture never proves that path was entered. Preserve the distinction: the encoder/transport worked at 1920x720, but Gearhead's decoded AA content was configured to occupy only a centered 1280x720 region.
+
+## Pixelation follow-up: measured H.264 sizes and 60-fps setting
+
+The detailed app log has Protocol Sniffer enabled, so unlike the LIVI capture it includes AA video message lengths. Parsed `MEDIA_DATA` messages on `MEDIA_SINK_VIDEO` from `/private/tmp/caraalink-20261103-134740.log`:
+
+- Three AA video runs had 1,207 frames / 22.34s, 1,029 / 26.97s, and 544 / 10.26s. Payload rates averaged approximately 2.26, 1.68, and 1.62 Mbit/s across those runs (subtracting the 8-byte timestamp from each logged message body).
+- In the second and third runs, most later 1-second windows were around 0.7–1.1 Mbit/s; several 5-second windows were about 0.58–0.93 Mbit/s. Large keyframe bursts inflate the full-run average. This provides direct evidence that low-detail-per-frame periods were present in the H.264 stream received from Gearhead, compatible with visible pixelation. It does not prove the user-visible blockiness happened at those exact timestamps, and receiver-side decoder drops were not measured in this capture.
+- CarAALink's logged AA config says `1280x720@60fps`; the AA protocol enum is `_60 = 1`, `_30 = 2`. Current preference values allow 30 or 60, and the phone produced roughly 38–54 data messages/s during these runs. At a bitrate-limited interval, requesting 30 fps can leave more bits per frame and is a worthwhile controlled A/B test at the same 1280x720 resolution. It can trade motion smoothness for per-frame detail; Gearhead may also adapt total bitrate, so improvement must be measured. This is a distinct receiver-settable protocol input, not a bitrate pin and not proof that frame-rate selection controls Gearhead's adaptation algorithm.
+
+### Auto-crop preference clarification
+
+The code and preference XML default `aa_auto_crop` to true. The captured device config says `autoCrop=false`, which indicates that this install has a saved false preference. Auto-crop is geometrically possible for this 1920x720 panel and the selected 1280x720 mode: current `autoMargin()` computes `heightMargin=240`. Re-enable the preference on the device; FIT plus that crop should fill the panel if the protocol's margin semantics behave as assumed. Auto-crop changes composition/layout, not encoded H.264 quality, so it should not be expected to remove pixelation.
+
+### Revised conclusion and next experiment
+
+Resolution is not literally the only receiver-side configuration input: AA's advertised `frame_rate` (30/60) is another real protocol setting. There is still no receiver-settable bitrate field, and no evidence ACK timing pins or stabilizes Gearhead's bitrate. Keep auto-crop on for the ultra-wide layout, then compare 1280x720 at 60 fps versus 30 fps using the same phone, scene, duration, and decoder counters. Record rolling 5-second H.264 payload rate, frame cadence, `miss`, `exc`, and rendered count. If 30fps improves detail while keeping acceptable motion, use it for this panel; if not, retain 60fps. Do not attribute any improvement to cropping.
+
 ## Claude's implementation pass (2026-11-03)
 
 Implemented Priority 2 (decoder diagnostics) and Priority 3 (video focus
@@ -254,3 +332,667 @@ for the actual build result before trusting this compiles clean.
 - `app/src/main/kotlin/dev/caraalink/aa/AaSessionProbe.kt` (also contains
   the pre-existing, unrelated post-session reconnect backoff edit that was
   already in the working tree before this pass -- preserved, not touched)
+
+## Open Headunit comparison and phone log findings (2026-11-03)
+
+### Session path and lifecycle
+
+- Open Headunit (OHA) detected Android Auto 17.4+ Self Mode and logged a
+  direct connection to Gearhead's local Head Unit Server at
+  `127.0.0.1:5277`. This is the same endpoint CarAALink uses, so the capture
+  is useful for comparing the local-server path.
+- In the captured runs, OHA repeatedly reached projection after connecting.
+  Most disconnects are explicitly `user_exit`; at 14:50:25 it logged
+  `link_lost`, followed by a reconnect and successful projection at 14:50:28.
+  These short manual sessions do not reproduce CarAALink's recurring EOF
+  loop, but do show that Gearhead accepted several rapid reconnects in this
+  capture.
+- OHA's own log shows `VIDEO_FOCUS_NATIVE` immediately before one
+  `user_exit`. This is consistent with its user-exit path; it does not
+  establish that Native focus caused an unsolicited disconnect.
+- Yes, the capture includes the exit flow. At 14:49:35 OHA logs
+  `VIDEO_FOCUS_NATIVE`, explicitly says “User clicked Exit in Android
+  Auto,” then logs `ExitAction: Disconnecting projection session` and a
+  `USER_SELECTION` BYEBYE that was successfully written. At 14:50:24,
+  Android records OHA's `AapProjectionActivity.showExitDialog`; at 14:50:25
+  OHA logs “User ended the session and asked to stay ready.” A second exit
+  dialog appears at 14:50:32, followed by the next user exit. So the log
+  shows both Android Auto's Exit action and OHA's own exit dialog / “stay
+  ready” action; it does not include a screenshot or the dialog's rendered
+  text/buttons.
+- The synchronized Gearhead log records `PROJECTION_ENDED_BYEBYE_BY_CAR`
+  at 14:50:33.843, then framer write/read EOF and USB FD close. Gearhead
+  recorded `SESSION_STOPPED` at 14:50:37.692. OHA's service was stopped at
+  14:50:35.189. At 14:50:42.004 Android's low-memory killer reclaimed
+  Gearhead's `:watchdog` process for low memory, with binder-death messages
+  shortly after; ConnLogger emitted another `SESSION_STOPPED` at 14:51:37.
+  This is evidence of delayed/internal Gearhead cleanup and a separate LMK
+  event, but timing alone does not prove the LMK caused the later session
+  event or explain prior CarAALink EOFs.
+
+### DPI and screen sizing from OHA's log
+
+- **Important scope limit:** OHA was running Self Mode on the phone itself.
+  Its logged raw/usable display was `1080x2340` portrait. These values do
+  not describe the car's `1920x720` panel and cannot be copied as that
+  panel's configuration.
+- For the phone's `1080x2340` panel, OHA announced primary video
+  `1080x1920` at 60 fps, with margins `194x0`, density `194`, and square
+  pixel aspect ratio (`10000`). It logged the resulting AA canvas as
+  `730x1583 dp`; the requested density was 287, but OHA clamped it to 194
+  to honor its 730 dp minimum portrait content-width policy.
+- The geometry is internally consistent after margins: visible width is
+  `1080 - 194 = 886 px`; at density 194, that is about 731 dp. OHA thus
+  computes announced density from the visible content width and a minimum
+  logical width, rather than blindly announcing the phone's requested
+  density. The display's Android raw resolution and the AA video buffer
+  are separate values (`1080x2340` vs `1080x1920`).
+- OHA also offered `_720x1280` as a fallback with margins `129x0` and
+  density 129, preserving approximately the same 730 dp content width.
+  The H.264 SPS log says `1080x1920 (negotiated 1080x1920)`, confirming
+  Gearhead selected the primary configuration in this run; it did not use
+  the fallback.
+- This is evidence for OHA's portrait sizing policy only. It does not
+  establish that the same fixed 730 dp rule is appropriate for CarAALink's
+  landscape automotive panel. For CarAALink, calculate density from the
+  intended visible canvas after margins and verify the result on the
+  actual `1920x720` display; don't substitute the phone's Android DPI.
+
+## Claude's analysis: OHA geometry vs. CarAALink's actual 1920x720 canvas (2026-11-03)
+
+Analysis only -- no code, build, install, commit, or push in this pass, per
+instruction. Read current source (`AaServiceDiscovery.kt`,
+`AppSettings.kt`) and the two new diagnostics files plus `logcat-live.txt`
+before writing this; neither new OHA log file (`session-sizing-and-
+lifecycle.log`, `gearhead-lifecycle.log`) added anything beyond what's
+already summarized above -- both match the existing write-up exactly
+(same session, same timestamps).
+
+### OHA's actual method, stated precisely
+
+OHA doesn't apply a fixed density. It derives density FROM a target
+logical (dp) width and the VISIBLE (post-margin) pixel width, then
+margins + density together produce that target:
+
+```
+visible_px_width = raw_px_width - margin_px        (1080 - 194 = 886)
+density = visible_px_width * 160 / target_dp_width  (886 * 160 / 730 ≈ 194)
+```
+
+The 730 is OHA's own chosen portrait minimum-content-width policy -- not
+a protocol constant, not something to copy numerically into a landscape
+automotive panel. The portable part is the METHOD: compute density from
+the visible content pixels, not the raw buffer, not the phone's own
+screen density.
+
+### What CarAALink currently computes, exactly, with the numbers
+
+`AaServiceDiscovery.configFromSettings()` (current `aa-post-v1` HEAD) for
+the real 1920x720 panel: `carAspect = 1920/720 ≈ 2.667 >= ULTRAWIDE_PANEL_ASPECT (2.5)`
+→ `ultrawidePanel = true` → `defaultRes = R1280X720`. `autoMargin(R1280X720, 1920, 720)`:
+`resAspect = 1280/720 ≈ 1.778 < carAspect` → crops height →
+`desiredHeight = 1280 / 2.667 = 480` → `heightMargin = 720 - 480 = 240`,
+`widthMargin = 0`. So the negotiated buffer is 1280x720, the visible
+CONTENT region is **1280 wide x 480 tall** (width uncropped, height
+cropped by 240px) -- this matches `chatgpt-status.md`'s earlier figures
+exactly, confirms reading the code right.
+
+Density: `density = videoDpi(context, resolution.width, resolution.height)`
+passes **1280, 720 -- the full negotiated buffer, not the 1280x480 content
+region**
+(`app/src/main/kotlin/dev/caraalink/settings/AppSettings.kt:66-71`):
+
+```kotlin
+fun videoDpi(context: Context, width: Int, height: Int): Int {
+    if (videoDpiAuto(context)) {
+        return (minOf(width, height) / 720f * 213).toInt().coerceIn(120, 320)
+    }
+    return manualVideoDpi(context)
+}
+```
+
+`minOf(1280, 720) = 720` → `720 / 720 * 213 = 213` (density, unclamped,
+already inside [120,320]). **This formula never sees the margin at all --
+it's computed from the raw negotiated resolution's shorter side, before
+any crop is applied.** That's the concrete, code-level version of exactly
+the gap OHA's method closes: OHA computes density from the post-margin
+visible width; CarAALink computes it from the pre-margin buffer's shorter
+side, unconditionally.
+
+### What that arithmetically implies for the visible canvas
+
+Using the standard `dp = px * 160 / density` relationship at the computed
+density=213, for the actual 1280x480 visible content region:
+
+```
+dp_width  = 1280 * 160 / 213 ≈ 962 dp   (width is NOT cropped here, full negotiated width)
+dp_height =  480 * 160 / 213 ≈ 361 dp   (height IS cropped, this is the visible content height)
+```
+
+**Important caveat, not a prediction:** `claude/roadmap.md` already records
+a confirmed-twice-live finding that the density-to-visual-size relationship
+in this app's real AA rendering runs OPPOSITE the textbook `px=dp*density/160`
+assumption (a HIGHER declared density made the on-car UI look SMALLER, not
+bigger, in two separate real tests). So the 962x361dp figure above is only
+the arithmetic the formula produces -- it is NOT a trustworthy prediction
+of what will actually render larger or smaller on the car screen. Treat it
+as "this is the number currently being sent," not "this is what you'll
+see."
+
+### What this analysis does and doesn't establish
+
+- **Does establish, from code alone:** CarAALink's density formula is
+  structurally blind to the autocrop margin -- it would compute the exact
+  same density=213 whether `heightMargin` is 0 or 240 or any other value,
+  because the margin never enters the calculation. This is a real,
+  verifiable gap, not a guess.
+- **Does NOT establish:** that this gap is the cause of any specific
+  visual complaint (too-small UI, misaligned touch targets, etc.), or that
+  closing the gap would make things look "correct" given the confirmed
+  density-direction anomaly above. Those need a live, visual check.
+
+### One reversible experiment, not a proposed fix
+
+Change `videoDpi()`'s *input* only -- pass the post-margin content
+dimensions instead of the full negotiated resolution, keeping the same
+`/720*213` convention and clamp:
+
+```kotlin
+// at the call site in configFromSettings(), after widthMargin/heightMargin are known:
+val contentW = resolution.width - widthMargin
+val contentH = resolution.height - heightMargin
+val density = AppSettings.videoDpi(context, contentW, contentH)
+```
+
+For the real panel this changes the density input from `(1280, 720)` to
+`(1280, 480)`: `minOf(1280, 480) = 480` → `480/720*213 ≈ 142` (density).
+This is a single, isolated, fully reversible change (one call site, one
+line) -- but given the confirmed density-direction anomaly, do NOT ship it
+on arithmetic confidence alone. The log evidence needed before/after:
+
+1. Log the computed density AND the resolution/margin it was computed from
+   in the same line (the existing `"AA config: resolution=... density=...
+   widthMargin=... heightMargin=..."` log in `CarSession.kt` already does
+   this -- just diff the before/after value of `density` for the same
+   panel).
+2. Take a real car-screen photo or clear visual note (text size relative
+   to the screen, whether UI elements are cut off/overflowing) at the
+   CURRENT density=213 with heightMargin=240, then rebuild with the
+   content-aware change and repeat at density≈142, same session length,
+   same screen.
+3. Only keep the change if the second photo/observation is clearly closer
+   to "correctly scaled" than the first -- given the anomaly, "arithmetic
+   says density should go down" is not sufficient justification by itself.
+
+Not implemented. No file was edited for this section.
+
+### Other implementation comparison leads
+
+- OHA source configures low-latency TCP options (`TCP_NODELAY` and 512 KiB
+  send/receive buffers). CarAALink's AA socket setup did not appear to set
+  equivalent options when reviewed. This is a measurable transport
+  difference worth an isolated A/B test, but there is no evidence from
+  this capture that it fixes Gearhead EOFs or video blockiness.
+- OHA's AAP control handler responds to peer Ping Requests; its source did
+  not show a periodic Ping Request sender. CarAALink sends proactive pings
+  every five seconds. Treat this as another controlled A/B test candidate,
+  not an established cause.
+- OHA's `UnresponsivePeerPolicy` describes the local `127.0.0.1:5277`
+  listener as a serial accept path and applies increasing retry backoff
+  after accepted-but-silent connections. That is OHA's documented defensive
+  behavior, not proof that CarAALink needs the same delay. Compare it when
+  handling TCP-connected sessions that never produce the first AA version
+  response.
+
+### Attached filtered logs
+
+- [OHA session, negotiated sizing, and lifecycle excerpt](diagnostics/openheadunit-2026-11-03/session-sizing-and-lifecycle.log)
+- [Gearhead session and process lifecycle excerpt](diagnostics/openheadunit-2026-11-03/gearhead-lifecycle.log)
+
+The full OHA exports and 43 MB device logcat remain in `/private/tmp`; only
+curated excerpts are attached here to avoid carrying unrelated system and
+personal device logs into the repo.
+
+### Claude handoff prompt
+
+```text
+Please continue the CarAALink investigation from chatgpt-status.md, using
+the new Open Headunit comparison section and its attached log excerpts:
+
+- diagnostics/openheadunit-2026-11-03/session-sizing-and-lifecycle.log
+- diagnostics/openheadunit-2026-11-03/gearhead-lifecycle.log
+
+Read those logs and the current CarAALink source before changing anything.
+Preserve all existing working-tree edits. Do not claim the OHA portrait
+1080x2340 / 730dp sizing values apply to the car's 1920x720 display: they
+are from Open Headunit Self Mode on the phone. The capture shows OHA
+announcing 1080x1920, margins 194x0, density 194, square pixels, and a
+720x1280 fallback; Gearhead selected the primary stream. It also shows
+OHA's explicit Android Auto Exit handling: VIDEO_FOCUS_NATIVE ->
+USER_SELECTION BYEBYE (sent), and a separate OHA exit dialog followed by
+“User ended the session and asked to stay ready.”
+
+Assess how OHA's geometry and density policy should inform CarAALink's
+1920x720 configuration. Derive candidate margins/density from the actual
+CarAALink visible canvas and current panel-fit/autocrop behavior; explain
+the calculations and uncertainty before editing. Do not transplant OHA's
+portrait-only 730dp floor to landscape without protocol/source evidence.
+
+Review the two bounded implementation comparison leads from the status
+doc: OHA sets TCP_NODELAY and 512 KiB socket buffers, while CarAALink may
+not; and OHA responds to peer pings while CarAALink sends proactive
+5-second pings. Treat both as hypotheses only. If proposing a change,
+make one isolated, reversible change at a time, explain the expected
+observable effect, and avoid bundling unrelated protocol changes.
+Consider OHA's retry/backoff behavior only for TCP-connected but
+AA-version-silent sessions.
+
+For the Gearhead lifecycle excerpt, distinguish the BYEBYE/user exit,
+Gearhead's 14:50:37 SESSION_STOPPED, the 14:50:42 low-memory kill of the
+:watchdog process, and the later 14:51:37 SESSION_STOPPED. Do not infer
+causation from timing alone. Do not present any of these manual OHA exits
+as the cause of CarAALink's earlier recurring EOF loop.
+
+Please update chatgpt-status.md with any new verified result, list exact
+files changed, and include a focused test/measurement plan. Do not build,
+install, commit, or push unless I ask. Do not add tests unless requested.
+```
+
+### What to do next in Open Headunit
+
+1. Repeat the same connection while watching the 1920x720 car display, and
+   record whether OHA's Self Mode on that phone is still a phone-only
+   projection. Its current log is portrait self-projection, so it cannot
+   answer car-panel sizing questions directly.
+2. If OHA can be used as the receiver on the car display, capture its
+   service-discovery lines and record the actual announced resolution,
+   margins, density, pixel aspect ratio, selected config index, and H.264
+   SPS dimensions. Compare those values with CarAALink on the same panel.
+3. Capture one deliberate Android Auto Exit and one cable/app disconnect
+   separately. Keep the OHA app log and Gearhead logcat running across
+   both, and note which UI action you took. This separates the explicit
+   `VIDEO_FOCUS_NATIVE`/BYEBYE exit from an ungraceful EOF.
+4. To inspect the dialog itself, take a screenshot when OHA's exit prompt
+   appears; the current logs prove `showExitDialog` was called but don't
+   show the rendered message or button labels.
+5. Repeat a session long enough to reproduce the actual failure without
+   tapping Exit. Save OHA's app log and synchronized Gearhead logcat, and
+   note the wall-clock time of the first unexpected disconnect. The current
+   capture's user exits are not a substitute for that failure reproduction.
+
+## Claude: OHA exit/reconnect architecture and a density-override finding (2026-11-03, round 9)
+
+### Scope note
+`OHU_Log_20261103_172309_748.txt` is another OHA **Self Mode** capture
+(phone-to-phone, portrait 1080x2340) — every exit event in it logs
+`SelfMode: stopping Self Mode`. This is still phone-only evidence, same
+boundary as the earlier OHA capture: it shows how OHA's own app is
+structured, not a reproduction of CarAALink's car-side (1920x720) problem.
+Treat the architecture pattern below as a lead to adapt, not a fix to copy.
+
+### Finding 1: the AA Exit button maps directly to VideoFocusRequest(NATIVE)
+Confirmed from the log, one clean example (line ~28227-28228):
+```
+AapControlMedia.execute | Video Focus NATIVE received. User clicked Exit in Android Auto.
+AapControlMedia.execute | ExitAction: Disconnecting projection session
+```
+This is the car-side "Exit Android Auto" button. OHA treats a
+`VideoFocusRequest` with `focus_mode=NATIVE` (2) as the car telling it
+the user exited, and responds by calling its own disconnect action —
+not by waiting for a timeout or socket error. This is exactly the wiring
+CarAALink is still missing: `AaSessionProbe.kt` now logs and ACKs
+`VideoFocusRequest` (round 8), but nothing downstream acts on
+`focus_mode`. A `NATIVE` or `NATIVE_TRANSIENT` focus_mode should be
+treated as "car took back the screen on purpose," not as a stalled
+session for the watchdog to restart.
+
+### Finding 2: OHA never restarts its whole service to reconnect
+The exit sequence, in order, every single time (line ~2351-2400,
+~13012-13051, ~19400-19455, ~25007-25080, ~28233-28258 — five
+repeated, identical exits in this one capture):
+```
+AapProjectionActivity: Finishing because state isUserExit=true, isClean=false, killOnDisconnect=false
+AapTransport.stop | AapTransport stopping and sending byebye (USER_SELECTION)
+AapTransport: ByeBye write SENT
+RX: CONTROL Byebye Response
+AapTransport.quit | AapTransport quitting (clean=false)
+AapAudio.releaseAllFocus
+VideoDecoder.outputThreadLoop / feedThreadLoop: Output/Feed thread stopped
+CCodec: state->set(STOPPING) -> ALLOCATED -> RELEASING -> RELEASED (clean MediaCodec teardown, no leaked decoder)
+AapService.onDisconnected: Stopping GpsLocationService and NightModeManager
+AapService.releaseWifiLock (x2)
+AapService.onDisconnected: User exit cooldown active for 5000ms
+AapService.scheduleReconnectIfNeeded: Self Mode disconnected. Not restarting.
+```
+Key structural point: `killOnDisconnect=false` is explicit in the very
+first line — the Activity (UI/projection session) and the
+`AapTransport`/`VideoDecoder` are torn down and released, but the
+long-lived `AapService` is **never killed or restarted**. It just logs
+a 5-second "exit cooldown" and sits ready for the next connection event.
+Only the lightweight session objects (transport socket, SSL context,
+decoder, projection UI) get recreated per-connection; the service
+process, its wifi lock bookkeeping, and its wireless-launch state
+machine persist across many exits (this one log shows 5 clean
+exit→idle cycles with no process restart).
+
+This matches a standing CarAALink complaint ("have to manually toggle
+the head unit server") and is a concrete, scoped lead: our own
+watchdog/reconnect path (`CarSession.kt`'s `openAndroidAuto()` restart
+flow) should be checked against this — specifically, whether our
+"session" teardown is accidentally also tearing down or blocking the
+foreground service/USB accessory layer, rather than just the AA
+transport+decoder+probe the way OHA's is scoped. **Not yet verified
+against our code** — this is OHA's pattern stated from its own log,
+not a diff of `UsbLinkForegroundService`/`CarSession` against it. The
+next step, if this is worth pursuing, is reading our own reconnect path
+side-by-side with this sequence and naming exactly what CarAALink tears
+down that OHA doesn't.
+
+### Finding 3: OHA's own density floor, restated
+Same self-mode portrait session, new numbers (line ~13925-13927):
+```
+[ServiceDiscovery] Density is: 287 (dp canvas 1304x602, requested 287, within the HUIG floor)
+[ServiceDiscovery] Offering a 1280x720 fallback, margins 0x0, density 191
+```
+and `HeadUnitScreenConfig.recalculate`: `scaleFactor: 1.21875,
+portraitScaled: false, shape=PAR, margins: w=0, h=0`. This is a second,
+different portrait-session density value from OHA (287, vs. the earlier
+capture's 194) — consistent with OHA computing density per-session from
+whatever dp canvas and "HUIG floor" (a minimum-width guideline it
+enforces) apply that time, not a fixed constant. Doesn't change the
+prior analysis; just confirms OHA's number moves around by session,
+so no single OHA density value should be treated as a target to match.
+
+### Side finding: the density test we tried to run didn't test anything
+Pulled a CarAALink in-app log from this same test window
+(`CarAALinkApplication` build `5f887af3a7`). The `AA config:` line read
+`density=250`, not the ~142 the new margin-aware formula predicts. Root
+cause, confirmed by reading `AppSettings.kt`: `videoDpi()` only runs the
+auto formula when `video_dpi_auto` is true; otherwise it returns
+`manualVideoDpi()`, a saved pref (`video_dpi_manual`, apparently left at
+"250" from earlier manual calibration). The margin-aware code path
+(`AaServiceDiscovery.kt`'s new `contentWidth`/`contentHeight`) never ran.
+**The before/after density test still hasn't actually happened.** To run
+it: open Settings, confirm/enable Auto DPI (clears the manual override),
+reconnect, and re-pull the log. Decoder health in that same log was
+clean regardless (`recv=` and `sub=` matched exactly through 2100+
+access units, `miss=0 exc=0` throughout), and the one
+`VIDEO_FOCUS_REQUEST` seen (`mode=1 reason=0` = PROJECTED/unknown) got
+ACKed correctly.
+
+## Claude's round-9 work: starvation fix, EIO auto-reconnect, H.264 level fix -- and why the artifacting likely survives all three (2026-11-03)
+
+### Density test, confirmed good
+Auto DPI was off with a manual override of 250 saved from old calibration
+-- that's why the first density test showed no change. Turned on, a fresh
+pull showed `density=142` exactly as predicted, and the user confirmed it
+"looked way better" on the real car screen. This one's done; the
+margin-aware density change in `AaServiceDiscovery.kt` is keeping it.
+
+### Starvation-fallback fix (landed, real improvement, not the root cause)
+`CarSession.kt`'s `onFrameRequested` blocks until the encoder has a frame;
+if nothing arrives within 80ms it used to resend `lastKeyFrame`, however
+old that specific keyframe was relative to anything sent since. A real
+log showed this firing on 62% of all responses in one session
+(`requests=7303 sent=7303 encoded=2777`). Changed the fallback to resend
+`lastSentFrame` (the actual most recent thing already sent, key or not)
+instead, clearing it on stream reopen so a new session can't inherit a
+non-keyframe from the last one. Verified improvement from two later
+sessions: 47% fresh before a comparable fix vs 86% fresh after
+(`requests=11576 sent=11576 encoded=9935`). Real, measured fix -- but the
+user confirmed afterward the blockiness was unchanged ("same damn
+issue"), so stale-frame repetition was never the dominant cause of the
+visual artifact, just its own separate (now smaller) problem.
+
+### EIO auto-reconnect (landed, works, but exposed what EIO actually is)
+Every captured session eventually died with `Transport stopped: read
+failed: EIO (I/O error)`, at a different request count each time (5088,
+7303, 11576, 642, 2133 -- no fixed threshold), and previously
+`UsbLinkForegroundService` just called `stopSelfCleanly()` on any session-
+end reason, full stop, no retry -- confirmed as the actual mechanism
+behind the long-standing "have to manually toggle head unit server"
+complaint. Added a capped, backed-off retry (`scheduleTransportReconnect`,
+4 attempts, 2s/4s/8s/16s) that only fires for a transport I/O failure,
+never for a deliberate stop (`ACTION_STOP`, `onTaskRemoved`, or the
+existing 30s-grace physical-detach path, all now set a `stopping` flag
+that short-circuits it).
+
+**What a live log revealed once this was in place:** the very first retry
+attempt throws immediately --
+```
+UsbAccessoryConnection: openAccessory threw -- treating as not attached
+UsbAccessoryConnection: java.lang.IllegalArgumentException: no accessory attached
+```
+-- meaning Android had already dropped the accessory by the time the
+2-second retry fired. This is a **real USB-level detach/reattach**, not a
+transport read stalling while the physical connection stays up. The
+session does recover a few seconds later, but from a fresh
+`ACTION_USB_ACCESSORY_ATTACHED` broadcast Android generates on its own,
+not from this retry (which fails every time it's tried so far). Net
+effect: the fix is harmless and the reconnect does happen, but credit
+belongs to Android's existing re-attach handling, not the new retry path.
+**Open question, not yet answered:** does the already-existing attach
+broadcast receiver actually re-launch `UsbLinkForegroundService` on that
+new attach event reliably on its own? If yes, this whole retry addition
+may be redundant with a pre-existing recovery path and the real "have to
+manually restart" complaint has a different cause than what this patch
+addresses. Needs checking against the attach-intent-filter/manifest and
+a verification pass, not assumed.
+
+This also means the EIO is coming from CarbitLink (or the physical USB
+link) itself resetting, not from anything in our framing/encoding code --
+and it's getting *more* frequent across repeated reconnect cycles in the
+same test run (11791 -> 642 -> 2133 requests between failures), which
+looks more like compounding instability than a one-off glitch.
+
+### H.264 level mismatch fix (correct per spec, did not fix the blockiness)
+`CarVideoEncoder.kt` hardcoded `AVCProfileBaseline` / `AVCLevel31`
+regardless of actual resolution. A real log showed CarbitLink's own
+`CONFIG_CAPTURE` requesting **1920x720** for the Mirror channel -- 5400
+macroblocks (1920/16 x 720/16). H.264 Level 3.1's spec MaxFS (ITU-T
+H.264 Table A-1) is 3600 macroblocks: every Mirror frame was ~50% over
+the level we told the encoder it was. Replaced the hardcoded level with
+`levelFor(width, height, fps)`, which picks the lowest standard level
+whose table MaxFS/MaxMBPS actually covers the requested resolution.
+This is a genuine, confirmed spec violation and worth keeping regardless
+-- but the user tested it and reported the blockiness was unchanged
+("same damn issue"). So a level mismatch, if it mattered at all, was not
+the dominant cause either.
+
+### The bigger architectural finding: CarAALink may be the only one doing a double transcode
+Decompiled the full `PhoneAuto-beta-2027-01-19.apk` with jadx (1792 files)
+specifically looking for its video-encoder setup, to compare directly
+against the one app known to look clean on the same CarbitLink hardware.
+Result: **zero** `MediaCodec.createEncoderByType` calls anywhere in the
+app, zero `MediaRecorder` usage, zero encoder `MediaFormat` configuration
+of any kind. The only `video/avc` codec reference in the entire
+decompiled source is `C0303ke.java`'s `MediaCodec.createDecoderByType`
+-- a **decoder**, matching our `AaVideoDecoder.kt`'s role (receiving and
+decoding the real phone's AA video), with no corresponding encoder
+anywhere to re-send that decoded video onward to CarbitLink.
+
+This means the "PhoneAuto doesn't show jpeg artifacting" comparison may
+not be comparing like for like. CarAALink's pipeline is a full double
+transcode: real phone's AA H.264 -> **our decode** -> render -> **our
+re-encode** -> CarbitLink -> car's decode. If PhoneAuto has no re-encode
+step at all, it's either (a) relying on a separate, CarbitLink-provided
+driver/companion app to do system-level screen capture and encoding
+(built by people with first-party knowledge of the dongle's actual
+expected wire format, not reverse-engineered), or (b) doing something
+with the decoded surface that doesn't require an app-level MediaCodec
+encoder. Either way, a second full H.264 encode/decode generation is
+inherently lossier than one, independent of any specific bug -- it's
+possible part of what's left of the remaining blockiness, after the two
+fixes above, is this structural cost of CarAALink's own architecture
+rather than a single fixable defect.
+
+**UPDATE, same session, corrected:** the "PhoneAuto doesn't artifact"
+comparison was based on a misunderstanding -- the user was mirroring
+through **CarbitLink's own official companion app**
+(`CarbitLink-EasyConnection_6.5.1_APKPure.apk`, package
+`com.tarplay.phonescreen` is actually a different app, PhoneAuto itself,
+not CarbitLink's -- confirmed by the user directly), with PhoneAuto just
+open as content being displayed. Pulled and inspected CarbitLink's real
+app (100MB, vs. PhoneAuto's ~2MB) and found the actual answer:
+
+**CarbitLink's own app does not use the phone's hardware H.264 encoder
+at all.** `strings` on its `lib/arm64-v8a/libJNICodec.so` shows a full
+custom-compiled FFmpeg build (`--enable-libx264 --enable-encoder='h264,
+libx264'`, GPL build flags, x264 source file paths like
+`x264/encoder/ratecontrol.c`, `x264/encoder/analyse.c`) and an internal
+banner string `(knNx264 [%s]:`. Zero references to `MediaCodec` or any
+hardware-encoder path anywhere in that library. They ship and run a
+**software libx264 encoder** entirely on the CPU, not
+`MediaCodec.createEncoderByType` like `CarVideoEncoder.kt` does.
+
+This is a far better explanation for the blockiness than anything found
+so far: software x264 at a given bitrate produces meaningfully better
+quality than typical phone hardware H.264 encoders, which are fast but
+make much worse rate-distortion tradeoffs under bitrate pressure --
+exactly what visible macroblock/"blocky" artifacts look like. It's
+content-independent (a structural quality gap, not a bug), consistent
+with the Level fix not closing it (a wrong level could cause outright
+corruption, but a *correct* level on a weaker hardware encoder still
+just means weaker quality, not a fix), and consistent with the home
+screen and AA content both showing it.
+
+**The real fix, if pursued:** bundle a software x264 encoder into
+CarAALink (an NDK x264 wrapper, or FFmpeg similarly configured) and
+encode the Mirror channel's output through that instead of
+`CarVideoEncoder.kt`'s `MediaCodec`-based path, trading CPU usage for
+real quality. This is a legitimate, substantial feature (new native
+dependency, new encode path, almost certainly worth keeping
+`CarVideoEncoder.kt`'s MediaCodec path as a fallback for low-end
+devices) -- not a quick patch, and not something to start without the
+user explicitly signing off on the scope.
+
+**CORRECTION, same night, after x264 testing:** EIO is NOT dongle
+hardware instability as concluded above -- the user confirmed
+CarbitLink's own first-party app stays stable on the same dongle/cable
+over a comparable session, while CarAALink keeps hitting
+`read failed: EIO` (confirmed independent of the x264 on/off toggle, so
+not an encoder-side issue either). Also observed the same night: the AA
+*receive* side (separate channel from Mirror) was also restarting.
+Likely real cause: something in our own `AdbTransport.kt`'s ADB-over-AOA
+implementation (ACK timing, window/`maxData` negotiation, a periodic
+keep-alive CarbitLink expects that we're not answering) that
+CarbitLink's own `libjadbd.so`-based stack handles correctly and ours
+doesn't. Needs a real side-by-side protocol-timing comparison (our
+`AdbTransport` reads/writes vs. a capture of CarbitLink's own app doing
+the same session) as its own investigation -- not yet started.
+
+`libJNICodec.so` is unstripped enough that `strings` alone got this far
+without needing real disassembly/Ghidra work. Deeper inspection of the
+same library (and `libhud_protocol.so`, only ~5KB, likely a thin
+wrapper/stub rather than the real protocol logic) could still reveal
+their exact x264 parameters (CRF/bitrate mode, preset, GOP structure) if
+that level of parity ever becomes worth chasing.
+
+### Open items carried forward
+- Verify whether `UsbLinkForegroundService`'s existing USB-attach
+  broadcast handling already auto-restarts the session on a fresh
+  accessory-attach event, independent of the new `scheduleTransportReconnect`
+  path -- if it already did, the actual "manual restart" root cause is
+  still unexplained.
+- Find and decompile CarbitLink's own first-party Android app/driver, if
+  one exists, as a true like-for-like comparison instead of PhoneAuto.
+- Reproduce one full EIO cycle with `logcat` plus the in-app log pulled
+  in the same window, to see if the kernel-level USB UEVENT disconnect
+  event lines up with the moment the read fails (confirms vs. just
+  infers the real hardware-reset theory).
+- The starvation-fix and level-fix are both real, confirmed-correct
+  changes worth keeping even though neither alone explains the remaining
+  blockiness -- don't revert them chasing a different lead.
+
+## External repo review for the EIO lead (2026-11-04)
+
+Reviewed the repos the user linked, looking for anything bearing on
+`AdbTransport.kt`'s `read failed: EIO` (now confirmed app-side, not
+dongle hardware -- CarbitLink's own app stays stable on the same
+dongle/cable). x264 encoder path removed from the working tree per
+user instruction (reverted, not pursued further -- blockiness fix
+unconfirmed and EIO proven independent of it).
+
+**Directly useful: [ingvaror/BLECarbitlink](https://github.com/ingvaror/BLECarbitlink)**
+(no license file -- don't copy code, facts only). `docs/protocol.md`:
+- AOA identity: `manufacturer="Carbit"`, `model="CarbitDriverOversea"`,
+  `version="1.0"` -- matches our own observed
+  `accessory=Carbit/CarbitDriverOversea` exactly, same device family.
+- `A_CNXN` sent as two bulk writes (24-byte header, then data); banner
+  must be exactly `host::<uuid>`.
+- `max_payload` cap is **128 KiB**; jadbd FORTIFY-aborts above that.
+  `AdbTransport.kt:99` defaults `maxData = 4096` and updates to the
+  peer's own `arg1` on `CNXN` (`AdbTransport.kt:168`) -- this is inside
+  their cap, not a likely EIO cause on its own, but confirms our
+  default is conservative/safe, not reckless.
+- Header: 24 bytes LE, `command/arg0/arg1/data_length/data_check/magic`,
+  `data_check` = sum of payload bytes (not a real CRC), `magic` =
+  `command ^ 0xFFFFFFFF` -- matches `AdbTransport.kt`'s own `sendPacket`
+  (`command xor -1`) exactly; no mismatch found here.
+- **Most relevant find:** "On Linux, a redundant `set_configuration()`
+  on an already-configured accessory makes the first bulk write fail
+  with `EIO`." This is their own Linux-host emulator's behavior (they
+  are emulating the head-unit/host side), not directly our code --
+  in AOA the phone is the accessory, CarbitLink is the host, so a
+  redundant `set_configuration()` call would originate from
+  CarbitLink's own USB-host stack, not anything in
+  `UsbAccessoryConnection.kt`/`AdbTransport.kt`. But it's the same
+  *signature* (first bulk write after a reopen fails with EIO) as what
+  we've captured repeatedly, which is a real structural analogy worth
+  stating as a hypothesis: **if CarbitLink's host-side stack re-issues
+  `set_configuration()` when our `AdbTransport`/session reconnects or
+  behaves in a way their stack doesn't expect (e.g. our own
+  `scheduleTransportReconnect` retry calling `openAccessory()` again
+  while CarbitLink still considers the old session live), that could be
+  what triggers it on their end** -- consistent with CarbitLink's own
+  app staying stable (it presumably never puts their host stack in that
+  state) while ours does. **Unverified** -- would need a capture of
+  CarbitLink's own USB traffic (their `tools/usbmon_extract.py` or
+  `aoa_probe.py` pattern) around our EIO moment to confirm, not just
+  inferred from this doc.
+- `tools/` (`adb_decode.py`, `aoa_probe.py`, `usbmon_extract.py`,
+  `carbit_capture.py`) are usbmon-based capture/decode scripts for
+  exactly this kind of comparison -- worth running structurally (not
+  copying) against our own session, if a synchronized capture is
+  pursued next.
+- ECP (their term for the app-layer protocol over ADB streams) payloads
+  are JSON in the clear; `CONFIG_CAPTURE`/mirror video framing is
+  explicitly NOT documented in their doc either -- no new info there.
+
+**Background only / unrelated (CarPlay dongle hardware, not Android
+Auto, not CarbitLink, not inspected further given budget -- classified
+by README description only, per the brief's own guidance that these are
+likely background unless a specific transferable detail turns up):**
+- [ludwig-v/wireless-carplay-dongle-reverse-engineering](https://github.com/ludwig-v/wireless-carplay-dongle-reverse-engineering)
+  (GPL-3.0) -- CPlay2Air/Carlinkit wireless CarPlay RE, different
+  dongle family, wireless not USB/AOA.
+- [catplay-labs/catplay](https://github.com/catplay-labs/catplay)
+  (no license) -- Rust CarPlay protocol implementation, CarPlay not AA.
+- [segfly/carlinkit-modding](https://github.com/segfly/carlinkit-modding)
+  (no license) -- Carlinkit CarPlay adapter modding notes.
+- [Henkru/cplay2air-wifi-passphrase-patch](https://github.com/Henkru/cplay2air-wifi-passphrase-patch)
+  (MIT) -- patches a default WiFi password at runtime, wireless CarPlay
+  only, no transport/reconnect content.
+- [Quikeramos1/Unbrik-Carlinkit-V3](https://github.com/Quikeramos1/Unbrik-Carlinkit-V3)
+  (no license) -- bricked-device recovery for Carlinkit V3 hardware.
+- `lvalen91/CPC200-CCPA-Firmware-Dump` redirects to
+  [lvalen91/CPC200-CCPA_resources](https://github.com/lvalen91/CPC200-CCPA_resources)
+  (not fetched in detail this pass) -- Carlinkit CPC200-CCPA firmware
+  resources, a different adapter model than CarbitLink's
+  `CarbitDriverOversea`. Note: the same author's
+  [lvalen91/carlink](https://github.com/lvalen91/carlink) is "an
+  Android app that enables phone projection via the Carlinkit CPC200-CCPA
+  adapter" -- structurally the closest analogue to CarAALink of
+  anything found this pass (an app replacing a dongle companion app via
+  USB), but it wasn't in the requested list and hasn't been inspected --
+  flagging as a candidate for a focused look if the BLECarbitlink lead
+  doesn't pan out.
+
+**No code changes made this pass** (none of the above rose to a
+specific, source-backed fix -- the `set_configuration()` hypothesis is
+a structural analogy, not confirmed against CarbitLink's own traffic).
+Next real step, if pursued: a synchronized usbmon capture (host machine
+as USB monitor between the phone and CarbitLink, using BLECarbitlink's
+own `tools/` scripts as a reference for how) during one of our EIO
+events, to see whether CarbitLink actually re-issues configuration at
+that moment.

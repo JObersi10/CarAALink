@@ -82,11 +82,7 @@ class AaVideoDecoder(private val width: Int, private val height: Int) {
         // single frame.
         feedCount++
         if (feedCount % 150 == 0) {
-            Log.i(TAG, "decode stats: recv=${dev.caraalink.diagnostics.PerfStats.aaAccessUnitsReceived} " +
-                "sub=${dev.caraalink.diagnostics.PerfStats.aaSubmitted} " +
-                "inputMiss=${dev.caraalink.diagnostics.PerfStats.aaInputBufferUnavailable} " +
-                "exc=${dev.caraalink.diagnostics.PerfStats.aaDecodeExceptions} " +
-                "rendered=${dev.caraalink.diagnostics.PerfStats.aaFramesRendered}")
+            Log.i(TAG, dev.caraalink.diagnostics.PerfStats.aaDecodeSummary())
         }
     }
 

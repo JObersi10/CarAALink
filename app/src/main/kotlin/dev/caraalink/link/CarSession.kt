@@ -13,6 +13,7 @@ import dev.caraalink.usb.UsbAccessoryConnection
 import dev.caraalink.video.CarDisplay
 import dev.caraalink.video.CarHomePresentation
 import dev.caraalink.video.CarVideoEncoder
+import dev.caraalink.video.VideoEncoder
 import dev.caraalink.video.WeatherProvider
 import org.json.JSONObject
 import java.util.ArrayDeque
@@ -37,7 +38,7 @@ class CarSession(
     private var transport: AdbTransport? = null
     private var config: CaptureConfig? = null
     private var lastBitRate: Int = -1
-    private var encoder: CarVideoEncoder? = null
+    private var encoder: VideoEncoder? = null
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
     private val display = CarDisplay(context, listOf(
@@ -60,6 +61,15 @@ class CarSession(
     private var pendingRequests = 0
     private var waitingForKey = true
     private var lastKeyFrame: ByteArray? = null
+    // Confirmed from a real log (chatgpt-status.md "starvation" finding):
+    // of 7303 total frame responses in one session, only 2777 were a fresh
+    // encode -- the rest were this starvation fallback, and it was always
+    // resending lastKeyFrame specifically, however old that keyframe was
+    // relative to whatever the car had most recently been shown. Repeating
+    // the actual last frame we sent (key or not) instead keeps every
+    // fallback response the freshest thing the car has already seen, rather
+    // than yanking the picture back to an arbitrarily older keyframe.
+    private var lastSentFrame: ByteArray? = null
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -437,7 +447,7 @@ class CarSession(
         }
         lastBitRate = bitRate
         encoder?.release()
-        val enc = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
+        val enc: VideoEncoder = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
         } catch (e: Exception) {
@@ -495,6 +505,11 @@ class CarSession(
             waitingForKey = true
             pendingRequests = 0
             pullQueue.clear()
+            // Don't let a starvation fallback hand a brand-new stream a
+            // non-keyframe left over from the previous one -- it falls back
+            // to lastKeyFrame (always self-contained) until this stream has
+            // actually sent something of its own.
+            lastSentFrame = null
         }
         logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
@@ -525,14 +540,19 @@ class CarSession(
 
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
-    /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
+    /**
+     * If the encoder stays silent, answer with the freshest frame already
+     * sent so the car never times out. Falls back to the last keyframe only
+     * when nothing has been sent yet this session (right after a stream
+     * reopen, before [lastSentFrame] exists).
+     */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
             synchronized(frameLock) {
-                val key = lastKeyFrame
-                if (pendingRequests > 0 && dataStream === stream && key != null) {
+                val repeat = lastSentFrame ?: lastKeyFrame
+                if (pendingRequests > 0 && dataStream === stream && repeat != null) {
                     pendingRequests--
-                    sendFrameLocked(stream, key)
+                    sendFrameLocked(stream, repeat)
                 }
             }
         }, 80)
@@ -547,6 +567,7 @@ class CarSession(
         } else {
             stream.write(MirrorDataChannel.frame(frame))
         }
+        lastSentFrame = frame
         framesSent++
         if (framesSent <= 3 || framesSent % 300 == 0L) logger.log("frame sent #$framesSent (${frame.size} bytes)")
     }
