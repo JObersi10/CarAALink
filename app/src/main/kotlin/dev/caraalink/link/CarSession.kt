@@ -548,6 +548,11 @@ class CarSession(
      */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
+            // The encoder missing its 80ms window repeatedly is a sign it's
+            // genuinely behind, not a one-off -- nudge it toward a fresh IDR
+            // instead of only ever resending old data (chatgpt-status.md
+            // "Not yet confirmed" lead from the OpenCFLink comparison).
+            encoder?.requestKeyFrame()
             synchronized(frameLock) {
                 val repeat = lastSentFrame ?: lastKeyFrame
                 if (pendingRequests > 0 && dataStream === stream && repeat != null) {
