@@ -38,6 +38,14 @@ class CarVideoEncoder(
             setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             setInteger(MediaFormat.KEY_LEVEL, levelFor(width, height, fps))
             setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            // KEY_LOW_LATENCY alone left the logged output format at
+            // latency=4 (frames, ~133ms @ 30fps) -- longer than the 80ms
+            // starvation window. KEY_LATENCY is the explicit encoder frame-
+            // latency hint (separate from LOW_LATENCY); added per
+            // OpenCFLink's own encoder config. Not guaranteed honored by
+            // this hardware -- check the logged output format for whether
+            // latency actually drops after this.
+            setInteger(MediaFormat.KEY_LATENCY, 1)
         }
         val callback = object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
@@ -75,7 +83,7 @@ class CarVideoEncoder(
         } catch (e: Exception) {
             // Some encoders reject the baseline/level/low-latency hints; retry plain.
             Log.w(TAG, "configure with hints failed, retrying plain", e)
-            listOf(MediaFormat.KEY_PROFILE, MediaFormat.KEY_LEVEL, MediaFormat.KEY_LOW_LATENCY).forEach { format.removeKey(it) }
+            listOf(MediaFormat.KEY_PROFILE, MediaFormat.KEY_LEVEL, MediaFormat.KEY_LOW_LATENCY, MediaFormat.KEY_LATENCY).forEach { format.removeKey(it) }
             codec.reset()
             codec.setCallback(callback, handler)
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)

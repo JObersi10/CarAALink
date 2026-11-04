@@ -506,10 +506,14 @@ class CarSession(
             pendingRequests = 0
             pullQueue.clear()
             // Don't let a starvation fallback hand a brand-new stream a
-            // non-keyframe left over from the previous one -- it falls back
-            // to lastKeyFrame (always self-contained) until this stream has
-            // actually sent something of its own.
+            // frame left over from the previous one. lastKeyFrame was never
+            // cleared here before -- confirmed real (ChatGPT repo-grounded
+            // review, 2026-11-04): on a fresh reopen lastSentFrame is null,
+            // so the fallback fell through to a *stale* lastKeyFrame from
+            // the prior stream, the one case waitingForKey exists to
+            // prevent on the normal (non-starvation) send path.
             lastSentFrame = null
+            lastKeyFrame = null
         }
         logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
@@ -530,7 +534,14 @@ class CarSession(
             val next = pullQueue.poll()
             if (next == null) {
                 pendingRequests++
-                encoder?.requestKeyFrame()
+                // Was unconditional here -- confirmed real (ChatGPT
+                // repo-grounded review, 2026-11-04): with the car pulling at
+                // ~79 req/s and the queue usually empty, this fired a sync-
+                // frame request on nearly every single request, forcing
+                // constant IDRs (much bigger than P-frames) instead of
+                // letting the encoder's normal GOP structure run -- wasted
+                // bandwidth that could've gone to actual picture quality.
+                maybeRequestKeyFrame()
                 scheduleStarvationCheck(stream)
                 return
             }
@@ -538,13 +549,24 @@ class CarSession(
         }
     }
 
+    private var lastKeyFrameRequestMs = 0L
+
+    /** Caller holds [frameLock]. Rate-limited so starvation/empty-pull don't force an IDR on nearly every frame request. */
+    private fun maybeRequestKeyFrame() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastKeyFrameRequestMs < 500) return
+        lastKeyFrameRequestMs = now
+        encoder?.requestKeyFrame()
+    }
+
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
     /**
      * If the encoder stays silent, answer with the freshest frame already
-     * sent so the car never times out. Falls back to the last keyframe only
-     * when nothing has been sent yet this session (right after a stream
-     * reopen, before [lastSentFrame] exists).
+     * sent so the car never times out -- but never before this stream's own
+     * first real keyframe has actually arrived ([waitingForKey]); until then
+     * the pending request just stays pending rather than risk handing the
+     * decoder a frame from before this stream existed.
      */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
@@ -552,8 +574,14 @@ class CarSession(
             // genuinely behind, not a one-off -- nudge it toward a fresh IDR
             // instead of only ever resending old data (chatgpt-status.md
             // "Not yet confirmed" lead from the OpenCFLink comparison).
-            encoder?.requestKeyFrame()
             synchronized(frameLock) {
+                // Never fall back to any cached frame while still waiting for
+                // this stream's own first real keyframe -- lastKeyFrame is
+                // now cleared on reopen, so this is the empty-stream case,
+                // not a stale one; sending nothing and letting the request
+                // stay pending is correct here, the car already blocks.
+                if (waitingForKey) return@synchronized
+                maybeRequestKeyFrame()
                 val repeat = lastSentFrame ?: lastKeyFrame
                 if (pendingRequests > 0 && dataStream === stream && repeat != null) {
                     pendingRequests--
