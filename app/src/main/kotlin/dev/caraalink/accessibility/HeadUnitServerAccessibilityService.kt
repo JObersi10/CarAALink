@@ -56,15 +56,27 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
         @Volatile
         private var armedUntil = 0L
+        @Volatile
+        private var recoverIfRunning = false
+        @Volatile
+        private var recoveryStopTapped = false
+        @Volatile
+        private var recoveryMenuAttempts = 0
 
         /** Call right before launching Android Auto's Settings UI. */
-        fun arm() {
+        fun arm(recoverIfRunning: Boolean = false) {
             armed = true
+            this.recoverIfRunning = recoverIfRunning
+            recoveryStopTapped = false
+            recoveryMenuAttempts = 0
             armedUntil = SystemClock.uptimeMillis() + ARM_WINDOW_MS
         }
 
         fun disarm() {
             armed = false
+            recoverIfRunning = false
+            recoveryStopTapped = false
+            recoveryMenuAttempts = 0
         }
     }
 
@@ -146,9 +158,25 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
                         return
                     }
                 } else if (stopNode != null) {
-                    Log.i(TAG, "Head unit server already on -- leaving it alone")
-                    deactivate(pressBack = true)
-                    return
+                    if (recoverIfRunning && !recoveryStopTapped) {
+                        if (clickUpToAncestor(stopNode)) {
+                            Log.w(TAG, "Head unit server is enabled but unresponsive -- tapped Stop for one controlled restart")
+                            recoveryStopTapped = true
+                            overflowOpened = false
+                            recoveryMenuAttempts = 0
+                            handler.postDelayed(::reopenMenuForRecovery, 900L)
+                            return
+                        }
+                    } else if (recoveryStopTapped) {
+                        // The AA menu has not reflected the Stop tap yet.
+                        // Keep waiting for a fresh menu event; never tap Stop
+                        // twice during one recovery request.
+                        return
+                    } else {
+                        Log.i(TAG, "Head unit server already on -- leaving it alone")
+                        deactivate(pressBack = true)
+                        return
+                    }
                 }
             }
 
@@ -163,9 +191,34 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     private fun deactivate(pressBack: Boolean) {
         armed = false
+        recoverIfRunning = false
         overflowOpened = false
+        recoveryStopTapped = false
+        recoveryMenuAttempts = 0
         if (pressBack) {
             handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 600L)
+        }
+    }
+
+    private fun reopenMenuForRecovery() {
+        if (!armed || !recoveryStopTapped) return
+        val root = rootInActiveWindow
+        if (root != null) {
+            try {
+                if (clickByDescription(root, OVERFLOW_DESCRIPTIONS)) {
+                    Log.i(TAG, "Reopened Android Auto menu to start the server after recovery")
+                    overflowOpened = true
+                    return
+                }
+            } finally {
+                root.recycle()
+            }
+        }
+        recoveryMenuAttempts++
+        if (recoveryMenuAttempts < 8) handler.postDelayed(::reopenMenuForRecovery, 500L)
+        else {
+            Log.e(TAG, "Could not reopen Android Auto menu after stopping the unresponsive server")
+            deactivate(pressBack = true)
         }
     }
 

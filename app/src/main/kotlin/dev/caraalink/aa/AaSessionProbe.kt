@@ -9,7 +9,9 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
 import java.security.cert.X509Certificate
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLEngineResult
@@ -74,6 +76,7 @@ class AaSessionProbe(
 
     companion object {
         private const val TAG = "AaSessionProbe"
+        private const val SHUTDOWN_ACK_TIMEOUT_MS = 1_200L
 
         @Volatile
         var active: AaSessionProbe? = null
@@ -82,8 +85,14 @@ class AaSessionProbe(
 
     private val logger = DiagnosticLogger(context, "aa-session")
     private val running = AtomicBoolean(false)
+    /** Return true to replace a failed first handshake with a controlled server recovery. */
+    @Volatile
+    var onInitialConnectionFailure: ((Throwable) -> Boolean)? = null
+    @Volatile
     private var socket: Socket? = null
+    @Volatile
     private var worker: Thread? = null
+    private val shutdownResponse = CountDownLatch(1)
 
     /**
      * Called for each `MEDIA_MESSAGE_DATA` (id 0) frame on the video channel,
@@ -121,6 +130,10 @@ class AaSessionProbe(
     /** Wall-clock time of the last video DATA frame actually received -- the watchdog's stall signal. */
     @Volatile
     var lastVideoFrameAt: Long = 0L
+    /** True only while an authenticated AA control/media session is active, not during reconnect backoff. */
+    @Volatile
+    var isConnectionActive: Boolean = false
+        private set
     // Separate from lastVideoFrameAt -- that field gets grace-period bumps
     // at start() and at other points before any real video has ever
     // arrived (see its own comments), so it can't by itself distinguish
@@ -305,30 +318,25 @@ class AaSessionProbe(
             .getOrDefault(false)
         // stop() is called from several places, including the main-thread
         // watchdog tick -- a blocking sleep here would risk UI jank/ANR, so
-        // the brief wait (giving the ShutdownRequest write a chance to
-        // actually leave before the FIN, rather than racing it) runs on a
-        // short-lived background thread instead of this caller's thread.
-        // Bounded so a dead/unresponsive peer can't hang anything.
+        // Wait for the protocol acknowledgement on a background thread.
+        // Closing the socket after an arbitrary short delay raced Gearhead's
+        // teardown and left its next connection accepted but unanswered.
+        // Never block the caller (often the main thread), and cap the wait.
         val s = socket
-        socket = null
         if (sentShutdown && s != null) {
             Thread({
-                runCatching { Thread.sleep(200) }
+                val acknowledged = runCatching {
+                    shutdownResponse.await(SHUTDOWN_ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                }.getOrDefault(false)
+                logger.log(if (acknowledged) "SHUTDOWN_RESPONSE received; closing AA transport" else
+                    "SHUTDOWN_RESPONSE timeout after ${SHUTDOWN_ACK_TIMEOUT_MS}ms; closing AA transport")
                 runCatching { s.close() }
+                worker?.interrupt()
             }, "AaSessionProbe-teardown").apply { isDaemon = true }.start()
         } else {
             runCatching { s?.close() }
+            worker?.interrupt()
         }
-        worker?.interrupt()
-        worker = null
-        if (active === this) active = null
-        // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
-        // each with its own executors -- without this they'd leak one idle
-        // daemon thread pool per reconnect, which during the ~every-minute
-        // drop/reconnect cycle this session is still seeing adds up fast.
-        touchExecutor.shutdownNow()
-        mediaExecutor.shutdownNow()
-        audioExecutor.shutdownNow()
     }
 
     /**
@@ -401,6 +409,12 @@ class AaSessionProbe(
             runCatching { socket?.close() }
             socket = null
             if (active === this) active = null
+            // This probe owns these executors for its full lifetime. Shut
+            // them down only after its receive loop exits so an in-flight
+            // final frame cannot race shutdown and throw RejectedExecutionException.
+            touchExecutor.shutdownNow()
+            mediaExecutor.shutdownNow()
+            audioExecutor.shutdownNow()
         }
     }
 
@@ -475,6 +489,7 @@ class AaSessionProbe(
             logger.log("TX AUTH_COMPLETE status=0")
             channel.sendControlPlain(AaFraming.MSG_AUTH_COMPLETE, authResponse)
             lastVideoFrameAt = System.currentTimeMillis() // grace period before the watchdog can call this stale
+            isConnectionActive = true
 
             var index = 0
             // Confirmed from mrmees/open-android-auto's own protocol docs
@@ -775,6 +790,12 @@ class AaSessionProbe(
                         val reason = AaProtobuf.parse(body).firstOrNull { it.number == 1 }?.varint
                         logger.log("RX SHUTDOWN_REQUEST reason=$reason -- acking and ending session (no auto-reconnect)")
                         channel.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_RESPONSE, ByteArray(0))
+                        shutdownResponse.countDown()
+                        running.set(false)
+                    }
+                    AaFraming.MSG_SHUTDOWN_RESPONSE -> {
+                        logger.log("RX SHUTDOWN_RESPONSE -- peer acknowledged session teardown")
+                        shutdownResponse.countDown()
                         running.set(false)
                     }
                     AaFraming.MSG_AUDIO_FOCUS_REQUEST -> {
@@ -793,8 +814,18 @@ class AaSessionProbe(
         } catch (e: Exception) {
             logger.log("failed: ${e.javaClass.simpleName}: ${e.message}")
             Log.w(TAG, "session failed", e)
+            if (!everEstablished && running.get() && e is java.io.IOException) {
+                val recoveryStarted = runCatching { onInitialConnectionFailure?.invoke(e) == true }
+                    .onFailure { logger.log("initial-failure recovery callback failed: $it") }
+                    .getOrDefault(false)
+                if (recoveryStarted) {
+                    logger.log("initial AA handshake failed; controlled head-unit-server recovery requested")
+                    running.set(false)
+                }
+            }
             false
         } finally {
+            isConnectionActive = false
             activeChannel = null
             cachedCodecConfig = null
             cachedKeyframe = null

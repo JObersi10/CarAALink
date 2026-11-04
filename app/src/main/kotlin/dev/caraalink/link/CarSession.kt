@@ -17,6 +17,7 @@ import dev.caraalink.video.VideoEncoder
 import dev.caraalink.video.WeatherProvider
 import org.json.JSONObject
 import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One connection to the head unit: ADB transport, PXC control, mirror
@@ -174,6 +175,7 @@ class CarSession(
     // killing a session that had just barely connected (session failed:
     // Connection reset, immediately after that tap, logged live).
     @Volatile private var openingAa = false
+    private val aaServerRecoveryRequested = AtomicBoolean(false)
 
     private fun openAndroidAuto() {
         if (dev.caraalink.aa.AaSessionProbe.active != null) {
@@ -237,7 +239,26 @@ class CarSession(
             // window the accessibility-retry path already gets.
             if (up) Thread.sleep(2000)
             logger.log("openAndroidAuto: starting AA session probe")
-            dev.caraalink.aa.AaSessionProbe(context).start()
+            val probe = dev.caraalink.aa.AaSessionProbe(context)
+            probe.onInitialConnectionFailure = { error ->
+                val canRecover = dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context) &&
+                    dev.caraalink.accessibility.HeadUnitServerLauncher.isAccessibilityServiceEnabled(context)
+                if (canRecover && aaServerRecoveryRequested.compareAndSet(false, true)) {
+                    logger.log("AA startup handshake failed (${error.javaClass.simpleName}) -- requesting one state-aware server recovery")
+                    val main = android.os.Handler(android.os.Looper.getMainLooper())
+                    main.post { dev.caraalink.accessibility.HeadUnitServerLauncher.recover(context) }
+                    // Give accessibility automation time to read the menu,
+                    // perform at most one Stop/Start cycle, and let Gearhead
+                    // reopen its listener before the next protocol attempt.
+                    main.postDelayed({
+                        if (display.mode == CarDisplay.Mode.AA && dev.caraalink.aa.AaSessionProbe.active == null) {
+                            openAndroidAuto()
+                        }
+                    }, AA_SERVER_RECOVERY_RETRY_MS)
+                    true
+                } else false
+            }
+            probe.start()
             openingAa = false
             android.os.Handler(android.os.Looper.getMainLooper()).post { showAaSurface() }
         }, "AA-server-check").start()
@@ -282,6 +303,14 @@ class CarSession(
                     display.showHome()
                 } else {
                     val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                    if (probe.hasReceivedVideo && !probe.isConnectionActive) {
+                        // AaSessionProbe owns reconnects after EOF/reset and
+                        // deliberately backs off between attempts. Do not
+                        // mistake that quiet backoff window for a frozen,
+                        // still-connected video stream and cancel the retry.
+                        aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
+                        return
+                    }
                     if (!probe.hasReceivedVideo) {
                         val startupMs = staleMs
                         if (startupMs > AA_WATCHDOG_STARTUP_MS) {
@@ -289,7 +318,7 @@ class CarSession(
                             dev.caraalink.diagnostics.PerfStats.aaReconnects++
                             watchdogRestartStreak++
                             probe.stop()
-                            openAndroidAuto()
+                            aaWatchdog.postDelayed({ openAndroidAuto() }, AA_TEARDOWN_RESTART_DELAY_MS)
                         }
                         aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
                         return
@@ -302,7 +331,7 @@ class CarSession(
                         dev.caraalink.diagnostics.PerfStats.aaReconnects++
                         watchdogRestartStreak++
                         probe.stop()
-                        openAndroidAuto()
+                        aaWatchdog.postDelayed({ openAndroidAuto() }, AA_TEARDOWN_RESTART_DELAY_MS)
                     } else if (staleMs < AA_WATCHDOG_CHECK_MS) {
                         // A frame actually arrived since the last tick -- the
                         // session is genuinely healthy again, not just early
@@ -656,5 +685,7 @@ class CarSession(
         private const val AA_WATCHDOG_STALL_MS = 10_000L
         private const val AA_WATCHDOG_STARTUP_MS = 60_000L
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
+        private const val AA_TEARDOWN_RESTART_DELAY_MS = 1_500L
+        private const val AA_SERVER_RECOVERY_RETRY_MS = 7_000L
     }
 }
