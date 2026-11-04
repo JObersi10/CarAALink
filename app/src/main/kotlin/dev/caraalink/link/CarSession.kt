@@ -71,6 +71,10 @@ class CarSession(
     // fallback response the freshest thing the car has already seen, rather
     // than yanking the picture back to an arbitrarily older keyframe.
     private var lastSentFrame: ByteArray? = null
+    // At most one starvation replay per encoded frame. Re-sending the same
+    // cached H.264 access unit on every pull can make moving scenes visibly
+    // loop/stutter while the encoder is behind.
+    private var lastStarvationRepeat: ByteArray? = null
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -544,6 +548,7 @@ class CarSession(
             // prevent on the normal (non-starvation) send path.
             lastSentFrame = null
             lastKeyFrame = null
+            lastStarvationRepeat = null
         }
         logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
@@ -613,9 +618,10 @@ class CarSession(
                 if (waitingForKey) return@synchronized
                 maybeRequestKeyFrame()
                 val repeat = lastSentFrame ?: lastKeyFrame
-                if (pendingRequests > 0 && dataStream === stream && repeat != null) {
+                if (pendingRequests > 0 && dataStream === stream && repeat != null && repeat !== lastStarvationRepeat) {
                     pendingRequests--
                     sendFrameLocked(stream, repeat)
+                    lastStarvationRepeat = repeat
                 }
             }
         }, 80)
@@ -623,6 +629,9 @@ class CarSession(
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
     private fun sendFrameLocked(stream: MirrorStream, frame: ByteArray) {
+        // A real/newly selected frame makes one subsequent starvation replay
+        // eligible; encoding alone does not if pull mode hasn't delivered it.
+        lastStarvationRepeat = null
         val cfg = codecConfig
         if (!configSent && cfg != null) {
             stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))

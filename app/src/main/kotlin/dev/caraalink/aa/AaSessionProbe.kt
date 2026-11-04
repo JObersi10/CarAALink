@@ -85,6 +85,7 @@ class AaSessionProbe(
 
     private val logger = DiagnosticLogger(context, "aa-session")
     private val running = AtomicBoolean(false)
+    private val stopping = AtomicBoolean(false)
     /** Return true to replace a failed first handshake with a controlled server recovery. */
     @Volatile
     var onInitialConnectionFailure: ((Throwable) -> Boolean)? = null
@@ -292,7 +293,7 @@ class AaSessionProbe(
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
+        if (!running.get() || !stopping.compareAndSet(false, true)) return
         logger.log("=== session probe stopped")
         // Confirmed from mrmees/open-android-auto's own protocol docs
         // (docs/interactions/05-session-maintenance-teardown.md, GPL-3.0,
@@ -308,35 +309,28 @@ class AaSessionProbe(
         // tracking never having been told the previous one actually ended
         // on purpose, only ever seeing the pipe die. Best-effort: this
         // must not block or throw if the channel's already unusable.
-        val sentShutdown = runCatching {
-            activeChannel?.let { ch ->
-                val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
-                ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
-                true
-            } ?: false
-        }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
-            .getOrDefault(false)
-        // stop() is called from several places, including the main-thread
-        // watchdog tick -- a blocking sleep here would risk UI jank/ANR, so
-        // Wait for the protocol acknowledgement on a background thread.
-        // Closing the socket after an arbitrary short delay raced Gearhead's
-        // teardown and left its next connection accepted but unanswered.
-        // Never block the caller (often the main thread), and cap the wait.
+        // sendControlEncrypted performs socket I/O. Keep the receive worker
+        // alive for SHUTDOWN_RESPONSE, and do both send and bounded wait off
+        // the caller thread (stop() can be called by the main-thread watchdog).
         val s = socket
-        if (sentShutdown && s != null) {
-            Thread({
-                val acknowledged = runCatching {
-                    shutdownResponse.await(SHUTDOWN_ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                }.getOrDefault(false)
-                logger.log(if (acknowledged) "SHUTDOWN_RESPONSE received; closing AA transport" else
-                    "SHUTDOWN_RESPONSE timeout after ${SHUTDOWN_ACK_TIMEOUT_MS}ms; closing AA transport")
-                runCatching { s.close() }
-                worker?.interrupt()
-            }, "AaSessionProbe-teardown").apply { isDaemon = true }.start()
-        } else {
+        Thread({
+            val sentShutdown = runCatching {
+                activeChannel?.let { ch ->
+                    val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
+                    ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+                    true
+                } ?: false
+            }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
+                .getOrDefault(false)
+            val acknowledged = sentShutdown && runCatching {
+                shutdownResponse.await(SHUTDOWN_ACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            }.getOrDefault(false)
+            if (sentShutdown) logger.log(if (acknowledged) "SHUTDOWN_RESPONSE received; closing AA transport" else
+                "SHUTDOWN_RESPONSE timeout after ${SHUTDOWN_ACK_TIMEOUT_MS}ms; closing AA transport")
+            running.set(false)
             runCatching { s?.close() }
             worker?.interrupt()
-        }
+        }, "AaSessionProbe-teardown").apply { isDaemon = true }.start()
     }
 
     /**

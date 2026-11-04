@@ -996,3 +996,62 @@ as USB monitor between the phone and CarbitLink, using BLECarbitlink's
 own `tools/` scripts as a reference for how) during one of our EIO
 events, to see whether CarbitLink actually re-issues configuration at
 that moment.
+
+## 2026-11-04: latest head-unit retest
+
+Log: `CarAALink-caraalink-20261104-022215.log.txt` (user test; current build
+includes the state-aware server recovery changes).
+
+**Head-unit server/reconnect remains unreliable.** At 02:24:05 the
+accessibility recovery flow tapped Stop for an enabled-but-unresponsive
+server, then Start when it observed the server off. The AA session ended
+around 02:24:10. Later connection attempts reset twice (02:24:28 and
+02:24:30); subsequent attempts completed TLS and service discovery, and
+the stream ran until about 02:25:04. This confirms the recovery logic
+acted, but did not make reconnect dependable; user still had to intervene
+repeatedly.
+
+**Confirmed teardown bug:** when that final session stopped, it attempted
+`SHUTDOWN_REQUEST`, then logged `NetworkOnMainThreadException` at
+02:25:04.392. `AaTlsChannel.sendControlEncrypted()` performs socket I/O,
+so the graceful shutdown send is being attempted from the Android main
+thread and fails. This means the intended clean disconnect/acknowledgment
+path is not actually happening. Fix by moving the send and response wait
+off the main thread while preserving bounded teardown; then verify a
+disconnect/reconnect without manually toggling the server.
+
+**TV animation looping:** user observed animations replaying several times
+before settling, while preferring the current less-pixelated image over the
+earlier pixelation. `CarSession` currently repeats `lastSentFrame` (or the
+last key frame) when encoder output starves (`CarSession.kt`, around line
+615). Replaying cached frames is a plausible contributor to the perceived
+loop/stutter, but this log/user report does not prove causation. Inspect
+frame timestamps and repeat behavior before changing it; preserve the
+visual-quality improvement while reducing repeated animation frames.
+
+No source code or APK was changed for this test report. The next focused
+implementation work is the main-thread shutdown-send bug; separately
+instrument or constrain cached-frame repeats to diagnose the animation
+loop. The user is done testing for now, so do not request another test
+round before documenting these findings.
+
+### Follow-up implementation (2026-11-04)
+
+Implemented the two focused fixes prompted by this capture:
+
+- `AaSessionProbe.stop()` now sends `SHUTDOWN_REQUEST` and waits up to the
+  existing acknowledgment timeout on a dedicated teardown thread. The probe
+  remains active to receive `SHUTDOWN_RESPONSE` until that bounded wait ends;
+  only then does teardown close the socket and interrupt the worker. This
+  addresses the observed `NetworkOnMainThreadException` and avoids blocking
+  the UI thread.
+- `CarSession` now sends at most one starvation fallback replay until a
+  newly selected frame is sent. Merely encoding frames queued for pull mode
+  does not re-enable repeats. This
+  reduces repeated stale-frame playback when the encoder stalls; it does not
+  yet prove the reported TV animation loop came from this path.
+
+`git diff --check` passes. `assembleDebug` could not complete: Android Gradle
+Plugin failed while applying because the configured `/Volumes/SABRENT` volume
+is unavailable in this session. No APK was produced, so device installation
+and runtime verification remain outstanding.
