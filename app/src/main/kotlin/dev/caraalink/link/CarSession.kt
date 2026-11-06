@@ -549,6 +549,7 @@ class CarSession(
             lastSentFrame = null
             lastKeyFrame = null
             lastStarvationRepeat = null
+            discardingUntilKeyframe = false
         }
         logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
@@ -644,6 +645,20 @@ class CarSession(
         if (framesSent <= 3 || framesSent % 300 == 0L) logger.log("frame sent #$framesSent (${frame.size} bytes)")
     }
 
+    // Set whenever a non-key frame gets dropped instead of forwarded (queue/
+    // backlog overflow). MediaCodec's internal reference chain still treats
+    // that dropped frame as the previous picture, so every later P-frame we
+    // *do* forward implicitly depends on a picture the car's decoder never
+    // received -- that mismatch is corrupted macroblocks ("TV glitches")
+    // until the next IDR. Confirmed real (real-headunit evidence review,
+    // 2026-11-06): the old code only re-checked queue fullness on the next
+    // frame, so as soon as the car drained one slot below MAX_PULL_QUEUE a
+    // fresh non-key frame got enqueued again even though no keyframe had
+    // landed yet, re-introducing the same corruption. This flag keeps
+    // dropping every non-key frame until an actual keyframe arrives,
+    // regardless of queue occupancy in between.
+    private var discardingUntilKeyframe = false
+
     private fun onEncodedFrame(data: ByteArray, isConfig: Boolean, isKey: Boolean) {
         framesEncoded++
         if (!isConfig) dev.caraalink.diagnostics.PerfStats.recordMirrorFrame(data.size)
@@ -655,7 +670,12 @@ class CarSession(
                 configSent = false
                 return
             }
-            if (isKey) lastKeyFrame = data
+            if (isKey) {
+                lastKeyFrame = data
+                discardingUntilKeyframe = false
+            } else if (discardingUntilKeyframe) {
+                return
+            }
             val stream = dataStream ?: return
             // The car's decoder needs to start on a keyframe.
             if (waitingForKey) {
@@ -669,7 +689,17 @@ class CarSession(
                     return
                 }
                 if (pullQueue.size >= MAX_PULL_QUEUE) {
-                    if (!isKey) { encoder?.requestKeyFrame(); return }
+                    if (!isKey) {
+                        // Drop the whole stale backlog, not just this frame --
+                        // letting the car drain MAX_PULL_QUEUE buffered-but-old
+                        // frames just replays old motion instead of catching
+                        // up, which is the "repeats motion" symptom.
+                        dev.caraalink.diagnostics.PerfStats.mirrorFramesDropped += pullQueue.size
+                        pullQueue.clear()
+                        discardingUntilKeyframe = true
+                        encoder?.requestKeyFrame()
+                        return
+                    }
                     dev.caraalink.diagnostics.PerfStats.mirrorFramesDropped += pullQueue.size
                     pullQueue.clear()
                 }
@@ -677,7 +707,12 @@ class CarSession(
                 return
             }
             if (stream.backlogBytes() > MAX_PUSH_BACKLOG) {
-                if (!isKey) { encoder?.requestKeyFrame(); return }
+                if (!isKey) {
+                    stream.clearBacklog()
+                    discardingUntilKeyframe = true
+                    encoder?.requestKeyFrame()
+                    return
+                }
                 stream.clearBacklog()
             }
             sendFrameLocked(stream, data)
