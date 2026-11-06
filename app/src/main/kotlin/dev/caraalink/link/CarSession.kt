@@ -456,7 +456,17 @@ class CarSession(
         val previous = this.config
         this.config = config
         CarScreenInfo.update(config.width, config.height)
-        val fps = if (config.wantFps > 0) config.wantFps else 30
+        // Measured from a real log (2026-11-06): in pull mode the car issues
+        // "frame request" calls at ~75-79/s, but this was hardcoded to a
+        // 30fps encode target -- requests=9899, sent=9899, encoded=4373 over
+        // the same ~134s session, meaning well over half of every frame
+        // actually sent to the car was a starvation-fallback *repeat* of
+        // already-sent data, not fresh content. That's the measured
+        // mechanism behind "TV lag / repeats motion": the car is pulling far
+        // faster than we were producing anything new to give it. Raising the
+        // pull-mode target toward the car's own observed pull cadence so
+        // more pulls get genuinely fresh frames instead of a stale resend.
+        val fps = if (config.wantFps > 0) config.wantFps else 60
         // Settings > Video > bitrate used to be decorative -- nothing ever
         // read it, the encoder always used either the car's own requested
         // bitrate or DEFAULT_BITRATE. Now it's a floor: the car's request
