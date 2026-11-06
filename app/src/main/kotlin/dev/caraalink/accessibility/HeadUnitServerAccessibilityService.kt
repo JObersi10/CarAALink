@@ -12,9 +12,12 @@ import android.view.accessibility.AccessibilityNodeInfo
  * Automates the one step that's actually safe to automate: once Android
  * Auto's own Settings screen is in front, open its overflow menu, detect
  * whether the head unit server is currently running (menu shows "Stop...")
- * or not ("Start..."), and tap whichever is actually present -- a real
- * toggle instead of blindly tapping "Start" even when it's already on. Once
- * that tap lands, a single back press closes AA's Settings screen and
+ * or not ("Start..."), and tap "Start" only when it's actually off --
+ * confirmed live (2026-11-04) that treating this as a blind toggle could
+ * tap "Stop" on an already-running, healthy server (a failed TCP probe
+ * elsewhere isn't proof the server is off), killing a working AA session.
+ * Once that tap lands (or there was nothing to do), a single back press
+ * closes AA's Settings screen and
  * leaves the phone on whatever was actually in front before (or home, if
  * there wasn't anything) -- this used to force CarAALink's own activity to
  * the front instead, which stole phone focus from whatever the owner was
@@ -53,15 +56,27 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
         @Volatile
         private var armedUntil = 0L
+        @Volatile
+        private var recoverIfRunning = false
+        @Volatile
+        private var recoveryStopTapped = false
+        @Volatile
+        private var recoveryMenuAttempts = 0
 
         /** Call right before launching Android Auto's Settings UI. */
-        fun arm() {
+        fun arm(recoverIfRunning: Boolean = false) {
             armed = true
+            this.recoverIfRunning = recoverIfRunning
+            recoveryStopTapped = false
+            recoveryMenuAttempts = 0
             armedUntil = SystemClock.uptimeMillis() + ARM_WINDOW_MS
         }
 
         fun disarm() {
             armed = false
+            recoverIfRunning = false
+            recoveryStopTapped = false
+            recoveryMenuAttempts = 0
         }
     }
 
@@ -114,15 +129,23 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         try {
             if (overflowOpened) {
-                // Detect current state from whichever label the menu is
-                // actually showing, then tap that one -- this is the toggle.
+                // Was a real toggle (tap whichever of Start/Stop the menu
+                // shows) -- confirmed real bug (ChatGPT, grounded against a
+                // real log, 2026-11-04): the only caller (arm() has exactly
+                // one call site, HeadUnitServerLauncher.start()) always
+                // means "ensure the server is running," never "toggle it."
+                // A TCP probe that treats a failed connect as "server off"
+                // can be wrong (running but momentarily not accepting), and
+                // this used to tap "Stop" in that case -- confirmed live:
+                // server was on, got tapped off, AA connection reset, had
+                // to auto-recover a few seconds later. Start-only now:
+                // tap Start only when the server is actually off; if it's
+                // already on, there's nothing to do.
                 val startNode = findExactText(root, START_TEXTS)
                 val stopNode = findExactText(root, STOP_TEXTS)
-                val target = startNode ?: stopNode
-                if (target != null) {
-                    val label = if (startNode != null) "Start" else "Stop"
-                    if (clickUpToAncestor(target)) {
-                        Log.i(TAG, "Head unit server was ${if (startNode != null) "off" else "on"} -- tapped '$label head unit server'")
+                if (startNode != null) {
+                    if (clickUpToAncestor(startNode)) {
+                        Log.i(TAG, "Head unit server was off -- tapped 'Start head unit server'")
                         // Leave the phone wherever it actually was -- forcing
                         // CarAALink itself back to the front here was stealing
                         // phone focus from whatever the owner was doing on it
@@ -131,6 +154,26 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
                         // phone). A back press closes AA's Settings screen
                         // and reveals whatever was underneath -- the last app,
                         // or home if there wasn't one.
+                        deactivate(pressBack = true)
+                        return
+                    }
+                } else if (stopNode != null) {
+                    if (recoverIfRunning && !recoveryStopTapped) {
+                        if (clickUpToAncestor(stopNode)) {
+                            Log.w(TAG, "Head unit server is enabled but unresponsive -- tapped Stop for one controlled restart")
+                            recoveryStopTapped = true
+                            overflowOpened = false
+                            recoveryMenuAttempts = 0
+                            handler.postDelayed(::reopenMenuForRecovery, 900L)
+                            return
+                        }
+                    } else if (recoveryStopTapped) {
+                        // The AA menu has not reflected the Stop tap yet.
+                        // Keep waiting for a fresh menu event; never tap Stop
+                        // twice during one recovery request.
+                        return
+                    } else {
+                        Log.i(TAG, "Head unit server already on -- leaving it alone")
                         deactivate(pressBack = true)
                         return
                     }
@@ -148,9 +191,34 @@ class HeadUnitServerAccessibilityService : AccessibilityService() {
 
     private fun deactivate(pressBack: Boolean) {
         armed = false
+        recoverIfRunning = false
         overflowOpened = false
+        recoveryStopTapped = false
+        recoveryMenuAttempts = 0
         if (pressBack) {
             handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_BACK) }, 600L)
+        }
+    }
+
+    private fun reopenMenuForRecovery() {
+        if (!armed || !recoveryStopTapped) return
+        val root = rootInActiveWindow
+        if (root != null) {
+            try {
+                if (clickByDescription(root, OVERFLOW_DESCRIPTIONS)) {
+                    Log.i(TAG, "Reopened Android Auto menu to start the server after recovery")
+                    overflowOpened = true
+                    return
+                }
+            } finally {
+                root.recycle()
+            }
+        }
+        recoveryMenuAttempts++
+        if (recoveryMenuAttempts < 8) handler.postDelayed(::reopenMenuForRecovery, 500L)
+        else {
+            Log.e(TAG, "Could not reopen Android Auto menu after stopping the unresponsive server")
+            deactivate(pressBack = true)
         }
     }
 

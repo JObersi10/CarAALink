@@ -13,9 +13,11 @@ import dev.caraalink.usb.UsbAccessoryConnection
 import dev.caraalink.video.CarDisplay
 import dev.caraalink.video.CarHomePresentation
 import dev.caraalink.video.CarVideoEncoder
+import dev.caraalink.video.VideoEncoder
 import dev.caraalink.video.WeatherProvider
 import org.json.JSONObject
 import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * One connection to the head unit: ADB transport, PXC control, mirror
@@ -37,7 +39,7 @@ class CarSession(
     private var transport: AdbTransport? = null
     private var config: CaptureConfig? = null
     private var lastBitRate: Int = -1
-    private var encoder: CarVideoEncoder? = null
+    private var encoder: VideoEncoder? = null
     private var pxc: PxcChannel? = null
     private val features = CarFeatures(context)
     private val display = CarDisplay(context, listOf(
@@ -60,6 +62,19 @@ class CarSession(
     private var pendingRequests = 0
     private var waitingForKey = true
     private var lastKeyFrame: ByteArray? = null
+    // Confirmed from a real log (chatgpt-status.md "starvation" finding):
+    // of 7303 total frame responses in one session, only 2777 were a fresh
+    // encode -- the rest were this starvation fallback, and it was always
+    // resending lastKeyFrame specifically, however old that keyframe was
+    // relative to whatever the car had most recently been shown. Repeating
+    // the actual last frame we sent (key or not) instead keeps every
+    // fallback response the freshest thing the car has already seen, rather
+    // than yanking the picture back to an arbitrarily older keyframe.
+    private var lastSentFrame: ByteArray? = null
+    // At most one starvation replay per encoded frame. Re-sending the same
+    // cached H.264 access unit on every pull can make moving scenes visibly
+    // loop/stutter while the encoder is behind.
+    private var lastStarvationRepeat: ByteArray? = null
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -164,6 +179,7 @@ class CarSession(
     // killing a session that had just barely connected (session failed:
     // Connection reset, immediately after that tap, logged live).
     @Volatile private var openingAa = false
+    private val aaServerRecoveryRequested = AtomicBoolean(false)
 
     private fun openAndroidAuto() {
         if (dev.caraalink.aa.AaSessionProbe.active != null) {
@@ -188,28 +204,17 @@ class CarSession(
             var up = serverUp()
             if (!up) {
                 if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
-                    // The accessibility service taps whichever label the
-                    // overflow menu is actually showing (a real toggle, not
-                    // always "Start") -- but if gearhead crashed while the
-                    // menu still reads "Stop head unit server" (server
-                    // thinks it's running, the process is actually dead),
-                    // our one tap turns an already-broken "on" into a clean
-                    // "off" instead of starting it, leaving the owner to
-                    // manually tap it a second time themselves. Retrying
-                    // once here, bounded, covers that case: a second tap
-                    // now correctly finds "Start" and turns it on for real.
-                    for (tapAttempt in 1..2) {
-                        logger.log("openAndroidAuto: server not listening -- triggering accessibility auto-start (tap $tapAttempt/2)")
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            display.setStatus("AA: starting head unit server…")
-                            dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
-                        }
-                        // Give the accessibility-driven toggle a moment to actually bind the
-                        // listener before we try to connect to it.
-                        Thread.sleep(2500)
-                        up = serverUp()
-                        if (up) break
+                    // Start is state-aware: it taps only when AA's menu says
+                    // the server is off. A failed TCP probe alone must never
+                    // trigger a Stop action on an enabled server.
+                    logger.log("openAndroidAuto: server not accepting TCP -- requesting safe start")
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        display.setStatus("AA: starting head unit server…")
+                        dev.caraalink.accessibility.HeadUnitServerLauncher.start(context)
                     }
+                    Thread.sleep(2500)
+                    up = serverUp()
+                    if (!up) logger.log("openAndroidAuto: server did not accept TCP after start request; continuing without another toggle")
                 } else {
                     // "Auto-start head unit server" is off (Settings > Connection) --
                     // the owner wants to flip AA's developer-mode switch themselves,
@@ -238,7 +243,26 @@ class CarSession(
             // window the accessibility-retry path already gets.
             if (up) Thread.sleep(2000)
             logger.log("openAndroidAuto: starting AA session probe")
-            dev.caraalink.aa.AaSessionProbe(context).start()
+            val probe = dev.caraalink.aa.AaSessionProbe(context)
+            probe.onInitialConnectionFailure = { error ->
+                val canRecover = dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context) &&
+                    dev.caraalink.accessibility.HeadUnitServerLauncher.isAccessibilityServiceEnabled(context)
+                if (canRecover && aaServerRecoveryRequested.compareAndSet(false, true)) {
+                    logger.log("AA startup handshake failed (${error.javaClass.simpleName}) -- requesting one state-aware server recovery")
+                    val main = android.os.Handler(android.os.Looper.getMainLooper())
+                    main.post { dev.caraalink.accessibility.HeadUnitServerLauncher.recover(context) }
+                    // Give accessibility automation time to read the menu,
+                    // perform at most one Stop/Start cycle, and let Gearhead
+                    // reopen its listener before the next protocol attempt.
+                    main.postDelayed({
+                        if (display.mode == CarDisplay.Mode.AA && dev.caraalink.aa.AaSessionProbe.active == null) {
+                            openAndroidAuto()
+                        }
+                    }, AA_SERVER_RECOVERY_RETRY_MS)
+                    true
+                } else false
+            }
+            probe.start()
             openingAa = false
             android.os.Handler(android.os.Looper.getMainLooper()).post { showAaSurface() }
         }, "AA-server-check").start()
@@ -283,6 +307,26 @@ class CarSession(
                     display.showHome()
                 } else {
                     val staleMs = System.currentTimeMillis() - probe.lastVideoFrameAt
+                    if (probe.hasReceivedVideo && !probe.isConnectionActive) {
+                        // AaSessionProbe owns reconnects after EOF/reset and
+                        // deliberately backs off between attempts. Do not
+                        // mistake that quiet backoff window for a frozen,
+                        // still-connected video stream and cancel the retry.
+                        aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
+                        return
+                    }
+                    if (!probe.hasReceivedVideo) {
+                        val startupMs = staleMs
+                        if (startupMs > AA_WATCHDOG_STARTUP_MS) {
+                            logger.log("AA watchdog: no video after ${startupMs}ms startup grace -- restarting session")
+                            dev.caraalink.diagnostics.PerfStats.aaReconnects++
+                            watchdogRestartStreak++
+                            probe.stop()
+                            aaWatchdog.postDelayed({ openAndroidAuto() }, AA_TEARDOWN_RESTART_DELAY_MS)
+                        }
+                        aaWatchdog.postDelayed(this, AA_WATCHDOG_CHECK_MS)
+                        return
+                    }
                     val stallThreshold = (AA_WATCHDOG_STALL_MS * (1 shl watchdogRestartStreak.coerceAtMost(3)))
                         .coerceAtMost(AA_WATCHDOG_STALL_MAX_MS)
                     if (staleMs > stallThreshold) {
@@ -291,7 +335,7 @@ class CarSession(
                         dev.caraalink.diagnostics.PerfStats.aaReconnects++
                         watchdogRestartStreak++
                         probe.stop()
-                        openAndroidAuto()
+                        aaWatchdog.postDelayed({ openAndroidAuto() }, AA_TEARDOWN_RESTART_DELAY_MS)
                     } else if (staleMs < AA_WATCHDOG_CHECK_MS) {
                         // A frame actually arrived since the last tick -- the
                         // session is genuinely healthy again, not just early
@@ -412,7 +456,17 @@ class CarSession(
         val previous = this.config
         this.config = config
         CarScreenInfo.update(config.width, config.height)
-        val fps = if (config.wantFps > 0) config.wantFps else 30
+        // Measured from a real log (2026-11-06): in pull mode the car issues
+        // "frame request" calls at ~75-79/s, but this was hardcoded to a
+        // 30fps encode target -- requests=9899, sent=9899, encoded=4373 over
+        // the same ~134s session, meaning well over half of every frame
+        // actually sent to the car was a starvation-fallback *repeat* of
+        // already-sent data, not fresh content. That's the measured
+        // mechanism behind "TV lag / repeats motion": the car is pulling far
+        // faster than we were producing anything new to give it. Raising the
+        // pull-mode target toward the car's own observed pull cadence so
+        // more pulls get genuinely fresh frames instead of a stale resend.
+        val fps = if (config.wantFps > 0) config.wantFps else 60
         // Settings > Video > bitrate used to be decorative -- nothing ever
         // read it, the encoder always used either the car's own requested
         // bitrate or DEFAULT_BITRATE. Now it's a floor: the car's request
@@ -437,7 +491,7 @@ class CarSession(
         }
         lastBitRate = bitRate
         encoder?.release()
-        val enc = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
+        val enc: VideoEncoder = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
         } catch (e: Exception) {
@@ -495,6 +549,17 @@ class CarSession(
             waitingForKey = true
             pendingRequests = 0
             pullQueue.clear()
+            // Don't let a starvation fallback hand a brand-new stream a
+            // frame left over from the previous one. lastKeyFrame was never
+            // cleared here before -- confirmed real (ChatGPT repo-grounded
+            // review, 2026-11-04): on a fresh reopen lastSentFrame is null,
+            // so the fallback fell through to a *stale* lastKeyFrame from
+            // the prior stream, the one case waitingForKey exists to
+            // prevent on the normal (non-starvation) send path.
+            lastSentFrame = null
+            lastKeyFrame = null
+            lastStarvationRepeat = null
+            discardingUntilKeyframe = false
         }
         logger.log("data stream open; encoded so far=$framesEncoded, requesting keyframe")
         ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.STREAMING) }
@@ -515,7 +580,14 @@ class CarSession(
             val next = pullQueue.poll()
             if (next == null) {
                 pendingRequests++
-                encoder?.requestKeyFrame()
+                // Was unconditional here -- confirmed real (ChatGPT
+                // repo-grounded review, 2026-11-04): with the car pulling at
+                // ~79 req/s and the queue usually empty, this fired a sync-
+                // frame request on nearly every single request, forcing
+                // constant IDRs (much bigger than P-frames) instead of
+                // letting the encoder's normal GOP structure run -- wasted
+                // bandwidth that could've gone to actual picture quality.
+                maybeRequestKeyFrame()
                 scheduleStarvationCheck(stream)
                 return
             }
@@ -523,16 +595,44 @@ class CarSession(
         }
     }
 
+    private var lastKeyFrameRequestMs = 0L
+
+    /** Caller holds [frameLock]. Rate-limited so starvation/empty-pull don't force an IDR on nearly every frame request. */
+    private fun maybeRequestKeyFrame() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastKeyFrameRequestMs < 500) return
+        lastKeyFrameRequestMs = now
+        encoder?.requestKeyFrame()
+    }
+
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
-    /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
+    /**
+     * If the encoder stays silent, answer with the freshest frame already
+     * sent so the car never times out -- but never before this stream's own
+     * first real keyframe has actually arrived ([waitingForKey]); until then
+     * the pending request just stays pending rather than risk handing the
+     * decoder a frame from before this stream existed.
+     */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
+            // The encoder missing its 80ms window repeatedly is a sign it's
+            // genuinely behind, not a one-off -- nudge it toward a fresh IDR
+            // instead of only ever resending old data (chatgpt-status.md
+            // "Not yet confirmed" lead from the OpenCFLink comparison).
             synchronized(frameLock) {
-                val key = lastKeyFrame
-                if (pendingRequests > 0 && dataStream === stream && key != null) {
+                // Never fall back to any cached frame while still waiting for
+                // this stream's own first real keyframe -- lastKeyFrame is
+                // now cleared on reopen, so this is the empty-stream case,
+                // not a stale one; sending nothing and letting the request
+                // stay pending is correct here, the car already blocks.
+                if (waitingForKey) return@synchronized
+                maybeRequestKeyFrame()
+                val repeat = lastSentFrame ?: lastKeyFrame
+                if (pendingRequests > 0 && dataStream === stream && repeat != null && repeat !== lastStarvationRepeat) {
                     pendingRequests--
-                    sendFrameLocked(stream, key)
+                    sendFrameLocked(stream, repeat)
+                    lastStarvationRepeat = repeat
                 }
             }
         }, 80)
@@ -540,6 +640,9 @@ class CarSession(
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
     private fun sendFrameLocked(stream: MirrorStream, frame: ByteArray) {
+        // A real/newly selected frame makes one subsequent starvation replay
+        // eligible; encoding alone does not if pull mode hasn't delivered it.
+        lastStarvationRepeat = null
         val cfg = codecConfig
         if (!configSent && cfg != null) {
             stream.write(MirrorDataChannel.frame(cfg) + MirrorDataChannel.frame(frame))
@@ -547,9 +650,24 @@ class CarSession(
         } else {
             stream.write(MirrorDataChannel.frame(frame))
         }
+        lastSentFrame = frame
         framesSent++
         if (framesSent <= 3 || framesSent % 300 == 0L) logger.log("frame sent #$framesSent (${frame.size} bytes)")
     }
+
+    // Set whenever a non-key frame gets dropped instead of forwarded (queue/
+    // backlog overflow). MediaCodec's internal reference chain still treats
+    // that dropped frame as the previous picture, so every later P-frame we
+    // *do* forward implicitly depends on a picture the car's decoder never
+    // received -- that mismatch is corrupted macroblocks ("TV glitches")
+    // until the next IDR. Confirmed real (real-headunit evidence review,
+    // 2026-11-06): the old code only re-checked queue fullness on the next
+    // frame, so as soon as the car drained one slot below MAX_PULL_QUEUE a
+    // fresh non-key frame got enqueued again even though no keyframe had
+    // landed yet, re-introducing the same corruption. This flag keeps
+    // dropping every non-key frame until an actual keyframe arrives,
+    // regardless of queue occupancy in between.
+    private var discardingUntilKeyframe = false
 
     private fun onEncodedFrame(data: ByteArray, isConfig: Boolean, isKey: Boolean) {
         framesEncoded++
@@ -562,7 +680,12 @@ class CarSession(
                 configSent = false
                 return
             }
-            if (isKey) lastKeyFrame = data
+            if (isKey) {
+                lastKeyFrame = data
+                discardingUntilKeyframe = false
+            } else if (discardingUntilKeyframe) {
+                return
+            }
             val stream = dataStream ?: return
             // The car's decoder needs to start on a keyframe.
             if (waitingForKey) {
@@ -576,7 +699,17 @@ class CarSession(
                     return
                 }
                 if (pullQueue.size >= MAX_PULL_QUEUE) {
-                    if (!isKey) { encoder?.requestKeyFrame(); return }
+                    if (!isKey) {
+                        // Drop the whole stale backlog, not just this frame --
+                        // letting the car drain MAX_PULL_QUEUE buffered-but-old
+                        // frames just replays old motion instead of catching
+                        // up, which is the "repeats motion" symptom.
+                        dev.caraalink.diagnostics.PerfStats.mirrorFramesDropped += pullQueue.size
+                        pullQueue.clear()
+                        discardingUntilKeyframe = true
+                        encoder?.requestKeyFrame()
+                        return
+                    }
                     dev.caraalink.diagnostics.PerfStats.mirrorFramesDropped += pullQueue.size
                     pullQueue.clear()
                 }
@@ -584,7 +717,12 @@ class CarSession(
                 return
             }
             if (stream.backlogBytes() > MAX_PUSH_BACKLOG) {
-                if (!isKey) { encoder?.requestKeyFrame(); return }
+                if (!isKey) {
+                    stream.clearBacklog()
+                    discardingUntilKeyframe = true
+                    encoder?.requestKeyFrame()
+                    return
+                }
                 stream.clearBacklog()
             }
             sendFrameLocked(stream, data)
@@ -599,6 +737,9 @@ class CarSession(
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
+        private const val AA_WATCHDOG_STARTUP_MS = 60_000L
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
+        private const val AA_TEARDOWN_RESTART_DELAY_MS = 1_500L
+        private const val AA_SERVER_RECOVERY_RETRY_MS = 7_000L
     }
 }

@@ -102,6 +102,20 @@ class AdbTransport(
     fun start() {
         if (!running.compareAndSet(false, true)) return
         readThread = Thread({
+            // One reversible experiment, not a confirmed fix (chatgpt-status.md
+            // "External repo review for the EIO lead"): BLECarbitlink's own
+            // protocol notes cite the *exact* EIO signature we keep hitting --
+            // "a redundant set_configuration() on an already-configured
+            // accessory makes the FIRST bulk write fail with EIO" -- from their
+            // Linux host-side emulator, not proven against the real
+            // CarbitLink dongle. A short settle delay before our own first
+            // write can't fix a cause on CarbitLink's side, but if their host
+            // stack is still finishing USB enumeration/configuration right as
+            // we reopen (most likely right after our own reconnect retry),
+            // writing the zero kick immediately is the worst possible timing
+            // to land in that window. Cheap and reversible; revert if it
+            // makes no measurable difference to EIO frequency.
+            Thread.sleep(300)
             sendZeroKick()
             readLoop()
         }, "AdbTransport").also { it.start() }
