@@ -277,7 +277,7 @@ object AaServiceDiscovery {
         if (carWidth <= 0 || carHeight <= 0) return 0 to 0
         val carAspect = carWidth.toFloat() / carHeight
         val resAspect = resolution.width.toFloat() / resolution.height
-        return when {
+        val (rawWidthMargin, rawHeightMargin) = when {
             resAspect > carAspect + ASPECT_EPSILON -> {
                 // Video is wider than the car's panel -- crop width.
                 val desiredWidth = (resolution.height * carAspect).toInt()
@@ -290,10 +290,28 @@ object AaServiceDiscovery {
             }
             else -> 0 to 0 // already a near-exact aspect match, nothing to crop
         }
+        // Confirmed real crash (claude/roadmap.md, 2026-11-02, caught by
+        // logcatting gearhead directly): `IllegalArgumentException: Virtual
+        // display width must be positive` in gearhead's own
+        // VirtualDisplayConfig.Builder -- built from the width_margin/
+        // height_margin values *we* send. Whether gearhead treats those as
+        // total-removed or per-side-removed was never confirmed (see the
+        // doc comment above); for an ultrawide/extreme car-panel aspect this
+        // function can compute a margin close to half the dimension, which
+        // goes non-positive under the per-side interpretation. A crashed
+        // gearhead means no video ever arrives, so CarSession's AA watchdog
+        // (AA_WATCHDOG_STARTUP_MS) restarts the session, which can repeat
+        // forever -- a plausible match for "AA drops every ~60s" without
+        // needing to resolve the semantic ambiguity: just never send a
+        // margin large enough to go non-positive under *either* reading.
+        val maxWidthMargin = (resolution.width / 2 - MIN_AA_CONTENT_PX).coerceAtLeast(0)
+        val maxHeightMargin = (resolution.height / 2 - MIN_AA_CONTENT_PX).coerceAtLeast(0)
+        return rawWidthMargin.coerceIn(0, maxWidthMargin) to rawHeightMargin.coerceIn(0, maxHeightMargin)
     }
 
     private const val ASPECT_EPSILON = 0.01f
     private const val ULTRAWIDE_PANEL_ASPECT = 2.5f
+    private const val MIN_AA_CONTENT_PX = 32
 
     /**
      * Serialized `ServiceDiscoveryResponse`. Deliberately minimal: a video
