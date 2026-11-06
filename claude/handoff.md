@@ -1,5 +1,41 @@
 # Handoff
 
+## LATEST (2026-11-06) -- see chatgpt-status.md's 2026-11-06 sections for full detail
+
+Shipped and pushed to `aa-post-v1` this round (all on real CarbitLink-
+dongle and real-head-unit hardware): mirror frame overflow no longer
+corrupts the H.264 reference chain or replays stale frames
+(`CarSession.kt`); mirror encode target raised to 60fps to match the
+car's measured ~75-79/s pull rate (repeat-frame ratio measured dropping
+from ~56% to ~17% on a real head unit); AA margin clamp to prevent
+gearhead's own confirmed `VirtualDisplay width must be positive` crash,
+corrected after decompiling `andreknieriem/open-headunit` (real
+open-source AA head unit, GPL-3.0) to confirm margin is a total, not
+per-side, subtraction; AA audio start-of-playback choppiness fixed
+(`AaAudioPlayer.kt` now prebuffers ~120ms before the first `play()`).
+Also added `docs/CarbitLink-Protocol.md`, a consolidated,
+evidence-sourced writeup of everything confirmed about CarbitLink's wire
+protocol so far.
+
+**Two real things still open, next session should pick these up first:**
+1. EIO -> ENODEV x50 "give up" loop (owner sees 5 repeated car-side
+   splash cycles, then it stops) -- owner believes this is actually
+   Android Auto (gearhead) causing it, not a true USB-level drop; not
+   settled either way. Needs a logcat capture spanning both
+   `car-session` and `GH.`/gearhead tags at the *exact* moment of one of
+   these events.
+2. The "force-stop the app to get the USB chooser dialog back" bug --
+   the known fix for this exact symptom class (`UsbAccessoryConnection`
+   closing its own fd) is in place and traced correct on inspection, but
+   not proven against a live regression.
+
+**Tooling note:** `adb shell "nohup ... &"` for an unattended on-device
+logcat capture was confirmed TWICE to silently die a few minutes in,
+well before the event it was meant to catch -- no error, just a stale
+file. Use `setsid sh -c '...' </dev/null >/dev/null 2>&1 &` instead, and
+verify with a fresh `ps -A | grep logcat` close to the end of a test
+session, not just at the start.
+
 Last rewritten: 2026-11-03. PR #18 (v1.0.0) is merged into `main`. PR #19
 is open against `main` from `aa-post-v1` (driving-status fix, decoder
 diagnostics, video focus handling). **ChatGPT and Claude have been
