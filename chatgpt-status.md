@@ -1168,3 +1168,27 @@ exact session to prove this margin path is what's crashing right now
 drops on roughly the same ~60s cadence after this, the next real step is
 logcatting `com.google.android.projection.gearhead` directly again
 during one of these drops, same technique as the original finding.
+
+## 2026-11-06 (cont'd): real head unit retest -- confirmed improvement on both fixes
+
+New log (`CarAALink-caraalink-20261106-134948.log.txt`), this time from
+the owner's actual Jancar head unit (`CONFIG_CAPTURE ... width=1024,
+height=600` -- matches the real panel size confirmed earlier from
+decompiling `net.easyconn`, not the 1920x720 test dongle).
+
+**Mirror pacing fix (60fps target):** `data stream closed;
+requests=18626 sent=18626 encoded=15382` over a ~302s session -- repeat
+ratio dropped from ~56% (previous log, 30fps target) to ~17.4%. Owner's
+own words: "way better than before... still like some tv lag". Real,
+measured improvement; the residual ~17% is likely just normal encode-
+timing jitter at this point rather than a gross pacing mismatch -- not
+chasing further without a more specific symptom.
+
+**AA margin-crash-prevention fix:** one transient `AA startup handshake
+failed (SocketTimeoutException)` right after the probe started, which
+triggered one normal recovery restart -- then AA ran clean for the next
+~4 minutes with no further restarts before the capture ended. No sign of
+the repeating ~60s boot loop this time. Owner couldn't test AA
+specifically for long/well this round, so this is encouraging but not a
+confirmed fix yet -- next test should specifically watch AA over a
+longer stretch.
