@@ -1055,3 +1055,46 @@ Implemented the two focused fixes prompted by this capture:
 Plugin failed while applying because the configured `/Volumes/SABRENT` volume
 is unavailable in this session. No APK was produced, so device installation
 and runtime verification remain outstanding.
+
+## 2026-11-06: real-headunit evidence + reference-chain corruption fix
+
+User got hands-on access to a real Jancar/AutoChips head unit and pulled
+`net.easyconn` (the real CarbitLink IVI app), the other Jancar/AutoChips/
+MediaTek system APKs, and logcat/shell dumps captured while CarbitLink was
+actually mirroring on that hardware (`Reverse engineering Claude/`,
+`diagnostics/openheadunit-2026-11-03/`). Confirmed from
+`Logcat car but bigger.txt`: the real IVI's own Mirror surface is
+`getPropertyMirrorWidth/Height` = 1024x600 (its native panel), separate
+from whatever resolution CONFIG_CAPTURE negotiates with the phone --
+useful ground truth, but not what was driving today's symptom.
+
+**Symptom this round:** no longer "compressed JPEG mess" (resolved by the
+round-9 H.264 level fix) -- now "TV glitches" (block corruption) and
+"sometimes repeats motion".
+
+**Root cause found and fixed, `CarSession.kt` `onEncodedFrame`:** on pull-
+queue/push-backlog overflow, the old code dropped only the *one* frame
+that overflowed and asked for a keyframe, then re-checked fullness on the
+next frame. If the car drained a slot before that keyframe actually
+arrived, the next non-key frame was re-enqueued and forwarded anyway --
+but MediaCodec's internal reference chain still treats the frame we
+silently dropped as the immediately-prior picture, so that forwarded
+P-frame references a picture the car's decoder never received. That
+reference mismatch is exactly what shows up as corrupted macroblocks
+("TV glitches") until the next IDR happens to land. Separately, once the
+8-deep pull queue backed up, the car would drain all 8 stale buffered
+frames before seeing anything current -- i.e. it visibly plays back old
+motion first, which is the "repeats motion" symptom.
+
+Fix: added `discardingUntilKeyframe`, set on any overflow-drop and only
+cleared when an actual keyframe arrives, so every non-key frame in
+between is dropped too (not just the first). Overflow also now clears the
+whole stale backlog immediately instead of letting the car drain it,
+so the car blocks briefly on its next pull instead of replaying old
+motion. Applied symmetrically to both the pull-queue and push-backlog
+paths. `discardingUntilKeyframe` is also reset on stream reopen alongside
+the other per-stream state.
+
+Not yet device-tested -- built via CI (`aa-post-v1`, commit `b4a4756`),
+no adb device was attached this session to install it. Needs a real
+on-car run to confirm the glitch/repeat is actually gone.
