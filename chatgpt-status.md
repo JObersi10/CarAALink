@@ -1098,3 +1098,39 @@ the other per-stream state.
 Not yet device-tested -- built via CI (`aa-post-v1`, commit `b4a4756`),
 no adb device was attached this session to install it. Needs a real
 on-car run to confirm the glitch/repeat is actually gone.
+
+## 2026-11-06 (cont'd): real pull-rate measurement + 60fps fix
+
+New on-car log (`CarAALink-caraalink-20261106-070521.log.txt`) after the
+overflow/reference-chain fix above. That fix never actually triggered
+this run -- `pullQueue` stayed at 0-1 the whole session, never hit
+`MAX_PULL_QUEUE`. So it's neither confirmed nor disproven by this
+capture; just wasn't the active mechanism here.
+
+What the log did show: `data stream closed; requests=9899 sent=9899
+encoded=4373` over a ~134s session -- every pull got answered, but more
+than half of everything sent (5526/9899) was a starvation-fallback
+*repeat* of already-sent bytes, not a fresh encode. The car was pulling
+at a measured ~75-79/s; the Mirror encoder was hardcoded to a 30fps
+target in pull mode (`CarSession.kt` `onCaptureConfig`, `val fps = ...
+else 30`). That's the real, log-confirmed mechanism behind "TV lag /
+repeats motion" -- not corruption, a pacing mismatch where the car sees
+the same picture repeated far more often than a new one.
+
+Fix: raised the pull-mode encode target to 60fps so more pulls land on
+genuinely fresh content instead of a repeat. Also decompiled the real
+`net.easyconn` head-unit app (`EasyConnection.apk`, pulled off a real
+Jancar/AutoChips head unit) and wrote up everything confirmed from it
+plus prior captures into `docs/CarbitLink-Protocol.md` -- see that file
+for the full writeup (PXC JSON control channel, Mirror negotiation,
+touch/transport enums, and an explicit list of what's still unknown).
+
+Session closed cleanly, then the dongle went fully unresponsive (`zero
+kick attempt 1..50 failed: write failed: ENODEV`) ~2s later -- same
+unresolved hardware-level dropout documented earlier, unrelated to this
+fix.
+
+Not yet device-tested (built via CI, `aa-post-v1` commit `25a6559`). User
+said they won't have head-unit logcat access again soon -- next on-car
+test should specifically watch whether the repeat ratio (not just
+whether it connects) actually drops.
