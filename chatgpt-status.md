@@ -1192,3 +1192,66 @@ the repeating ~60s boot loop this time. Owner couldn't test AA
 specifically for long/well this round, so this is encouraging but not a
 confirmed fix yet -- next test should specifically watch AA over a
 longer stretch.
+
+## 2026-11-06 (cont'd): live car session -- audio fix, EIO/ENODEV loop still unresolved, logcat-capture lesson
+
+Live session at the car, with logcat running throughout.
+
+**Fixed and shipped (commit `906f460`):** AA audio choppy for about a
+second at the start of playback. Root cause: `AaAudioPlayer.feed()`
+called `track.play()` on the very first decoded PCM chunk with nothing
+else buffered, so playback started fully empty and had to race the
+decoder until it happened to build a cushion -- matches "choppy for a
+sec unless I pause so it catches up" exactly. Now holds back ~120ms of
+PCM before the first `play()`. Not yet confirmed live by the owner this
+session (installed, not retested before compaction).
+
+**Audio-over-CarbitLink-wire: confirmed a non-issue, not a gap.** The
+owner ran the real CarbitLink app live and it nagged "turn on your
+Bluetooth" -- direct first-party confirmation that CarbitLink's own
+audio path is Bluetooth A2DP, not anything carried in the USB wire
+protocol. Our own `AaAudioPlayer.kt` already explicitly prefers
+Bluetooth A2DP for AA's audio output (`AppSettings.aaAudioRoute` =
+BT_PREFERRED, with a speaker fallback) -- already matches the real
+system's architecture. No wire-protocol audio work needed.
+
+**Head-unit-server auto-recovery: confirmed working in one capture.**
+`HeadUnitServerLauncher.recover()` (a controlled Stop-then-Start cycle,
+triggered automatically when an AA handshake fails) already exists from
+an earlier round and worked cleanly in one live capture this session --
+one handshake failure, one automatic recovery, then the session ran
+clean. This was NOT built this session; just confirmed functioning once.
+
+**Still unresolved: the EIO -> ENODEV x50 "give up" loop, reported by
+the owner as 5 repeated "headunit server running -> CONNECTED TO YOUR
+VEHICLE" splash cycles on the car, then stopping.** Real sequence from a
+live capture:
+```
+18:42:00.203  Transport stopped: read failed: EIO (I/O error)
+18:42:02.269  Opened accessory Carbit/CarbitDriverOversea
+18:42:02.584-18:42:03.623  zero kick attempt 1..50 failed: write failed: ENODEV
+```
+The owner is confident the dongle itself does NOT physically disconnect
+during this -- their read is that this is Android Auto (gearhead)
+causing it, not a real USB-level drop. That's a genuinely open question,
+not dismissed: the EIO/ENODEV happens on CarAALink's OWN accessory file
+descriptor (`AdbTransport`/`UsbAccessoryConnection`, talking to the
+dongle), a different channel than AA's local TCP socket to gearhead, so
+there's no obvious *direct* shared resource -- but an indirect one (a
+USB-gadget-level reset triggered by something gearhead does, even
+without a physical unplug) hasn't been ruled out either. Needs a
+logcat capture that spans both `car-session` and `GH.`/gearhead tags at
+the *exact* moment of one of these EIO events to settle it either way --
+not yet obtained.
+
+**Capture-tooling lesson, important for next session:** `adb shell
+"nohup sh -c '...' > /dev/null 2>&1 &"` did NOT reliably survive --
+confirmed twice live: the capture process silently died a few minutes in
+(before the actual event happened) with no error, leaving a stale file
+that looked fine until checked against wall-clock time. Switched to
+`setsid sh -c '...' </dev/null >/dev/null 2>&1 &` instead, confirmed
+alive via `ps -A | grep logcat` (state `S`, not a zombie) after a 5s
+wait and a reconnect cycle. Use `setsid`, not bare `nohup`, for any
+future unattended on-device logcat capture, and verify it's still
+running with a fresh `ps` check close to end of a test, not just at
+the start.
