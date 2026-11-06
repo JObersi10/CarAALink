@@ -1134,3 +1134,37 @@ Not yet device-tested (built via CI, `aa-post-v1` commit `25a6559`). User
 said they won't have head-unit logcat access again soon -- next on-car
 test should specifically watch whether the repeat ratio (not just
 whether it connects) actually drops.
+
+## 2026-11-06 (cont'd): AA dropping every ~60s -- gearhead crash lead revisited
+
+User reported AA disconnecting "after a minute" with no fresh log this
+time. `AA_WATCHDOG_STARTUP_MS = 60_000L` (`CarSession.kt`) is the exact
+match: if `AaSessionProbe.hasReceivedVideo` never flips true within 60s
+of a probe starting, the watchdog tears it down and restarts via
+`openAndroidAuto()` -- if the underlying cause repeats every time, that's
+an indefinite ~60s boot loop, matching the symptom.
+
+Went back to the real, already-confirmed (not re-derived) finding in
+`claude/roadmap.md` (2026-11-02, "gearhead itself crashes"): logcatting
+gearhead directly caught `IllegalArgumentException: Virtual display
+width must be positive` in gearhead's own `VirtualDisplayConfig.Builder`,
+built from the `width_margin`/`height_margin` values *we* send in
+`ServiceDiscoveryResponse`. If gearhead crashes building its display, no
+video frame can ever arrive -- exactly what would trip the 60s
+startup-grace watchdog repeatedly. That finding was left unresolved
+("not yet cross-referenced against our own log... per-side-vs-total
+question still open").
+
+Fix (not a re-derivation of the crash itself, which was already real and
+confirmed -- this is closing the gap defensively): `autoMargin()` in
+`AaServiceDiscovery.kt` now caps each margin to under half its dimension,
+so gearhead can't compute a non-positive VirtualDisplay size whether it
+treats width_margin/height_margin as total or per-side removal. Does not
+resolve which interpretation is correct -- just makes either one safe.
+
+**Not confirmed as THE fix** -- no fresh gearhead-side log for this
+exact session to prove this margin path is what's crashing right now
+(the user won't have head-unit logcat access again soon). If AA still
+drops on roughly the same ~60s cadence after this, the next real step is
+logcatting `com.google.android.projection.gearhead` directly again
+during one of these drops, same technique as the original finding.
