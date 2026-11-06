@@ -263,15 +263,15 @@ object AaServiceDiscovery {
      * Crops [resolution]'s content area down to the car's real aspect ratio,
      * so AA letterboxes/pillarboxes to the *exact* shape the car wants
      * instead of a generic 16:9. Which axis gets cropped follows directly
-     * from comparing aspect ratios -- that part is just geometry. What's
-     * NOT confirmed (claude/roadmap.md) is whether AA's `width_margin`/
-     * `height_margin` wire fields mean "total pixels to remove" (this
-     * function's assumption) or "pixels to remove per side" (which would
-     * make the real crop twice as deep as computed here). Wrong in the
-     * worst case means an imperfect crop, never a crash -- this replaces
-     * the old manual "Test height_margin" debug probe now that the
-     * direction/magnitude is at least derived from real numbers instead of
-     * a hand-typed guess, but the per-side-vs-total question is still open.
+     * from comparing aspect ratios -- that part is just geometry.
+     *
+     * The "total pixels to remove" vs "pixels to remove per side" question
+     * that used to be open here is now CONFIRMED: andreknieriem/open-headunit
+     * (GPL-3.0, real open-source AA head-unit implementation) computes its
+     * own visible canvas as `uiWidth = videoW - marginW` / `uiHeight =
+     * videoH - marginH` (`ProjectionGeometryPolicy.uiWidth/uiHeight`) --
+     * a single total subtraction, not a per-side one. This function's
+     * original assumption was right.
      */
     fun autoMargin(resolution: AaResolution, carWidth: Int, carHeight: Int): Pair<Int, Int> {
         if (carWidth <= 0 || carHeight <= 0) return 0 to 0
@@ -293,19 +293,19 @@ object AaServiceDiscovery {
         // Confirmed real crash (claude/roadmap.md, 2026-11-02, caught by
         // logcatting gearhead directly): `IllegalArgumentException: Virtual
         // display width must be positive` in gearhead's own
-        // VirtualDisplayConfig.Builder -- built from the width_margin/
-        // height_margin values *we* send. Whether gearhead treats those as
-        // total-removed or per-side-removed was never confirmed (see the
-        // doc comment above); for an ultrawide/extreme car-panel aspect this
-        // function can compute a margin close to half the dimension, which
-        // goes non-positive under the per-side interpretation. A crashed
-        // gearhead means no video ever arrives, so CarSession's AA watchdog
-        // (AA_WATCHDOG_STARTUP_MS) restarts the session, which can repeat
-        // forever -- a plausible match for "AA drops every ~60s" without
-        // needing to resolve the semantic ambiguity: just never send a
-        // margin large enough to go non-positive under *either* reading.
-        val maxWidthMargin = (resolution.width / 2 - MIN_AA_CONTENT_PX).coerceAtLeast(0)
-        val maxHeightMargin = (resolution.height / 2 - MIN_AA_CONTENT_PX).coerceAtLeast(0)
+        // VirtualDisplayConfig.Builder, built from the width_margin/
+        // height_margin values *we* send. Now that open-headunit confirms
+        // margin is a total (not per-side) subtraction, the only way this
+        // function could still produce a non-positive canvas is a margin
+        // that reaches the *full* dimension -- which only happens at or
+        // past a degenerate panel aspect ratio this function never
+        // actually hits (the car aspect would have to be 0 or infinite).
+        // Kept as a floor anyway, just against MIN_AA_CONTENT_PX now
+        // instead of half the dimension, since a crash here means AA gets
+        // no video at all and the owner's phone can't be logcat'd to
+        // re-diagnose it easily.
+        val maxWidthMargin = (resolution.width - MIN_AA_CONTENT_PX).coerceAtLeast(0)
+        val maxHeightMargin = (resolution.height - MIN_AA_CONTENT_PX).coerceAtLeast(0)
         return rawWidthMargin.coerceIn(0, maxWidthMargin) to rawHeightMargin.coerceIn(0, maxHeightMargin)
     }
 
