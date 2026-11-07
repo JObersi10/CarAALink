@@ -512,7 +512,6 @@ class CarSession(
             val next = pullQueue.poll()
             if (next == null) {
                 pendingRequests++
-                encoder?.requestKeyFrame()
                 scheduleStarvationCheck(stream)
                 return
             }
@@ -522,17 +521,22 @@ class CarSession(
 
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
 
-    /** If the encoder stays silent, answer with the last keyframe so the car never times out. */
+    /** If the encoder stalls, answer with the last keyframe so the car never times out. Caller holds [frameLock]. */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
+        val sentBefore = framesSent
         watchdog.postDelayed({
             synchronized(frameLock) {
                 val key = lastKeyFrame
-                if (pendingRequests > 0 && dataStream === stream && key != null) {
+                // Anything sent since this request means the encoder is alive and the request will be answered.
+                if (framesSent == sentBefore && pendingRequests > 0 && dataStream === stream && key != null) {
                     pendingRequests--
                     sendFrameLocked(stream, key)
+                    // P-frames after an old keyframe decode against the wrong picture, so restart on a fresh one.
+                    waitingForKey = true
+                    encoder?.requestKeyFrame()
                 }
             }
-        }, 80)
+        }, ENCODER_STALL_MS)
     }
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
@@ -593,6 +597,7 @@ class CarSession(
         private const val DEFAULT_BITRATE = 3_000_000
         private const val APPSTATUS_BACKGROUND = 0x20030
         private const val MAX_PULL_QUEUE = 8
+        private const val ENCODER_STALL_MS = 500L
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
