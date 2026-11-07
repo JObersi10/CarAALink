@@ -68,10 +68,13 @@ class AaTlsChannel(
         body.copyInto(plain, 2)
         val cipher = wrap(plain)
         val frame = AaFraming.frame(channelId, AaFraming.FRAME_BULK, AaFraming.ENCRYPTION_ENCRYPTED, messageType, cipher)
-        logger.log(
-            "TX ${AaFraming.controlMessageName(messageId)} on ${AaFraming.channelName(channelId)} " +
-                "encrypted plain=${plain.size}B cipher=${cipher.size}B",
-        )
+        // One ack per video/audio frame is dozens of lines a second; failures are still logged by the caller.
+        if (messageId != AaFraming.MSG_AV_MEDIA_ACK) {
+            logger.log(
+                "TX ${AaFraming.controlMessageName(messageId)} on ${AaFraming.channelName(channelId)} " +
+                    "encrypted plain=${plain.size}B cipher=${cipher.size}B",
+            )
+        }
         output.write(frame)
         output.flush()
     }
@@ -115,6 +118,7 @@ class AaTlsChannel(
             // -- the receive loop couldn't keep up with disk I/O. Keep this
             // logging for every other (low-volume) channel.
             if (frame.channelId != AaServiceDiscovery.CHANNEL_MEDIA_SINK_VIDEO &&
+                frame.channelId != AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO &&
                 frame.channelId != AaServiceDiscovery.CHANNEL_MEDIA_SOURCE_MICROPHONE
             ) {
                 logger.log(
