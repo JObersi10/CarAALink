@@ -69,6 +69,7 @@ class AaSessionProbe(
 
     companion object {
         private const val TAG = "AaSessionProbe"
+        private const val SHUTDOWN_ACK_TIMEOUT_MS = 1_000L
 
         @Volatile
         var active: AaSessionProbe? = null
@@ -144,6 +145,11 @@ class AaSessionProbe(
 
     @Volatile
     private var activeChannel: AaTlsChannel? = null
+
+    // Set by stop() before `running` clears, so the read loop keeps going until the phone answers the ShutdownRequest.
+    @Volatile
+    private var draining = false
+    private val shutdownAcked = java.util.concurrent.CountDownLatch(1)
 
     @Volatile
     private var micCapture: AaMicCapture? = null
@@ -264,8 +270,14 @@ class AaSessionProbe(
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
+        val ch = activeChannel
+        draining = ch != null
+        if (!running.compareAndSet(true, false)) {
+            draining = false
+            return
+        }
         logger.log("=== session probe stopped")
+        if (active === this) active = null
         // Confirmed from mrmees/open-android-auto's own protocol docs
         // (docs/interactions/05-session-maintenance-teardown.md, GPL-3.0,
         // facts only): a session end is supposed to be announced with
@@ -280,24 +292,31 @@ class AaSessionProbe(
         // tracking never having been told the previous one actually ended
         // on purpose, only ever seeing the pipe die. Best-effort: this
         // must not block or throw if the channel's already unusable.
-        runCatching {
-            activeChannel?.let { ch ->
-                val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
-                ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+        // stop() is usually called on the main thread, where this socket write threw
+        // NetworkOnMainThreadException, so the request never went out. Tear down on a worker.
+        Thread({
+            if (ch != null) {
+                val sent = runCatching {
+                    val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
+                    ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+                }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }.isSuccess
+                if (sent && !shutdownAcked.await(SHUTDOWN_ACK_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    logger.log("no SHUTDOWN_RESPONSE within ${SHUTDOWN_ACK_TIMEOUT_MS}ms -- closing anyway")
+                }
+                draining = false
             }
-        }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
-        runCatching { socket?.close() }
-        socket = null
-        worker?.interrupt()
-        worker = null
-        if (active === this) active = null
-        // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
-        // each with its own executors -- without this they'd leak one idle
-        // daemon thread pool per reconnect, which during the ~every-minute
-        // drop/reconnect cycle this session is still seeing adds up fast.
-        touchExecutor.shutdownNow()
-        mediaExecutor.shutdownNow()
-        audioExecutor.shutdownNow()
+            runCatching { socket?.close() }
+            socket = null
+            worker?.interrupt()
+            worker = null
+            // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
+            // each with its own executors -- without this they'd leak one idle
+            // daemon thread pool per reconnect, which during the ~every-minute
+            // drop/reconnect cycle this session is still seeing adds up fast.
+            touchExecutor.shutdownNow()
+            mediaExecutor.shutdownNow()
+            audioExecutor.shutdownNow()
+        }, "AaSessionProbe-stop").apply { isDaemon = true }.start()
     }
 
     /**
@@ -451,7 +470,7 @@ class AaSessionProbe(
             // at all; the cap still protects the pre-streaming phase from
             // hanging indefinitely on a wedged handshake.
             var lastPingSentAt = System.currentTimeMillis()
-            while (running.get() && (everEstablished || index < config.maxMessages)) {
+            while ((running.get() || draining) && (everEstablished || index < config.maxMessages)) {
                 index++
                 if (System.currentTimeMillis() - lastPingSentAt > 5_000) {
                     lastPingSentAt = System.currentTimeMillis()
@@ -674,6 +693,11 @@ class AaSessionProbe(
                         logger.log("RX SHUTDOWN_REQUEST reason=$reason -- acking and ending session (no auto-reconnect)")
                         channel.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_RESPONSE, ByteArray(0))
                         running.set(false)
+                    }
+                    AaFraming.MSG_SHUTDOWN_RESPONSE -> {
+                        logger.log("RX SHUTDOWN_RESPONSE -- phone closed the session cleanly")
+                        draining = false
+                        shutdownAcked.countDown()
                     }
                     AaFraming.MSG_AUDIO_FOCUS_REQUEST -> {
                         // AudioFocusRequest.audio_focus_type = 1 (AUDIO_FOCUS_RELEASE = 4).
