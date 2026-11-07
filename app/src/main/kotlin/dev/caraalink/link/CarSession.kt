@@ -181,10 +181,7 @@ class CarSession(
         display.setStatus("AA: checking head unit server…")
         logger.log("openAndroidAuto: checking 127.0.0.1:5277 before starting")
         Thread({
-            fun serverUp() = runCatching {
-                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5277), 400) }
-                true
-            }.getOrDefault(false)
+            fun serverUp() = isListening(5277)
             var up = serverUp()
             if (!up) {
                 if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
@@ -600,5 +597,11 @@ class CarSession(
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
+
+        // AA's head unit server never answers again after a connection we close, so probe by bind, not connect.
+        internal fun isListening(port: Int): Boolean = runCatching {
+            java.net.ServerSocket(port, 1, java.net.InetAddress.getByName("127.0.0.1")).close()
+            false
+        }.getOrElse { it is java.net.BindException }
     }
 }
