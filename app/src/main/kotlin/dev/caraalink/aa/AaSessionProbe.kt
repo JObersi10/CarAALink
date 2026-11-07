@@ -714,6 +714,13 @@ class AaSessionProbe(
                         val notification = AaProtobuf.Writer().int(1, focusState).build()
                         channel.sendControlEncrypted(AaFraming.MSG_AUDIO_FOCUS_NOTIFICATION, notification)
                     }
+                    AaFraming.MSG_NAV_FOCUS_REQUEST -> {
+                        // Unanswered, AA gives nav focus back to the car after 15 s and Maps ends the trip.
+                        // openauto and libheadunit always grant PROJECTED (2).
+                        val requestType = AaProtobuf.parse(body).firstOrNull { it.number == 1 }?.varint
+                        logger.log("RX NAV_FOCUS_REQUEST type=$requestType -> granting projected")
+                        channel.sendControlEncrypted(AaFraming.MSG_NAV_FOCUS_NOTIFICATION, AaProtobuf.Writer().int(1, 2).build())
+                    }
                 }
             }
             true
