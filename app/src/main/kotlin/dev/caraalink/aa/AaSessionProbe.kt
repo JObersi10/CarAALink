@@ -149,6 +149,9 @@ class AaSessionProbe(
     // Set by stop() before `running` clears, so the read loop keeps going until the phone answers the ShutdownRequest.
     @Volatile
     private var draining = false
+
+    // Set from service discovery; when true the audio channel only carries system sounds.
+    private var phoneMediaAudio = false
     private val shutdownAcked = java.util.concurrent.CountDownLatch(1)
 
     @Volatile
@@ -598,7 +601,9 @@ class AaSessionProbe(
                         // negotiates and streams fine but is silently discarded --
                         // which is the actual reason AA audio wasn't playing, not
                         // Bluetooth routing.
-                        if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
+                        if (phoneMediaAudio) {
+                            // Only PCM system sounds arrive here (music plays on the phone). Ack and drop.
+                        } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
                             logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_MEDIA_AUDIO (${chBody.size}B)")
                             if (chBody.isNotEmpty()) {
                                 // Reuse the existing player (setCodecConfig() no-ops if
@@ -670,6 +675,7 @@ class AaSessionProbe(
                         logger.log("rung 3 reached -- phone asked for service discovery")
                         everEstablished = true
                         val discoveryConfig = AaServiceDiscovery.configFromSettings(context, preview = config.preview)
+                        phoneMediaAudio = discoveryConfig.phoneMediaAudio
                         val response = AaServiceDiscovery.build(discoveryConfig)
                         logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe(discoveryConfig)})")
                         logger.logBytes("TXBODY", response, response.size)

@@ -52,10 +52,12 @@
     <string-array name="aa_audio_route_entries">
         <item>Bluetooth if connected, else phone</item>
         <item>Always phone mic/speaker</item>
+        <item>Phone plays music and prompts itself (over its Bluetooth to the car)</item>
     </string-array>
     <string-array name="aa_audio_route_values">
         <item>bt_preferred</item>
         <item>device_only</item>
+        <item>phone_direct</item>
     </string-array>
 
     <string-array name="update_channel_entries">
