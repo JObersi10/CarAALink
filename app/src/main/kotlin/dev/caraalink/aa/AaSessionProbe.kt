@@ -70,6 +70,7 @@ class AaSessionProbe(
     companion object {
         private const val TAG = "AaSessionProbe"
         private const val SHUTDOWN_ACK_TIMEOUT_MS = 1_000L
+        private const val SENSOR_NIGHT_MODE = 10L
 
         @Volatile
         var active: AaSessionProbe? = null
@@ -472,6 +473,17 @@ class AaSessionProbe(
             // at all; the cap still protects the pre-streaming phase from
             // hanging indefinitely on a wedged handshake.
             var lastPingSentAt = System.currentTimeMillis()
+            var nightSensorStarted = false
+            var nightSent: Boolean? = null
+            fun sendNightIfChanged() {
+                val night = NightMode.current(context) ?: return
+                if (night == nightSent) return
+                nightSent = night
+                logger.log("TX SENSOR_EVENT night=$night")
+                val batch = AaProtobuf.Writer().message(10, AaProtobuf.Writer().bool(1, night).build()).build() // night_mode
+                runCatching { channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_SENSOR, AaFraming.MSG_SENSOR_EVENT, batch) }
+                    .onFailure { logger.log("SENSOR_EVENT send failed: $it") }
+            }
             while ((running.get() || draining) && (everEstablished || index < config.maxMessages)) {
                 index++
                 if (System.currentTimeMillis() - lastPingSentAt > 5_000) {
@@ -479,6 +491,7 @@ class AaSessionProbe(
                     val ping = AaProtobuf.Writer().varint(1, lastPingSentAt * 1000).int(2, 0).build()
                     runCatching { channel.sendControlEncrypted(AaFraming.MSG_PING_REQUEST, ping) }
                         .onFailure { logger.log("proactive PING_REQUEST send failed: $it") }
+                    if (nightSensorStarted) sendNightIfChanged()
                 }
                 val message = channel.receiveMessage()
                 if (message.channelId != AaFraming.CHANNEL_CONTROL) {
@@ -665,6 +678,10 @@ class AaSessionProbe(
                         logger.log("RX SENSOR_MESSAGE_REQUEST on SENSOR type=$sensorType")
                         val response = AaProtobuf.Writer().int(1, 0).build() // status = STATUS_SUCCESS
                         channel.sendChannelSpecific(message.channelId, AaFraming.MSG_SENSOR_RESPONSE, response)
+                        if (sensorType == SENSOR_NIGHT_MODE) {
+                            nightSensorStarted = true
+                            sendNightIfChanged()
+                        }
                     }
                     continue
                 }

@@ -3,6 +3,7 @@ package dev.caraalink.video
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
 import android.location.LocationManager
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -16,16 +17,20 @@ import kotlin.math.roundToInt
  */
 object WeatherProvider {
 
-    fun fetch(context: Context): String? {
+    fun lastLocation(context: Context): Location? {
         if (context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
             return null
         }
         val lm = context.getSystemService(LocationManager::class.java)
-        val loc = try {
+        return try {
             lm.getProviders(true).mapNotNull { lm.getLastKnownLocation(it) }.maxByOrNull { it.time }
         } catch (e: SecurityException) {
             null
-        } ?: return null
+        }
+    }
+
+    fun fetch(context: Context): String? {
+        val loc = lastLocation(context) ?: return null
         val url = URL(
             "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f&current=temperature_2m,weather_code"
                 .format(java.util.Locale.US, loc.latitude, loc.longitude)
