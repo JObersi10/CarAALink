@@ -88,6 +88,8 @@ object AaFraming {
 
     // InputMessageId.proto (input channel)
     const val MSG_INPUT_REPORT = 32769
+    const val MSG_INPUT_BINDING_REQUEST = 32770
+    const val MSG_INPUT_BINDING_RESPONSE = 32771
 
     /** include/aasdk/Version.hpp — what aasdk advertises to the gearhead. */
     const val PROTOCOL_MAJOR = 1

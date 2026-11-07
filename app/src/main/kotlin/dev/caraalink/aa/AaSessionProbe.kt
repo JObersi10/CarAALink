@@ -652,6 +652,10 @@ class AaSessionProbe(
                             micCapture?.stop()
                             micCapture = null
                         }
+                    } else if (chId == AaFraming.MSG_INPUT_BINDING_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_INPUT_SOURCE) {
+                        // Key binding for steering-wheel buttons; openauto answers BindingResponse{status=OK(0)}.
+                        logger.log("RX INPUT_BINDING_REQUEST -> OK")
+                        channel.sendChannelSpecific(message.channelId, AaFraming.MSG_INPUT_BINDING_RESPONSE, AaProtobuf.Writer().int(1, 0).build())
                     } else if (chId == AaFraming.MSG_SENSOR_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_SENSOR) {
                         // SensorRequest{type=1, min_update_period=2}. Reply
                         // SensorStartResponseMessage{status=0} on
