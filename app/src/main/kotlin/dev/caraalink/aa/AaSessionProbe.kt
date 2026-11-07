@@ -170,12 +170,11 @@ class AaSessionProbe(
     // then silence forever. `session` comes from each channel's own
     // MEDIA_START (AVChannelStartIndication) and must be echoed back.
     private val avAckSession = java.util.concurrent.ConcurrentHashMap<Int, Int>()
-    private val avAckCounter = java.util.concurrent.ConcurrentHashMap<Int, Int>()
 
     private fun sendAvAck(channel: AaTlsChannel, channelId: Int) {
         val session = avAckSession[channelId] ?: 0
-        val value = avAckCounter.merge(channelId, 1) { old, inc -> old + inc } ?: 1
-        val ack = AaProtobuf.Writer().int(1, session).int(2, value).build()
+        // Field 2 is how many frames this ack covers, not a running total. AA drops the session above 4096.
+        val ack = AaProtobuf.Writer().int(1, session).int(2, 1).build()
         runCatching { channel.sendChannelSpecific(channelId, AaFraming.MSG_AV_MEDIA_ACK, ack) }
             .onFailure { logger.log("AV_MEDIA_ACK send failed on ch$channelId: $it") }
     }
