@@ -536,7 +536,7 @@ class AaSessionProbe(
                 nightSent = night
                 logger.log("TX SENSOR_EVENT night=$night")
                 val batch = AaProtobuf.Writer().message(10, AaProtobuf.Writer().bool(1, night).build()).build() // night_mode
-                runCatching { channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_SENSOR, AaFraming.MSG_SENSOR_EVENT, batch) }
+                runCatching { channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_SENSOR, AaFraming.MSG_SENSOR_EVENT_INDICATION, batch) }
                     .onFailure { logger.log("SENSOR_EVENT send failed: $it") }
             }
             while ((running.get() || draining) && (everEstablished || index < config.maxMessages)) {
