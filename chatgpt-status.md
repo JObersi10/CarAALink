@@ -1322,3 +1322,71 @@ CarAALink's own "Exit" button on its home tile screen doesn't work --
 param says it should act like a phone-back action instead, same as
 `AaCarPresentation`/`MirrorPresentation`'s exit buttons -- never
 actually wired that way.
+
+## 2026-11-09 (part 2)
+
+**Reconnect fix, merged (PR #23).** `beginSession()`'s `!s.start()`
+failure path called `stopSelfCleanly()` unconditionally, even when the
+call was itself a scheduled reconnect retry with budget left --
+confirmed live, a real USB-C disconnect's reconnect attempt 2 landed
+before the port physically came back, `openAccessory()` threw, and the
+whole service died instead of trying attempt 3 (which would likely
+have caught the reconnect ~4s later). Now routes through
+`scheduleTransportReconnect()` like a mid-session read/write failure
+already did. Confirmed improved on a later live drop (reached attempt
+3/4 instead of dying at 2), but not airtight: that same later drop
+still exhausted all 4 attempts (~30s budget) before the accessory
+became openable, so the service gave up for good and needed a manual
+reopen. Owner's call: leave the retry budget as-is for now.
+
+**Mirror adaptive bitrate + fps floor, open as PR #24, not merged.**
+Pull-mode fps floor raised 60->75 (measured car pull cadence). Added a
+live bitrate adapter: every 2s, ratio of starvation-fallback repeats to
+frames sent; >15% steps bitrate down 15% (floor 800kbps, live via
+`MediaCodec.setParameters`), <3% eases back up 10% toward the real
+target. Confirmed live reacting to a real spike -- 5100->2262kbps over
+~10s, recovered to 6000kbps ceiling over ~20s, coinciding with the
+active media session switching to Apple Music. Owner reports lag is
+less but still present throughout, not just at spikes -- the adapter
+has a deliberate 3-15% dead zone it doesn't log or act on, so added
+logging there too (previously silent) to get real data on whether
+that's where the remaining lag lives. No fresh log captured yet from
+after that logging landed.
+
+**Open lead, not yet investigated:** owner describes the remaining lag
+as switching car-side menus causing the screen to show stale content
+for "like 10 seconds" before catching up. `CarSession.kt`'s
+`AA_WATCHDOG_STALL_MS = 10_000L` is suspicious given that exact number.
+AA's decoded video (`aaDecoder`) feeds the same `CarVideoEncoder`
+surface as Mirror, so an AA-side stall would also show up as Mirror
+starvation-repeats on this adapter's own measured path -- worth
+checking whether this is specifically an AA app-switch hitting that
+watchdog threshold rather than a Mirror encode/bitrate issue. No
+watchdog-fire log line captured during a reported episode yet.
+
+**Ruled out, with hardware evidence both ways:**
+`[ECHIDTouchDevice]permitSendHIDTouchEvent disabled status` fires on
+every single touch event with the *stock* CarbitLink dongle too
+(confirmed from a car-side log captured with CarAALink not even
+installed) -- normal closed-OEM ECSDK behavior, not a lead for the
+touch/swipe-wrong-direction symptom.
+
+**Checked, no bug found:** settings persistence (DPI included) --
+standard Android `SharedPreferences` via `PreferenceManager`, no
+migration/clear-on-upgrade logic anywhere in the codebase, survives
+every `adb install -r`; only full uninstall or "Clear data" loses it.
+A one-off audio-focus/Bluetooth-A2DP-offload hiccup seen around a
+reconnect (`btaudio_offload_aidl` failures, Apple Music losing focus to
+`gearhead`) is standard Android/BT-stack arbitration, not a CarAALink
+code path -- self-resolved in the log.
+
+**Cleanup:** dropped a stale `build.gradle.kts`/`VideoEncoder.kt`
+comment describing an abandoned software-libx264 Mirror encoder path
+that was never actually built (`b6c51c1` already dropped it) --
+misleadingly implied a GPL-triggering dependency that doesn't exist.
+Mirror already uses hardware `MediaCodec`; the real fix for blockiness
+is the H.264 level-mismatch fix already in `CarVideoEncoder.kt`.
+
+**Tombstones from the newest car-log dump** were all stock OEM crashes
+(`xcallapp` SIGABRT, `logservice` SIGSEGV x4, `media.metrics` SIGSEGV)
+-- car system noise, unrelated to CarAALink.

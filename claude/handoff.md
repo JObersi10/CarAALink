@@ -1,6 +1,81 @@
 # Handoff
 
-## LATEST (2026-11-09) -- see chatgpt-status.md's 2026-11-09 section for full detail
+## LATEST (2026-11-09, part 2) -- see chatgpt-status.md's 2026-11-09 (part 2) section for full detail
+
+PR #23 merged: USB reconnect was giving up permanently on the first
+`openAccessory()` miss during a retry attempt (`beginSession()` called
+`stopSelfCleanly()` unconditionally on that path instead of going
+through `scheduleTransportReconnect()` like a mid-session read/write
+failure already did) -- confirmed live, a real USB-C port drop
+(`port0-partner` uevent) had its reconnect attempt 2 land before the
+port physically came back, threw, and killed the whole session instead
+of trying again. Fixed. Confirmed on a later live drop this now reaches
+attempt 3/4 instead of giving up at 2 -- real improvement, but not a
+full fix: in one drop this session, even attempt 4 (fired right after
+the port0-partner "add"/"change" uevents) still missed, and the service
+gave up for good after exhausting all 4 attempts (~30s budget). Owner
+said leave the retry budget as-is for now rather than raise it further.
+
+PR #24 open, **not merged** (owner's call -- wants more real-world
+testing first): raised the Mirror pull-mode fps floor 60->75 (car's
+measured pull cadence) and added a live adaptive-bitrate loop on the
+Mirror encoder -- every 2s, measures the ratio of starvation-fallback
+repeats to frames sent, steps bitrate down under load (floor 800kbps,
+live via `MediaCodec.setParameters`, no encoder rebuild) and back up
+once it clears. Confirmed live reacting correctly to a real spike
+(5100->2262kbps over ~10s, recovered to 6000kbps ceiling over ~20s,
+correlated with switching the active media session to Apple Music).
+Owner reports the "TV lag" is less but still present throughout a
+session, not just at sharp spikes -- added logging for the adapter's
+3-15% repeat-ratio dead zone (previously silent) so the next real log
+can confirm or rule out that as where the remaining lag lives.
+
+Owner's own description of the remaining lag, verbatim: switching
+between car-side menus causes the screen to show stale/old content
+for "like 10 seconds" before it catches up. Not yet investigated, but
+`AA_WATCHDOG_STALL_MS = 10_000L` in `CarSession.kt` is suspicious given
+that exact number -- worth checking next whether this symptom is
+specifically an Android Auto app-switch (decoded through `aaDecoder`,
+which feeds the same Mirror `CarVideoEncoder` surface, so it's on this
+adapter's own measured path) hitting that watchdog's stall threshold,
+rather than a Mirror-side encode/bitrate issue. Not yet confirmed either
+way -- no watchdog-fire log line was captured during a reported episode.
+
+Also this session: `dev.caraalink.link.AdbTransport.sendZeroKick()`
+force-quit bug confirmed fixed and now validated across multiple real
+disconnect/reconnect cycles (was returning `Unit` on total failure,
+silently hanging `readLoop()` forever; now returns `Boolean`, `stop()`s
+properly on failure instead). Settings persistence (DPI etc.) checked
+and confirmed fine as-is -- standard Android `SharedPreferences`, no
+migration/clear logic anywhere in the codebase, survives every
+`adb install -r` update; only a full uninstall or "Clear data" would
+lose it. A one-off audio-focus/Bluetooth-A2DP-offload hiccup around a
+reconnect was traced to standard Android audio-focus arbitration
+between Apple Music and `gearhead` plus BT stack churn (`btaudio_offload_aidl`)
+-- not a CarAALink code path, self-resolved in the log.
+
+Ruled out this session, with hardware evidence from both the real
+dongle and CarAALink: `[ECHIDTouchDevice]permitSendHIDTouchEvent
+disabled status` fires on every single touch event with the stock
+CarbitLink dongle too (confirmed from a car-side log with CarAALink not
+even installed) -- it's normal closed-OEM ECSDK behavior, not a lead
+for the touch/swipe-wrong-direction symptom. Also dropped a stale
+`build.gradle.kts`/`VideoEncoder.kt` comment about an abandoned
+software-libx264 Mirror encoder path that was never actually built
+(commit `b6c51c1` dropped it already) -- Mirror already uses hardware
+`MediaCodec`, the real blockiness fix already in `CarVideoEncoder.kt`.
+
+Still open / next session: PR #24's dead-zone data (need a fresh app
+log from after this session's last install), the 10s-menu-switch lead
+above, the swipe-wrong-direction symptom (still unexplained --
+`permitSendHIDTouchEvent` ruled out), the `CarAALink` home-screen exit
+button (deferred to its own PR #23... now taken, so call it PR #25 when
+it happens) still wired to a no-op `showHome()` instead of a phone-back
+action, and the BAIC U5 Plus car-log jailbreak digging (tombstones in
+the newest dump were all stock OEM crashes -- `xcallapp`/`logservice`/
+`media.metrics`, unrelated to CarAALink).
+
+## Previous (2026-11-09) -- see chatgpt-status.md's 2026-11-09 section for full detail
 
 PR #21, an external contribution from alimorgaan (real driver, Samsung A25,
 2026 Geely Emgrand/CarbitLink head unit), root-caused and fixed the
