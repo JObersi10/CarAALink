@@ -194,7 +194,20 @@ class UsbLinkForegroundService : Service() {
         if (!s.start()) {
             session = null
             ConnectionStateHolder.update { it.copy(phase = ConnectionPhase.ERROR, lastError = "openAccessory() returned null") }
-            stopSelfCleanly()
+            // openAccessory() can fail this way for a beat right after a
+            // physical USB-C reconnect (uevent port0-partner "add" lands a
+            // few hundred ms before the accessory is actually openable) --
+            // confirmed live: a reconnect attempt landed here mid-retry
+            // sequence and this unconditionally called stopSelfCleanly(),
+            // throwing away the remaining retry budget even though the
+            // accessory physically came back ~4s later. Route through the
+            // same retry path as a transport read/write failure instead of
+            // giving up on the first miss.
+            if (!stopping && pendingAccessory != null) {
+                scheduleTransportReconnect()
+            } else {
+                stopSelfCleanly()
+            }
             return
         }
         pendingProjection?.let { (code, data) ->
