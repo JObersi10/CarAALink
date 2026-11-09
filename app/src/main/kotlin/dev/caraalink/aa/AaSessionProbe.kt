@@ -69,6 +69,8 @@ class AaSessionProbe(
 
     companion object {
         private const val TAG = "AaSessionProbe"
+        private const val SHUTDOWN_ACK_TIMEOUT_MS = 1_000L
+        private const val SENSOR_NIGHT_MODE = 10L
 
         @Volatile
         var active: AaSessionProbe? = null
@@ -145,6 +147,14 @@ class AaSessionProbe(
     @Volatile
     private var activeChannel: AaTlsChannel? = null
 
+    // Set by stop() before `running` clears, so the read loop keeps going until the phone answers the ShutdownRequest.
+    @Volatile
+    private var draining = false
+
+    // Set from service discovery; when true the audio channel only carries system sounds.
+    private var phoneMediaAudio = false
+    private val shutdownAcked = java.util.concurrent.CountDownLatch(1)
+
     @Volatile
     private var micCapture: AaMicCapture? = null
 
@@ -161,12 +171,11 @@ class AaSessionProbe(
     // then silence forever. `session` comes from each channel's own
     // MEDIA_START (AVChannelStartIndication) and must be echoed back.
     private val avAckSession = java.util.concurrent.ConcurrentHashMap<Int, Int>()
-    private val avAckCounter = java.util.concurrent.ConcurrentHashMap<Int, Int>()
 
     private fun sendAvAck(channel: AaTlsChannel, channelId: Int) {
         val session = avAckSession[channelId] ?: 0
-        val value = avAckCounter.merge(channelId, 1) { old, inc -> old + inc } ?: 1
-        val ack = AaProtobuf.Writer().int(1, session).int(2, value).build()
+        // Field 2 is how many frames this ack covers, not a running total. AA drops the session above 4096.
+        val ack = AaProtobuf.Writer().int(1, session).int(2, 1).build()
         runCatching { channel.sendChannelSpecific(channelId, AaFraming.MSG_AV_MEDIA_ACK, ack) }
             .onFailure { logger.log("AV_MEDIA_ACK send failed on ch$channelId: $it") }
     }
@@ -264,8 +273,14 @@ class AaSessionProbe(
     }
 
     fun stop() {
-        if (!running.compareAndSet(true, false)) return
+        val ch = activeChannel
+        draining = ch != null
+        if (!running.compareAndSet(true, false)) {
+            draining = false
+            return
+        }
         logger.log("=== session probe stopped")
+        if (active === this) active = null
         // Confirmed from mrmees/open-android-auto's own protocol docs
         // (docs/interactions/05-session-maintenance-teardown.md, GPL-3.0,
         // facts only): a session end is supposed to be announced with
@@ -280,24 +295,31 @@ class AaSessionProbe(
         // tracking never having been told the previous one actually ended
         // on purpose, only ever seeing the pipe die. Best-effort: this
         // must not block or throw if the channel's already unusable.
-        runCatching {
-            activeChannel?.let { ch ->
-                val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
-                ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+        // stop() is usually called on the main thread, where this socket write threw
+        // NetworkOnMainThreadException, so the request never went out. Tear down on a worker.
+        Thread({
+            if (ch != null) {
+                val sent = runCatching {
+                    val reason = AaProtobuf.Writer().int(1, 1).build() // ShutdownReason.USER_SELECTION
+                    ch.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_REQUEST, reason)
+                }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }.isSuccess
+                if (sent && !shutdownAcked.await(SHUTDOWN_ACK_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    logger.log("no SHUTDOWN_RESPONSE within ${SHUTDOWN_ACK_TIMEOUT_MS}ms -- closing anyway")
+                }
+                draining = false
             }
-        }.onFailure { logger.log("graceful ShutdownRequest send failed (continuing teardown): $it") }
-        runCatching { socket?.close() }
-        socket = null
-        worker?.interrupt()
-        worker = null
-        if (active === this) active = null
-        // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
-        // each with its own executors -- without this they'd leak one idle
-        // daemon thread pool per reconnect, which during the ~every-minute
-        // drop/reconnect cycle this session is still seeing adds up fast.
-        touchExecutor.shutdownNow()
-        mediaExecutor.shutdownNow()
-        audioExecutor.shutdownNow()
+            runCatching { socket?.close() }
+            socket = null
+            worker?.interrupt()
+            worker = null
+            // Each reconnect builds a brand-new AaSessionProbe (openAndroidAuto()),
+            // each with its own executors -- without this they'd leak one idle
+            // daemon thread pool per reconnect, which during the ~every-minute
+            // drop/reconnect cycle this session is still seeing adds up fast.
+            touchExecutor.shutdownNow()
+            mediaExecutor.shutdownNow()
+            audioExecutor.shutdownNow()
+        }, "AaSessionProbe-stop").apply { isDaemon = true }.start()
     }
 
     /**
@@ -451,13 +473,25 @@ class AaSessionProbe(
             // at all; the cap still protects the pre-streaming phase from
             // hanging indefinitely on a wedged handshake.
             var lastPingSentAt = System.currentTimeMillis()
-            while (running.get() && (everEstablished || index < config.maxMessages)) {
+            var nightSensorStarted = false
+            var nightSent: Boolean? = null
+            fun sendNightIfChanged() {
+                val night = NightMode.current(context) ?: return
+                if (night == nightSent) return
+                nightSent = night
+                logger.log("TX SENSOR_EVENT night=$night")
+                val batch = AaProtobuf.Writer().message(10, AaProtobuf.Writer().bool(1, night).build()).build() // night_mode
+                runCatching { channel.sendChannelSpecific(AaServiceDiscovery.CHANNEL_SENSOR, AaFraming.MSG_SENSOR_EVENT, batch) }
+                    .onFailure { logger.log("SENSOR_EVENT send failed: $it") }
+            }
+            while ((running.get() || draining) && (everEstablished || index < config.maxMessages)) {
                 index++
                 if (System.currentTimeMillis() - lastPingSentAt > 5_000) {
                     lastPingSentAt = System.currentTimeMillis()
                     val ping = AaProtobuf.Writer().varint(1, lastPingSentAt * 1000).int(2, 0).build()
                     runCatching { channel.sendControlEncrypted(AaFraming.MSG_PING_REQUEST, ping) }
                         .onFailure { logger.log("proactive PING_REQUEST send failed: $it") }
+                    if (nightSensorStarted) sendNightIfChanged()
                 }
                 val message = channel.receiveMessage()
                 if (message.channelId != AaFraming.CHANNEL_CONTROL) {
@@ -579,7 +613,9 @@ class AaSessionProbe(
                         // negotiates and streams fine but is silently discarded --
                         // which is the actual reason AA audio wasn't playing, not
                         // Bluetooth routing.
-                        if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
+                        if (phoneMediaAudio) {
+                            // Only PCM system sounds arrive here (music plays on the phone). Ack and drop.
+                        } else if (chId == AaFraming.MSG_MEDIA_CODEC_CONFIG) {
                             logger.log("RX MEDIA_CODEC_CONFIG on MEDIA_SINK_MEDIA_AUDIO (${chBody.size}B)")
                             if (chBody.isNotEmpty()) {
                                 // Reuse the existing player (setCodecConfig() no-ops if
@@ -629,6 +665,10 @@ class AaSessionProbe(
                             micCapture?.stop()
                             micCapture = null
                         }
+                    } else if (chId == AaFraming.MSG_INPUT_BINDING_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_INPUT_SOURCE) {
+                        // Key binding for steering-wheel buttons; openauto answers BindingResponse{status=OK(0)}.
+                        logger.log("RX INPUT_BINDING_REQUEST -> OK")
+                        channel.sendChannelSpecific(message.channelId, AaFraming.MSG_INPUT_BINDING_RESPONSE, AaProtobuf.Writer().int(1, 0).build())
                     } else if (chId == AaFraming.MSG_SENSOR_REQUEST && message.channelId == AaServiceDiscovery.CHANNEL_SENSOR) {
                         // SensorRequest{type=1, min_update_period=2}. Reply
                         // SensorStartResponseMessage{status=0} on
@@ -638,6 +678,10 @@ class AaSessionProbe(
                         logger.log("RX SENSOR_MESSAGE_REQUEST on SENSOR type=$sensorType")
                         val response = AaProtobuf.Writer().int(1, 0).build() // status = STATUS_SUCCESS
                         channel.sendChannelSpecific(message.channelId, AaFraming.MSG_SENSOR_RESPONSE, response)
+                        if (sensorType == SENSOR_NIGHT_MODE) {
+                            nightSensorStarted = true
+                            sendNightIfChanged()
+                        }
                     }
                     continue
                 }
@@ -651,6 +695,7 @@ class AaSessionProbe(
                         logger.log("rung 3 reached -- phone asked for service discovery")
                         everEstablished = true
                         val discoveryConfig = AaServiceDiscovery.configFromSettings(context, preview = config.preview)
+                        phoneMediaAudio = discoveryConfig.phoneMediaAudio
                         val response = AaServiceDiscovery.build(discoveryConfig)
                         logger.log("TX SERVICE_DISCOVERY_RESPONSE ${response.size}B (${AaServiceDiscovery.describe(discoveryConfig)})")
                         logger.logBytes("TXBODY", response, response.size)
@@ -675,6 +720,11 @@ class AaSessionProbe(
                         channel.sendControlEncrypted(AaFraming.MSG_SHUTDOWN_RESPONSE, ByteArray(0))
                         running.set(false)
                     }
+                    AaFraming.MSG_SHUTDOWN_RESPONSE -> {
+                        logger.log("RX SHUTDOWN_RESPONSE -- phone closed the session cleanly")
+                        draining = false
+                        shutdownAcked.countDown()
+                    }
                     AaFraming.MSG_AUDIO_FOCUS_REQUEST -> {
                         // AudioFocusRequest.audio_focus_type = 1 (AUDIO_FOCUS_RELEASE = 4).
                         // openauto's AndroidAutoEntity::onAudioFocusRequest(): release -> LOSS(3),
@@ -684,6 +734,13 @@ class AaSessionProbe(
                         logger.log("RX AUDIO_FOCUS_REQUEST type=$requestType -> focus_state=$focusState")
                         val notification = AaProtobuf.Writer().int(1, focusState).build()
                         channel.sendControlEncrypted(AaFraming.MSG_AUDIO_FOCUS_NOTIFICATION, notification)
+                    }
+                    AaFraming.MSG_NAV_FOCUS_REQUEST -> {
+                        // Unanswered, AA gives nav focus back to the car after 15 s and Maps ends the trip.
+                        // openauto and libheadunit always grant PROJECTED (2).
+                        val requestType = AaProtobuf.parse(body).firstOrNull { it.number == 1 }?.varint
+                        logger.log("RX NAV_FOCUS_REQUEST type=$requestType -> granting projected")
+                        channel.sendControlEncrypted(AaFraming.MSG_NAV_FOCUS_NOTIFICATION, AaProtobuf.Writer().int(1, 2).build())
                     }
                 }
             }

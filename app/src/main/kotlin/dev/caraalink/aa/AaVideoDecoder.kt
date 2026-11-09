@@ -1,9 +1,15 @@
 package dev.caraalink.aa
 
 import android.media.MediaCodec
+import android.media.MediaCodecInfo
 import android.media.MediaFormat
+import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 
 /**
  * Minimal H.264 Annex-B decoder for the AA video channel's raw NAL bytes,
@@ -17,16 +23,43 @@ import android.view.Surface
 class AaVideoDecoder(private val width: Int, private val height: Int) {
 
     private var codec: MediaCodec? = null
-    private val bufferInfo = MediaCodec.BufferInfo()
+    private var thread: HandlerThread? = null
+    private var freeInputs = LinkedBlockingQueue<Int>()
 
     @Synchronized
     fun start(surface: Surface) {
         stop()
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
         val c = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+            c.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                .isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)
+        ) {
+            format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+        }
+        val inputs = LinkedBlockingQueue<Int>()
+        val t = HandlerThread("AaVideoDecoder").also { it.start() }
+        // Async mode shows each frame as soon as it's decoded, instead of when the next frame is fed in.
+        c.setCallback(object : MediaCodec.Callback() {
+            override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {
+                inputs.offer(index)
+            }
+
+            override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                runCatching { codec.releaseOutputBuffer(index, true) }
+            }
+
+            override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+                Log.w(TAG, "decoder error", e)
+            }
+
+            override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
+        }, Handler(t.looper))
         c.configure(format, surface, null, 0)
         c.start()
         codec = c
+        thread = t
+        freeInputs = inputs
     }
 
     @Synchronized
@@ -34,20 +67,13 @@ class AaVideoDecoder(private val width: Int, private val height: Int) {
         val c = codec ?: return
         dev.caraalink.diagnostics.PerfStats.recordAaFrame(nal.size)
         try {
-            val inIndex = c.dequeueInputBuffer(10_000)
-            if (inIndex >= 0) {
-                val buffer = c.getInputBuffer(inIndex) ?: return
-                buffer.clear()
-                buffer.put(nal)
-                c.queueInputBuffer(inIndex, 0, nal.size, timestampUs, 0)
-            }
-            var outIndex = c.dequeueOutputBuffer(bufferInfo, 0)
-            while (outIndex >= 0) {
-                c.releaseOutputBuffer(outIndex, true)
-                outIndex = c.dequeueOutputBuffer(bufferInfo, 0)
-            }
+            val index = freeInputs.poll(10, TimeUnit.MILLISECONDS) ?: return
+            val buffer = c.getInputBuffer(index) ?: return
+            buffer.clear()
+            buffer.put(nal)
+            c.queueInputBuffer(index, 0, nal.size, timestampUs, 0)
         } catch (e: Exception) {
-            Log.w("AaVideoDecoder", "feed failed", e)
+            Log.w(TAG, "feed failed", e)
         }
     }
 
@@ -58,5 +84,11 @@ class AaVideoDecoder(private val width: Int, private val height: Int) {
             runCatching { it.release() }
         }
         codec = null
+        thread?.quitSafely()
+        thread = null
+    }
+
+    private companion object {
+        const val TAG = "AaVideoDecoder"
     }
 }

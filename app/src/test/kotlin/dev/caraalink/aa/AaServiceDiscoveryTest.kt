@@ -41,6 +41,18 @@ class AaServiceDiscoveryTest {
     }
 
     @Test
+    fun `phone-plays-audio mode declares only a 16 kHz mono system sink, so AA keeps music on the phone`() {
+        val response = AaProtobuf.parse(AaServiceDiscovery.build(AaServiceDiscovery.Config(phoneMediaAudio = true)))
+        val audioService = response.filter { it.number == 1 }.map { AaProtobuf.parse(it.bytes!!) }
+            .first { svc -> svc.first { it.number == 1 }.varint == AaServiceDiscovery.CHANNEL_MEDIA_SINK_MEDIA_AUDIO.toLong() }
+        val sink = AaProtobuf.parse(audioService.first { it.number == 3 }.bytes!!)
+        val audioConfig = AaProtobuf.parse(sink.first { it.number == 3 }.bytes!!)
+
+        assertEquals(AaServiceDiscovery.AUDIO_STREAM_SYSTEM.toLong(), sink.first { it.number == 2 }.varint)
+        assertEquals(16_000L to 1L, audioConfig.first { it.number == 1 }.varint to audioConfig.first { it.number == 3 }.varint)
+    }
+
+    @Test
     fun `unknown car dimensions (no car connected yet) means no crop`() {
         val (widthMargin, heightMargin) = AaServiceDiscovery.autoMargin(AaResolution.R1920X1080, carWidth = 0, carHeight = 0)
 

@@ -4,10 +4,16 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
+import java.io.BufferedWriter
 import java.io.File
+import java.io.FileWriter
+import java.io.Writer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /**
  * Writes timestamped lines to ONE shared, app-wide log file (no more
@@ -20,8 +26,7 @@ import java.util.Locale
  */
 class DiagnosticLogger(private val context: Context, private val tag: String) {
 
-    @Synchronized
-    fun log(line: String) = write("[$tag] $line")
+    fun log(line: String) = write(context, System.currentTimeMillis(), "[$tag] $line")
 
     /** Logs [bytes] as a classic hex+ASCII dump, [direction] e.g. "RX"/"TX". */
     fun logBytes(direction: String, bytes: ByteArray, length: Int) {
@@ -35,7 +40,7 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
         log("$direction ($length bytes): $hex | $ascii")
     }
 
-    fun latestLogFile(): File = currentFile(context)
+    fun latestLogFile(): File = flushedCurrentFile(context)
 
     /** Builds a share-sheet [Intent] for the current log file. */
     fun shareLatestIntent(): Intent = shareFileIntent(latestLogFile())
@@ -78,33 +83,55 @@ class DiagnosticLogger(private val context: Context, private val tag: String) {
         private const val MAX_BYTES_PER_FILE = 4L * 1024 * 1024 // 4 MiB, then roll over
         private val TIMESTAMP_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
 
+        // One thread owns the file and callers only enqueue, so the AA receive loop
+        // never waits on disk. The fields below are touched on that thread only.
+        private val writer = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, LinkedBlockingQueue()) { r ->
+            Thread(r, "DiagnosticLogger").apply { isDaemon = true }
+        }
+
         @Volatile
         private var currentFileRef: File? = null
+        private var out: Writer? = null
+        private var bytesWritten = 0L
 
         private fun logDir(context: Context): File =
             File(context.getExternalFilesDir(null), "logs").apply { mkdirs() }
 
-        @Synchronized
         private fun currentFile(context: Context): File {
             val existing = currentFileRef
-            if (existing != null && (!existing.exists() || existing.length() <= MAX_BYTES_PER_FILE)) return existing
+            if (existing != null && out != null && bytesWritten <= MAX_BYTES_PER_FILE) return existing
+            out?.close()
             val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
-            return File(logDir(context), "caraalink-$stamp.log").also { currentFileRef = it }
+            val file = File(logDir(context), "caraalink-$stamp.log")
+            out = BufferedWriter(FileWriter(file, true))
+            bytesWritten = file.length()
+            return file.also { currentFileRef = it }
         }
 
-        @Synchronized
-        private fun write(context: Context, line: String) {
-            val timestamped = "${TIMESTAMP_FORMAT.format(Date())}  $line\n"
-            currentFile(context).appendText(timestamped)
+        private fun write(context: Context, timeMs: Long, line: String) = writer.execute {
+            runCatching {
+                currentFile(context)
+                val text = "${TIMESTAMP_FORMAT.format(Date(timeMs))}  $line\n"
+                out?.write(text)
+                bytesWritten += text.length
+                if (writer.queue.isEmpty()) out?.flush()
+            }
         }
+
+        private fun flushedCurrentFile(context: Context): File =
+            runCatching { writer.submit<File> { currentFile(context).also { out?.flush() } }.get(2, TimeUnit.SECONDS) }
+                .getOrElse { currentFileRef ?: File(logDir(context), "caraalink.log") }
 
         /** Deletes every rolled-over log file and starts fresh on the next write. */
-        @Synchronized
         fun clearAll(context: Context) {
-            logDir(context).listFiles()?.forEach { it.delete() }
-            currentFileRef = null
+            runCatching {
+                writer.submit {
+                    runCatching { out?.close() }
+                    out = null
+                    currentFileRef = null
+                    logDir(context).listFiles()?.forEach { it.delete() }
+                }.get(2, TimeUnit.SECONDS)
+            }
         }
     }
-
-    private fun write(line: String) = write(context, line)
 }
