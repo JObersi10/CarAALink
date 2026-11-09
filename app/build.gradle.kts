@@ -61,12 +61,6 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
     implementation("com.google.android.material:material:1.12.0")
-    // Software H.264 encode (libx264) for the Mirror channel -- confirmed
-    // from CarbitLink's own app (chatgpt-status.md "x264" finding) that it
-    // ships and runs libx264 itself rather than the phone's hardware
-    // MediaCodec encoder, which is the most likely real cause of the
-    // blockiness MediaCodec's own hardware path couldn't fix. GPL-3.0 --
-    // accepted explicitly; this makes CarAALink itself GPL if distributed.
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.11.0")
