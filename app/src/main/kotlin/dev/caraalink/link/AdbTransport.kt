@@ -102,8 +102,39 @@ class AdbTransport(
     fun start() {
         if (!running.compareAndSet(false, true)) return
         readThread = Thread({
-            sendZeroKick()
-            readLoop()
+            // One reversible experiment, not a confirmed fix (chatgpt-status.md
+            // "External repo review for the EIO lead"): BLECarbitlink's own
+            // protocol notes cite the *exact* EIO signature we keep hitting --
+            // "a redundant set_configuration() on an already-configured
+            // accessory makes the FIRST bulk write fail with EIO" -- from their
+            // Linux host-side emulator, not proven against the real
+            // CarbitLink dongle. A short settle delay before our own first
+            // write can't fix a cause on CarbitLink's side, but if their host
+            // stack is still finishing USB enumeration/configuration right as
+            // we reopen (most likely right after our own reconnect retry),
+            // writing the zero kick immediately is the worst possible timing
+            // to land in that window. Cheap and reversible; revert if it
+            // makes no measurable difference to EIO frequency.
+            Thread.sleep(300)
+            // Confirmed real (owner-captured log, 2026-11-09): when the
+            // accessory has already vanished (physical USB-C disconnect at
+            // the port level, not an app-layer issue), every one of
+            // sendZeroKick()'s 50 attempts fails and it used to just return
+            // silently -- readLoop() then entered anyway and blocked forever
+            // on conn.input.read(), a plain FileInputStream over the raw fd
+            // with no read timeout. That dead thread never called stop(),
+            // so scheduleTransportReconnect() never ran again and the only
+            // way out was force-quitting the app. Skip readLoop() entirely
+            // when the handshake write itself never got through.
+            if (sendZeroKick()) {
+                readLoop()
+            } else {
+                // Phrasing matches UsbLinkForegroundService.isTransportIoFailure()
+                // so this is treated as a retryable transport failure, not a
+                // clean close -- otherwise this path would stop the service
+                // outright instead of trying to reconnect.
+                stop("write failed: device not responding after zero kick retries")
+            }
         }, "AdbTransport").also { it.start() }
     }
 
@@ -116,17 +147,19 @@ class AdbTransport(
         onClosed(reason)
     }
 
-    private fun sendZeroKick() {
+    /** Returns false if every attempt failed -- caller must not enter [readLoop] on that fd. */
+    private fun sendZeroKick(): Boolean {
         repeat(50) { attempt ->
             try {
                 synchronized(writeLock) { conn.output.write(ByteArray(24)); conn.output.flush() }
                 logger.log("zero kick sent (attempt ${attempt + 1}), waiting for CNXN")
-                return
+                return true
             } catch (e: IOException) {
                 logger.log("zero kick attempt ${attempt + 1} failed: ${e.message}")
                 Thread.sleep(20)
             }
         }
+        return false
     }
 
     private fun readLoop() {

@@ -83,4 +83,4 @@ automatically on every push to `main`.
 
 ## License
 
-Personal project; no license granted for redistribution yet.
+MIT -- see [LICENSE](LICENSE).

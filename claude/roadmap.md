@@ -1551,22 +1551,39 @@ accessory session) and a graceful AA-level shutdown still isn't enough to
 reset it. Not implemented -- bigger, riskier change since it would affect
 the whole CarbitLink session (Mirror/Home too), not just AA.
 
-## DPI direction is inverted from the assumed model -- confirmed twice live
+## DPI direction is inverted from the assumed model -- confirmed twice live, mechanism now confirmed via open-headunit
 
 The simple `px = dp * density/160` model (higher density -> more pixels
 per UI element -> looks BIGGER) does not match reality. Confirmed from
 TWO separate real tests (Car Preview, and the real car with manual
 density=500): a HIGHER declared density makes AA's UI look **smaller**,
-not bigger. Best current hypothesis, not yet verified: AA likely follows
-Android's own `sw<N>dp` width-breakpoint convention -- a fixed pixel
-resolution at a higher density implies a SMALLER logical (dp) width
-(`dp_width = px_width * 160/density`), which would trigger a more compact
-layout breakpoint, same mechanism as a phone vs. a tablet getting
-different-sized UI chrome at the same physical resolution.
+not bigger.
 
-No formula change made -- don't have a confirmed correct target value.
-Instead, Settings now shows the actual computed density number live (both
-auto and manual DPI preference summaries) so the owner can calibrate by
-eye on the real car instead of the app guessing blind. If/when a target
-value that "looks right" is found empirically, revisit `AppSettings
-.videoDpi()`'s auto formula with that data point.
+**Mechanism confirmed, not just hypothesized, as of 2026-11-06:**
+`andreknieriem/open-headunit` (GPL-3.0, real open-source AA head-unit
+app) computes `canvasDp(px, dpi) = px * 160 / dpi`
+(`AnnouncedDensityPolicy.canvasDp`) -- exactly the breakpoint mechanism
+guessed above, now backed by a real working implementation instead of
+just our own reasoning. Its `AnnouncedDensityPolicy` also gives real,
+named AA layout breakpoints we didn't have a source for before:
+
+- `HUIG_MIN_WIDTH_DP = 748`, `HUIG_MIN_HEIGHT_DP = 450` -- Android Auto's
+  documented head-unit-interaction-guidelines floor; below this AA drops
+  to a reduced layout.
+- `WIDESCREEN_MIN_WIDTH_DP = 1240` -- AA switches to its widescreen
+  layout at or above this dp width.
+- `PORTRAIT_MIN_WIDTH_DP = 730` -- below this in portrait, AA uses a
+  narrow layout where Google Maps stops taking touch input.
+
+Their `AnnouncedDensityPolicy.decide()` picks the highest density that
+keeps the visible canvas at/above the HUIG floor, preferring to land at
+or above the widescreen line when the codec resolution allows it. Our own
+`AppSettings.videoDpi()` auto formula (`min(width,height)/720 * 213`,
+clamped 120-320) is a simpler, different heuristic that the owner already
+confirmed empirically "looked way better" at the value it currently
+produces (142) than an earlier version (213) -- **not replaced here**,
+since porting OHA's full `decide()` would also need its
+`OnboardingDisplayPolicy.recommendedDpi()` codec-based fallback, which
+hasn't been pulled in or reviewed. Flagging the breakpoint constants above
+as real, sourced reference values for whoever next revisits this formula,
+rather than re-deriving them by guesswork.

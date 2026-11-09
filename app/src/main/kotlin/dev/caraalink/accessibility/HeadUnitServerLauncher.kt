@@ -42,6 +42,19 @@ object HeadUnitServerLauncher {
      * otherwise it just notifies, with no settings screen forced open.
      */
     fun start(context: Context) {
+        launch(context, recoverIfRunning = false)
+    }
+
+    /**
+     * Performs one state-aware Stop-then-Start cycle. Call only after an AA
+     * protocol handshake has failed while the server is enabled; ordinary
+     * Start actions remain idempotent and never stop a running server.
+     */
+    fun recover(context: Context) {
+        launch(context, recoverIfRunning = true)
+    }
+
+    private fun launch(context: Context, recoverIfRunning: Boolean) {
         if (!isAccessibilityServiceEnabled(context)) {
             notifyOpenAndroidAutoManually(context)
             return
@@ -51,7 +64,7 @@ object HeadUnitServerLauncher {
 
         // Arm BEFORE launching -- the service needs to be listening for the
         // very first window-state-changed event once AA's Settings appears.
-        HeadUnitServerAccessibilityService.arm()
+        HeadUnitServerAccessibilityService.arm(recoverIfRunning)
 
         if (!launchAndroidAutoSettings(context)) {
             HeadUnitServerAccessibilityService.disarm()
