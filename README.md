@@ -83,4 +83,5 @@ automatically on every push to `main`.
 
 ## License
 
-MIT -- see [LICENSE](LICENSE).
+CC BY-NC 4.0 (Attribution-NonCommercial) -- see [LICENSE](LICENSE). Free to
+copy, modify, and redistribute with credit; not for commercial use.
