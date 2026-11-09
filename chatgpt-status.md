@@ -1255,3 +1255,70 @@ wait and a reconnect cycle. Use `setsid`, not bare `nohup`, for any
 future unattended on-device logcat capture, and verify it's still
 running with a fresh `ps` check close to end of a test, not just at
 the start.
+
+---
+
+## 2026-11-09
+
+External contribution (PR #21, alimorgaan, real driver on a Samsung A25 /
+2026 Geely Emgrand with a CarbitLink head unit) root-caused the
+AA-drops-after-~1-minute bug: `AV_MEDIA_ACK`'s count field was a running
+total instead of a per-ack count, and AA kills the session once it
+passes 4096. Reviewed the whole diff for anything suspicious before
+touching it (new network endpoints, exec/reflection, extra dangerous
+permissions) -- clean, matches the PR description exactly. Also fixed in
+#21: head-unit-server liveness check (bind not connect), a
+`NetworkOnMainThreadException` silently killing graceful shutdown, async
+`MediaCodec` decode, `NAV_FOCUS_REQUEST`/input `BindingRequest` replies,
+and a night_mode sensor from sun position.
+
+Merged #21 into `main`, closed PR #19 (`aa-post-v1`) without merging, and
+opened #22 to carry `aa-post-v1`'s independent fixes (mirror
+reference-chain/repeat-frame fixes, AA margin-crash prevention, audio
+prebuffer, starvation-check refinements, `PerfStats` decode
+instrumentation, driving-status push) on top of #21, resolving the real
+overlap in `AaFraming.kt`/`AaSessionProbe.kt`/`AaVideoDecoder.kt`/
+`CarSession.kt` in favor of whichever side was actually better each time
+instead of keeping both. #22 is now merged into `main`. Added an MIT
+`LICENSE` in the same PR (closes #20's request).
+
+**Found and fixed the force-quit-needed bug, from a live repro:**
+`AdbTransport.sendZeroKick()` retried 50 times on a dead accessory fd,
+then silently returned on total failure; `start()` entered `readLoop()`
+anyway, which blocks forever on `UsbAccessoryConnection`'s raw
+`FileInputStream` (no read timeout). `stop()` never ran, so
+`scheduleTransportReconnect()` never fired again -- the service sat
+wedged until force-quit. Confirmed via a live capture: before the fix,
+the log just stopped dead after "zero kick attempt 50 failed"; after,
+it correctly logs the failure and schedules the next bounded reconnect.
+
+**Settled for real this session, long disputed:** the EIO/ENODEV
+give-up loop is confirmed hardware-level. A full `logcat -b all` dump at
+the exact EIO moment shows the phone's own USB-C port controller
+(`max77775-usbc`) emitting `remove@.../typec/port0/port0-partner` --
+the phone's own hardware reporting a physical port disconnect.
+Reproduced identically on bare `main` (just #21, no aa-post-v1 changes),
+so it's independent of both PRs. Not fixable in code; cable/connector/
+mounting is the next avenue.
+
+**New lead from the car's own on-device logs (saved to USB stick,
+owner's BAIC U5 Plus International, Qinggan platform,
+`qcom/msm8953_32`, Android 8.1.0):** the real CarbitLink/EasyConnection
+native daemon (`EasyConn`/`ECSDK`, transport
+`EC_TRANSPORT_ANDORID_USB_AOA` -- the same AOA path CarAALink uses) logs
+`[ECHIDTouchDevice]permitSendHIDTouchEvent disabled status` on every
+single touch event during today's session (299/299, no exceptions).
+Plausible explanation for the reported erratic touch/swipe-wrong-
+direction symptom if it's inconsistently dropping touch-move samples.
+This is the car's own closed middleware, not CarAALink's code -- next
+step is tracing what normally flips that flag to enabled for the real
+dongle. Not yet actioned.
+
+**Also found, not yet fixed (deferred to a future PR #23 per owner):**
+CarAALink's own "Exit" button on its home tile screen doesn't work --
+`CarDisplay.kt` wires the home presentation's exit button to
+`::showHome`, so pressing it while already on home just re-shows home
+(a no-op). The doc comment on `CarHomePresentation`'s own `onExit`
+param says it should act like a phone-back action instead, same as
+`AaCarPresentation`/`MirrorPresentation`'s exit buttons -- never
+actually wired that way.

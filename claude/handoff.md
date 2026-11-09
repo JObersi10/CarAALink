@@ -1,6 +1,71 @@
 # Handoff
 
-## LATEST (2026-11-06) -- see chatgpt-status.md's 2026-11-06 sections for full detail
+## LATEST (2026-11-09) -- see chatgpt-status.md's 2026-11-09 section for full detail
+
+PR #21, an external contribution from alimorgaan (real driver, Samsung A25,
+2026 Geely Emgrand/CarbitLink head unit), root-caused and fixed the
+AA-drops-after-~1-minute bug: `AV_MEDIA_ACK`'s count field was sending a
+running total instead of a per-ack count, and AA kills any session once
+that counter passes 4096. Also fixed in the same PR: head-unit-server
+liveness check (bind instead of connect -- the old connect-based check
+broke the *next* session since AA's dev server never answers again after
+a closed connection), a `NetworkOnMainThreadException` silently killing
+graceful shutdown, async `MediaCodec` video decode, `NAV_FOCUS_REQUEST`
+(maps was losing guidance after 15s unanswered), input `BindingRequest`,
+and a sun-position-based night_mode sensor.
+
+Merged #21 into `main`, then merged `aa-post-v1` (PR #19, closed without
+merging in favor of this) on top in PR #22, resolving the real overlap
+(both branches had independently built a shutdown-handshake fix and a
+starvation-check tweak -- kept whichever side's version was actually
+better each time, see PR #22's description for specifics). PR #22 is now
+merged into `main`.
+
+**New fix found and shipped in the same PR, from a live force-quit
+repro:** `AdbTransport.sendZeroKick()` retried 50 times on a dead
+accessory fd, then silently returned on total failure. `start()` then
+entered `readLoop()` anyway, which blocks forever on
+`UsbAccessoryConnection`'s raw `FileInputStream` (no read timeout) --
+`stop()` never got called, so `scheduleTransportReconnect()` never ran
+again, and the only way out was force-quitting the app. Confirmed via a
+live capture: previously the log just stopped dead after "zero kick
+attempt 50 failed"; after the fix, it correctly stops and schedules the
+next bounded reconnect attempt instead.
+
+**Also settled for real this session (long disputed):** the EIO/ENODEV
+give-up loop is confirmed HARDWARE-level, not AA/gearhead and not
+anything in either PR. A full `logcat -b all` dump at the exact EIO
+moment shows the phone's own USB-C port controller
+(`max77775-usbc`) emitting a `remove@.../typec/port0/port0-partner`
+uevent -- a physical disconnect at the port, reported directly by the
+phone's hardware. Reproduced on bare `main` (PR #21 only, no aa-post-v1
+changes) too, so it's independent of both PRs. No code fix applies;
+cable/connector/mounting is the next thing to check.
+
+**New lead, not yet actioned:** pulled the car's own on-device logs via
+USB stick (BAIC U5 Plus International head unit, Qinggan platform,
+`qcom/msm8953_32` SoC, Android 8.1.0). The real EasyConnection/CarbitLink
+native daemon (`EasyConn`/`ECSDK`, transport `EC_TRANSPORT_ANDORID_USB_AOA`
+-- the same AOA path we use) logs
+`[ECHIDTouchDevice]permitSendHIDTouchEvent disabled status` on every
+single touch event captured during today's session (299/299). Plausible
+cause of the reported erratic touch/swipe-wrong-direction symptom if it's
+inconsistently dropping touch-move samples. This is the car's own closed
+OEM middleware, not our code -- next step would be decompiling/tracing
+what normally flips that flag to enabled for the real dongle.
+
+**Also found, not yet fixed:** the "Exit" button on CarAALink's own home
+tile screen doesn't work. `CarDisplay.kt`'s home presentation is wired
+`onExit = ::showHome` (line ~199) -- i.e. pressing exit *while already on
+home* just re-shows home, a no-op. The doc comment on
+`CarHomePresentation`'s own `onExit` param says it should act like the
+phone-back action ("same phone-back action as Mirror's button... backs
+out on the phone side rather than tearing down the whole USB session"),
+same as `AaCarPresentation`/`MirrorPresentation`'s exit buttons do -- but
+it's never wired to that. Next step: wire home's exit button to an actual
+phone-back call instead of `showHome`.
+
+## Previous (2026-11-06) -- see chatgpt-status.md's 2026-11-06 sections for full detail
 
 Shipped and pushed to `aa-post-v1` this round (all on real CarbitLink-
 dongle and real-head-unit hardware): mirror frame overflow no longer
