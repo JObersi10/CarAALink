@@ -108,6 +108,14 @@ class CarSession(
                     adaptedBitrate = next
                     enc.setBitrate(next)
                     logger.log("bitrateAdapt: repeatRatio=${"%.2f".format(repeatRatio)} -> ${next / 1000}kbps")
+                } else if (repeatRatio >= BITRATE_ADAPT_LOW_REPEAT_RATIO) {
+                    // Dead-zone tick (3-15% repeats): no bitrate change, but
+                    // log it anyway -- otherwise a persistent moderate
+                    // repeat rate (as opposed to the sharp spikes that do
+                    // trigger a step) is invisible in every capture, and
+                    // "lag is still there between the spikes" can't be told
+                    // apart from "nothing's wrong" after the fact.
+                    logger.log("bitrateAdapt: repeatRatio=${"%.2f".format(repeatRatio)} (dead zone, ${adaptedBitrate / 1000}kbps unchanged)")
                 }
             }
             bitrateAdapt.postDelayed(this, BITRATE_ADAPT_INTERVAL_MS)
