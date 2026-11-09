@@ -83,5 +83,4 @@ automatically on every push to `main`.
 
 ## License
 
-CC BY-NC 4.0 (Attribution-NonCommercial) -- see [LICENSE](LICENSE). Free to
-copy, modify, and redistribute with credit; not for commercial use.
+GPL-3.0 -- see [LICENSE](LICENSE).
