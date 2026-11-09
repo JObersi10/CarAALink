@@ -13,7 +13,7 @@ object AppSettings {
 
     enum class ResolutionMode { AUTO, CUSTOM }
     enum class UsbRoleOverride { AUTO, FORCE_ACCESSORY, FORCE_HOST }
-    enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY }
+    enum class AaAudioRoute { BT_PREFERRED, DEVICE_ONLY, PHONE_DIRECT }
     enum class CarOrientation { AUTO, LANDSCAPE, PORTRAIT }
     enum class AaFillMode { FIT, FILL }
     enum class UpdateChannel { STABLE, DEV }
@@ -154,6 +154,7 @@ object AppSettings {
     fun aaAudioRoute(context: Context): AaAudioRoute =
         when (prefs(context).getString("aa_audio_route", "bt_preferred")) {
             "device_only" -> AaAudioRoute.DEVICE_ONLY
+            "phone_direct" -> AaAudioRoute.PHONE_DIRECT
             else -> AaAudioRoute.BT_PREFERRED
         }
 

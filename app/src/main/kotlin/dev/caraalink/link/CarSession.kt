@@ -197,10 +197,7 @@ class CarSession(
         display.setStatus("AA: checking head unit server…")
         logger.log("openAndroidAuto: checking 127.0.0.1:5277 before starting")
         Thread({
-            fun serverUp() = runCatching {
-                java.net.Socket().use { it.connect(java.net.InetSocketAddress("127.0.0.1", 5277), 400) }
-                true
-            }.getOrDefault(false)
+            fun serverUp() = isListening(5277)
             var up = serverUp()
             if (!up) {
                 if (dev.caraalink.settings.AppSettings.autoStartHeadUnitServer(context)) {
@@ -612,11 +609,12 @@ class CarSession(
      * sent so the car never times out -- but never before this stream's own
      * first real keyframe has actually arrived ([waitingForKey]); until then
      * the pending request just stays pending rather than risk handing the
-     * decoder a frame from before this stream existed.
+     * decoder a frame from before this stream existed. Caller holds no lock
+     * on entry; the watchdog callback below takes [frameLock] itself.
      */
     private fun scheduleStarvationCheck(stream: MirrorStream) {
         watchdog.postDelayed({
-            // The encoder missing its 80ms window repeatedly is a sign it's
+            // The encoder missing its window repeatedly is a sign it's
             // genuinely behind, not a one-off -- nudge it toward a fresh IDR
             // instead of only ever resending old data (chatgpt-status.md
             // "Not yet confirmed" lead from the OpenCFLink comparison).
@@ -635,7 +633,7 @@ class CarSession(
                     lastStarvationRepeat = repeat
                 }
             }
-        }, 80)
+        }, ENCODER_STALL_MS)
     }
 
     /** Caller holds [frameLock]. Codec config always precedes the first frame. */
@@ -734,6 +732,7 @@ class CarSession(
         private const val DEFAULT_BITRATE = 3_000_000
         private const val APPSTATUS_BACKGROUND = 0x20030
         private const val MAX_PULL_QUEUE = 8
+        private const val ENCODER_STALL_MS = 500L
         private const val MAX_PUSH_BACKLOG = 2 * 1024 * 1024
         private const val AA_WATCHDOG_CHECK_MS = 5_000L
         private const val AA_WATCHDOG_STALL_MS = 10_000L
@@ -741,5 +740,11 @@ class CarSession(
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
         private const val AA_TEARDOWN_RESTART_DELAY_MS = 1_500L
         private const val AA_SERVER_RECOVERY_RETRY_MS = 7_000L
+
+        // AA's head unit server never answers again after a connection we close, so probe by bind, not connect.
+        internal fun isListening(port: Int): Boolean = runCatching {
+            java.net.ServerSocket(port, 1, java.net.InetAddress.getByName("127.0.0.1")).close()
+            false
+        }.getOrElse { it is java.net.BindException }
     }
 }

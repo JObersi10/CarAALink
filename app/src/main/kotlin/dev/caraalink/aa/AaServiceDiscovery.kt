@@ -76,6 +76,7 @@ object AaServiceDiscovery {
     const val CODEC_VIDEO_H264_BP = 3
 
     /** `AudioStreamType` */
+    const val AUDIO_STREAM_SYSTEM = 2
     const val AUDIO_STREAM_MEDIA = 3
 
     /** `DriverPosition` */
@@ -118,6 +119,8 @@ object AaServiceDiscovery {
         val heightMargin: Int = 0,
         val displayName: String = "CarAALink",
         val driverPosition: Int = DRIVER_POSITION_LEFT,
+        /** Declare only the required system sink, so AA plays media and guidance on the phone itself. */
+        val phoneMediaAudio: Boolean = false,
     )
 
     /**
@@ -256,6 +259,7 @@ object AaServiceDiscovery {
             resolution = resolution, frameRate = frameRate, density = density,
             touchWidth = contentWidth, touchHeight = contentHeight,
             widthMargin = widthMargin, heightMargin = heightMargin,
+            phoneMediaAudio = AppSettings.aaAudioRoute(context) == AppSettings.AaAudioRoute.PHONE_DIRECT,
         )
     }
 
@@ -353,15 +357,17 @@ object AaServiceDiscovery {
         // openauto registers media/guidance/system/telephony audio sinks; the
         // phone's endpoint start failed with only video+input, so start with
         // the media sink (48 kHz / 16-bit / stereo, AAC-LC).
+        // phoneMediaAudio: headunit-revived's loopback mode declares only SYSTEM (PCM 16 kHz mono),
+        // and AA then plays media on the phone (headswap docs/aa-headunit.md section 3.2).
         val audioConfig = AaProtobuf.Writer()
-            .int(1, 48_000)   // sampling_rate
-            .int(2, 16)       // number_of_bits
-            .int(3, 2)        // number_of_channels
+            .int(1, if (config.phoneMediaAudio) 16_000 else 48_000)   // sampling_rate
+            .int(2, 16)                                                // number_of_bits
+            .int(3, if (config.phoneMediaAudio) 1 else 2)              // number_of_channels
             .build()
 
         val audioSink = AaProtobuf.Writer()
-            .int(1, CODEC_AUDIO_AAC_LC)    // available_type
-            .int(2, AUDIO_STREAM_MEDIA)    // audio_type
+            .int(1, if (config.phoneMediaAudio) CODEC_AUDIO_PCM else CODEC_AUDIO_AAC_LC)        // available_type
+            .int(2, if (config.phoneMediaAudio) AUDIO_STREAM_SYSTEM else AUDIO_STREAM_MEDIA)  // audio_type
             .message(3, audioConfig)       // audio_configs (repeated)
             .build()
 
@@ -491,5 +497,6 @@ object AaServiceDiscovery {
     fun describe(config: Config = Config()): String =
         "video=${config.resolution.width}x${config.resolution.height}" +
             "@${if (config.frameRate == FPS_60) 60 else 30}fps h264bp density=${config.density}, " +
-            "touch=${config.touchWidth}x${config.touchHeight}, name='${config.displayName}'"
+            "touch=${config.touchWidth}x${config.touchHeight}, name='${config.displayName}', " +
+            "audio=${if (config.phoneMediaAudio) "phone" else "aa-media"}"
 }
