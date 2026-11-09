@@ -75,6 +75,52 @@ class CarSession(
     // cached H.264 access unit on every pull can make moving scenes visibly
     // loop/stutter while the encoder is behind.
     private var lastStarvationRepeat: ByteArray? = null
+    // Starvation-fallback sends specifically, as opposed to framesSent's
+    // total -- the live signal bitrateAdaptTick uses to tell "momentarily
+    // behind" from "keeping up fine".
+    private var repeatsSent = 0L
+    private var bitrateCeiling = DEFAULT_BITRATE
+    private var adaptedBitrate = DEFAULT_BITRATE
+    private var lastAdaptSent = 0L
+    private var lastAdaptRepeats = 0L
+
+    private val bitrateAdapt = android.os.Handler(android.os.Looper.getMainLooper())
+    private val bitrateAdaptTick = object : Runnable {
+        override fun run() {
+            val enc = encoder
+            if (enc == null) return
+            val sent = framesSent
+            val repeats = repeatsSent
+            val deltaSent = sent - lastAdaptSent
+            val deltaRepeats = repeats - lastAdaptRepeats
+            lastAdaptSent = sent
+            lastAdaptRepeats = repeats
+            if (deltaSent > 0) {
+                val repeatRatio = deltaRepeats.toFloat() / deltaSent
+                val next = when {
+                    repeatRatio > BITRATE_ADAPT_HIGH_REPEAT_RATIO ->
+                        maxOf(BITRATE_ADAPT_FLOOR, (adaptedBitrate * BITRATE_ADAPT_DOWN_FACTOR).toInt())
+                    repeatRatio < BITRATE_ADAPT_LOW_REPEAT_RATIO ->
+                        minOf(bitrateCeiling, (adaptedBitrate * BITRATE_ADAPT_UP_FACTOR).toInt())
+                    else -> adaptedBitrate
+                }
+                if (next != adaptedBitrate) {
+                    adaptedBitrate = next
+                    enc.setBitrate(next)
+                    logger.log("bitrateAdapt: repeatRatio=${"%.2f".format(repeatRatio)} -> ${next / 1000}kbps")
+                } else if (repeatRatio >= BITRATE_ADAPT_LOW_REPEAT_RATIO) {
+                    // Dead-zone tick (3-15% repeats): no bitrate change, but
+                    // log it anyway -- otherwise a persistent moderate
+                    // repeat rate (as opposed to the sharp spikes that do
+                    // trigger a step) is invisible in every capture, and
+                    // "lag is still there between the spikes" can't be told
+                    // apart from "nothing's wrong" after the fact.
+                    logger.log("bitrateAdapt: repeatRatio=${"%.2f".format(repeatRatio)} (dead zone, ${adaptedBitrate / 1000}kbps unchanged)")
+                }
+            }
+            bitrateAdapt.postDelayed(this, BITRATE_ADAPT_INTERVAL_MS)
+        }
+    }
 
     fun start(): Boolean {
         val conn = UsbAccessoryConnection.open(context, accessory) ?: run {
@@ -134,6 +180,7 @@ class CarSession(
 
     private fun release() {
         aaWatchdog.removeCallbacks(aaWatchdogTick)
+        bitrateAdapt.removeCallbacks(bitrateAdaptTick)
         dev.caraalink.aa.AaReconnectBus.onVideoSettingsChanged = null
         dev.caraalink.aa.AaSessionProbe.active?.stop()
         aaDecoder?.stop()
@@ -463,7 +510,7 @@ class CarSession(
         // faster than we were producing anything new to give it. Raising the
         // pull-mode target toward the car's own observed pull cadence so
         // more pulls get genuinely fresh frames instead of a stale resend.
-        val fps = if (config.wantFps > 0) config.wantFps else 60
+        val fps = if (config.wantFps > 0) config.wantFps else PULL_MODE_FPS
         // Settings > Video > bitrate used to be decorative -- nothing ever
         // read it, the encoder always used either the car's own requested
         // bitrate or DEFAULT_BITRATE. Now it's a floor: the car's request
@@ -488,6 +535,7 @@ class CarSession(
         }
         lastBitRate = bitRate
         encoder?.release()
+        bitrateAdapt.removeCallbacks(bitrateAdaptTick)
         val enc: VideoEncoder = CarVideoEncoder(config.encodeWidth, config.encodeHeight, fps, bitRate, ::onEncodedFrame)
         try {
             enc.start()
@@ -501,6 +549,11 @@ class CarSession(
             pullQueue.clear()
         }
         encoder = enc
+        bitrateCeiling = bitRate
+        adaptedBitrate = bitRate
+        lastAdaptSent = framesSent
+        lastAdaptRepeats = repeatsSent
+        bitrateAdapt.postDelayed(bitrateAdaptTick, BITRATE_ADAPT_INTERVAL_MS)
         display.attach(enc.inputSurface, config.encodeWidth, config.encodeHeight)
         display.setStatus("Connected")
         // Settings > Android Auto > "Jump straight to Android Auto" had a
@@ -631,6 +684,7 @@ class CarSession(
                     pendingRequests--
                     sendFrameLocked(stream, repeat)
                     lastStarvationRepeat = repeat
+                    repeatsSent++
                 }
             }
         }, ENCODER_STALL_MS)
@@ -740,6 +794,27 @@ class CarSession(
         private const val AA_WATCHDOG_STALL_MAX_MS = 60_000L
         private const val AA_TEARDOWN_RESTART_DELAY_MS = 1_500L
         private const val AA_SERVER_RECOVERY_RETRY_MS = 7_000L
+        // Pull-mode fps floor: measured car pull cadence is ~75-79/s
+        // (chatgpt-status.md "starvation" finding); 60 undershot that by
+        // ~20%, which is unnecessary slack once bitrate itself adapts to
+        // actual load below.
+        private const val PULL_MODE_FPS = 75
+        // Live bitrate adaptation, separate from the encoder-rebuild-time
+        // fps/bitrate pick above: "TV lag that's not always there" is the
+        // phone's own CPU/GPU momentarily losing the race between composing
+        // a new frame and encoding it, not something a one-time target can
+        // fix. Measure it the same way the starvation fallback already
+        // does -- the ratio of pulls answered with a stale repeat instead of
+        // a fresh encode -- and trade bitrate (cheap to change live via
+        // MediaCodec.setParameters, unlike fps/resolution) for the encoder
+        // actually keeping up when that ratio climbs, then ease back toward
+        // the real target once it's caught up again.
+        private const val BITRATE_ADAPT_INTERVAL_MS = 2_000L
+        private const val BITRATE_ADAPT_HIGH_REPEAT_RATIO = 0.15f
+        private const val BITRATE_ADAPT_LOW_REPEAT_RATIO = 0.03f
+        private const val BITRATE_ADAPT_DOWN_FACTOR = 0.85f
+        private const val BITRATE_ADAPT_UP_FACTOR = 1.1f
+        private const val BITRATE_ADAPT_FLOOR = 800_000
 
         // AA's head unit server never answers again after a connection we close, so probe by bind, not connect.
         internal fun isListening(port: Int): Boolean = runCatching {

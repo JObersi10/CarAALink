@@ -97,6 +97,12 @@ class CarVideoEncoder(
         runCatching { codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }) }
     }
 
+    /** Live bitrate change -- unlike fps/resolution, MediaCodec supports this without a reconfigure/restart. */
+    override fun setBitrate(bps: Int) {
+        if (released) return
+        runCatching { codec.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) }) }
+    }
+
     override fun release() {
         if (released) return
         released = true
