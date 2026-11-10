@@ -75,6 +75,21 @@ class AaCarPresentation(
         // currently-down finger goes in one message, with actionIndex saying
         // which one triggered this particular down/up/move.
         var lastMoveAt = 0L
+        // Ghost swipes on a plain tap, reported live on the car -- the car's
+        // own touch stack is confirmed (from a car-side log) to always fall
+        // back to its degraded "app inner touch" software path rather than
+        // real HID touch ("registerHid fail... system touch not supported",
+        // seen on every session, including with the stock dongle). We
+        // forward whatever DOWN/MOVE/UP sequence the car reports straight
+        // into AA's own touch protocol with zero filtering -- a real HID
+        // touch controller debounces its own jitter; this software fallback
+        // may not, so a tap's natural sub-pixel wobble becomes a real MOVE
+        // message AA sees as the start of a drag. Standard Android touch-
+        // slop fix: lock each pointer's reported position to where it went
+        // down until it has genuinely moved past a threshold, so jitter
+        // under that threshold never reaches AA as motion.
+        val downPos = mutableMapOf<Int, Pair<Int, Int>>()
+        val slopExceeded = mutableSetOf<Int>()
         texture.setOnTouchListener { v, ev ->
             val action = when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> 0
@@ -97,15 +112,37 @@ class AaCarPresentation(
             // full-FRAME coordinates (margin baked in) unchanged -- off by
             // exactly half the margin on whichever axis has one, which is
             // exactly the "touch registers lower" symptom (half of a 360px
-            // heightMargin = 180px low).
+            // heightMargin = 180px low). Owner confirms this part is fixed.
             val contentWidth = (videoWidth - widthMargin).coerceAtLeast(1)
             val contentHeight = (videoHeight - heightMargin).coerceAtLeast(1)
             val pointers = (0 until ev.pointerCount).map { i ->
                 val fullX = (ev.getX(i) / v.width * videoWidth).toInt()
                 val fullY = (ev.getY(i) / v.height * videoHeight).toInt()
-                val x = (fullX - widthMargin / 2).coerceIn(0, contentWidth - 1)
-                val y = (fullY - heightMargin / 2).coerceIn(0, contentHeight - 1)
-                Triple(x, y, ev.getPointerId(i))
+                var x = (fullX - widthMargin / 2).coerceIn(0, contentWidth - 1)
+                var y = (fullY - heightMargin / 2).coerceIn(0, contentHeight - 1)
+                val pid = ev.getPointerId(i)
+                if (action == 0) {
+                    downPos[pid] = x to y
+                    slopExceeded.remove(pid)
+                } else if (pid !in slopExceeded) {
+                    val (dx0, dy0) = downPos[pid] ?: (x to y)
+                    val dist = kotlin.math.hypot((x - dx0).toDouble(), (y - dy0).toDouble())
+                    if (dist > TOUCH_SLOP_PX) {
+                        slopExceeded.add(pid)
+                        touchLogger.log("pointer $pid became a drag at ${"%.1f".format(dist)}px (slop=$TOUCH_SLOP_PX)")
+                    } else {
+                        // Still within jitter range of the down point -- report it as
+                        // not having moved at all rather than relaying the wobble.
+                        x = dx0
+                        y = dy0
+                    }
+                }
+                Triple(x, y, pid)
+            }
+            if (action == 1) {
+                val upPid = ev.getPointerId(ev.actionIndex)
+                downPos.remove(upPid)
+                slopExceeded.remove(upPid)
             }
             // Owner reports touch registering lower than where they press,
             // for AA specifically -- the render/crop math checks out on
@@ -186,4 +223,13 @@ class AaCarPresentation(
     private fun dp(v: Int) = TypedValue.applyDimension(
         TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), context.resources.displayMetrics,
     ).toInt()
+
+    companion object {
+        // In mapped/video-space pixels. Generous on purpose -- AA's own
+        // tap-vs-drag threshold on the phone side isn't confirmed, and
+        // false "still a tap" is cheap (worst case a real short drag's
+        // first couple pixels get eaten) while false "that was a drag" is
+        // the ghost-swipe bug this exists to kill.
+        private const val TOUCH_SLOP_PX = 18
+    }
 }
